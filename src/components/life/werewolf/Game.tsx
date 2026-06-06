@@ -150,26 +150,29 @@ function PlayerSeat({ player, isYou, isSpeaking, revealed, onClick }: {
    发言气泡
    ───────────────────────────────────────────── */
 
-function SpeechBubble({ player, text, streaming, lang }: {
+function SpeechBubble({ player, text, streaming, lang, isRevealed }: {
   player: Player;
   text: string;
   streaming?: boolean;
   lang: 'zh' | 'en';
+  isRevealed?: boolean;
 }) {
   return (
     <div className="flex gap-2 mb-2 animate-fade-in">
       <div className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-base"
         style={{ background: 'var(--color-accent-glow)' }}>
-        {ROLES[player.role].emoji}
+        {isRevealed ? ROLES[player.role].emoji : '👤'}
       </div>
       <div className="flex-1 min-w-0">
         <div className="text-[11px] mb-0.5 flex items-center gap-1.5" style={{ color: 'var(--color-text-muted)' }}>
           <span className="font-medium" style={{ color: 'var(--color-text)' }}>
             {player.id + 1}. {player.name}
           </span>
-          <span style={{ color: 'var(--color-accent)' }}>
-            {ROLES[player.role].name.zh}
-          </span>
+          {isRevealed && (
+            <span style={{ color: 'var(--color-accent)' }}>
+              {ROLES[player.role].name.zh}
+            </span>
+          )}
           <PersonalityRender id={player.personality} lang={lang} />
         </div>
         <div className="rounded-lg p-2 text-sm" style={{
@@ -415,15 +418,28 @@ function GameRunner({ state: initial, aiConfig, lang, onExit }: {
             <MessageCircle size={11} />
             {lang === 'zh' ? '发言记录' : 'Speeches'}
           </div>
-          {state.speeches.slice(-15).map((sp: import('./engine').SpeechRecord, i: number) => (
-            <SpeechBubble key={i} player={state.players[sp.playerId]} text={sp.text} lang={lang} />
-          ))}
+          {state.speeches.slice(-15).map((sp: import('./engine').SpeechRecord, i: number) => {
+            const userP = state.players[state.userId];
+            const seerCheckedIds = userP.privateMemory.seerChecks.map(c => c.targetId);
+            const p = state.players[sp.playerId];
+            const isRevealed = sp.playerId === state.userId || !p.alive || seerCheckedIds.includes(sp.playerId);
+            return (
+              <SpeechBubble
+                key={i}
+                player={p}
+                text={sp.text}
+                lang={lang}
+                isRevealed={isRevealed}
+              />
+            );
+          })}
           {streamingText && (
             <SpeechBubble
               player={state.players[streamingText.playerId]}
               text={streamingText.text}
               streaming
               lang={lang}
+              isRevealed
             />
           )}
         </div>
