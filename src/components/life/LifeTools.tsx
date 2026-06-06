@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import {
   Heart, Sparkles, Check, History, X, Square as StopIcon, Brain, Phone,
-  Cat, Dog, Calendar, Share2, Star, RefreshCw, Bookmark,
+  Cat, Dog, Calendar, Share2, Star, RefreshCw, Bookmark, Drama,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useI18n } from '../../hooks/useI18n';
@@ -9,6 +9,8 @@ import { Button, ConfirmButton } from '../ui/Button';
 import { AIToolPanel } from '../ui/AIToolPanel';
 import { useAIStream } from '../../hooks/useAIStream';
 import { useFavorites } from '../../hooks/useFavorites';
+import { WerewolfGame } from './werewolf/Game';
+import { GomokuTool } from './GomokuTool';
 
 /* ═════════════════════════════════════════════════════════════════════
    趣味铺子 —— 重做后定位:「趣味性 + AI 调味」,不跟通用 AI 平台抢饭碗。
@@ -2281,11 +2283,13 @@ function TarotCardSVG({ cardId, reversed, flipped }: { cardId: number; reversed:
 /* ─────────── Tool registry ─────────── */
 export const LIFE_TOOLS: Record<number, { Component: any; icon: LucideIcon }> = {
   // 已封存:59 健康饮食 / 60 运动计划 / 62 用药提醒 —— 跟 ChatGPT 同质化、
-  // 不是「趣味性 + AI 调味」定位的卡片。让位给下面的趣味卡。
-  61: { Component: CounselingTool,    icon: Heart },     // 心理顾问(下轮重做为「心情树洞」)
+  // 不是「趣味性 + AI 调味」定位的卡片。让位给下面的趣味卡 + 强对抗卡。
+  68: { Component: WerewolfGame,      icon: Drama },     // 新增:AI 狼人杀(5 板子,Phase1 跑通 9 人经典)
+  69: { Component: GomokuTool,        icon: Sparkles },  // 新增:AI 五子棋(4 档本地 AI · 选黑/选白)
   63: { Component: NamingTool,        icon: Sparkles },  // 取名玄学馆(4 tab:起名/测名/英文意境/情侣合婚)
   64: { Component: DreamTool,         icon: Brain },     // 解梦(下轮重做为「玄学占卜室」)
   65: { Component: PetTranslatorTool, icon: Cat },       // 新增:猫狗翻译机
   66: { Component: DailyVibesTool,    icon: Calendar },  // 新增:今日宜忌
   67: { Component: TarotTool,         icon: Sparkles },  // 新增:塔罗一日牌
+  61: { Component: CounselingTool,    icon: Heart },     // 心情树洞(挪到最后,本轮重做)
 };

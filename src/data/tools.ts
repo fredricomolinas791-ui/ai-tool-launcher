@@ -39,7 +39,9 @@ import {
   Bot,
   Network,
   Briefcase,
-  Box
+  Box,
+  Drama,
+  Gamepad2
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
@@ -147,12 +149,14 @@ export const toolsByCategory: Record<string, Tool[]> = {
   life: [
     // 注:饮食(59)、运动(60)、用药(62)已封存 —— 跟 AI 平台同质化、
     // 不符合「趣味性 + AI 调味」定位,留给真专业 app(MyFitnessPal/Keep/
-    // 小米健康)。重做后的 6 张全是「趣味 + AI 不可替代」。
-    { id: 61, name: { zh: '心情树洞', en: 'Mood Tree' },      desc: { zh: '匿名树洞 + 一键平静练习,AI 暖心回信不评判',                       en: 'Anonymous vent + one-tap calming practice, AI replies without judgment' },        icon: Heart,         tags: [{ zh: '心理', en: 'Mind' },  { zh: '陪伴', en: 'Care' }] },
+    // 小米健康)。重做后的 6 张全是「趣味 + AI 不可替代」+ 1 张强对抗。
+    { id: 68, name: { zh: 'AI 狼人杀', en: 'AI Werewolf' },     desc: { zh: '9 / 12 人经典局,跟 5-11 个 LLM 玩家斗智斗勇,流式发言、阵营博弈', en: '9 / 12 player classic game — outwit LLM opponents, streaming speeches, faction wars' }, icon: Drama, tags: [{ zh: '对抗', en: 'Battle' }, { zh: '推理', en: 'Deduct' }] },
+    { id: 69, name: { zh: 'AI 五子棋', en: 'AI Gomoku' },       desc: { zh: '15×15 标准棋盘人机对战,4 档难度,可自选黑/白(先后手),本地 AI 不耗 token', en: '15×15 board vs local AI, 4 difficulty levels, pick black or white — no token cost' }, icon: Gamepad2, tags: [{ zh: '对弈', en: 'Play' }, { zh: '本地 AI', en: 'On-device' }] },
     { id: 63, name: { zh: '取名玄学馆', en: 'Name Master' },   desc: { zh: '起名 / 测名 / 英文意境 / 情侣合婚,AI 拆字解寓意',                  en: 'Generate / score / translate / match Chinese names with AI insight' },             icon: Sparkles,      tags: [{ zh: '起名', en: 'Naming' }, { zh: '玄学', en: 'Mystic' }] },
     { id: 64, name: { zh: '玄学占卜室', en: 'Oracle Room' },   desc: { zh: '解梦 / 每日运势 / 小问题占卜,AI 心理隐喻不搞迷信',                  en: 'Dream / daily fortune / yes-or-no oracle, AI with psychological flavor' },         icon: Brain,         tags: [{ zh: '占卜', en: 'Oracle' }, { zh: '玄学', en: 'Mystic' }] },
     { id: 65, name: { zh: '猫狗翻译机', en: 'Pet Translator' },desc: { zh: '描述毛孩子动作,AI 一本正经「翻译」成猫语狗语 + 心情',              en: 'Describe what your pet did, AI translates it into pet-speak with mood' },         icon: Heart,         tags: [{ zh: '趣味', en: 'Fun' },   { zh: '宠物', en: 'Pet' }] },
     { id: 66, name: { zh: '今日宜忌', en: 'Daily Vibes' },     desc: { zh: '现代版老黄历,AI 每日生成宜忌句子,可收藏可分享',                    en: 'Modern almanac — AI generates today’s do’s & don’ts, save & share' }, icon: Calendar,      tags: [{ zh: '每日', en: 'Daily' }, { zh: '趣味', en: 'Fun' }] },
     { id: 67, name: { zh: '塔罗一日牌', en: 'Tarot of the Day' }, desc: { zh: '每日洗牌抽一张大阿卡纳,AI 心理隐喻解读,带牌面视觉',              en: 'Shuffle and draw a daily tarot, AI reads its meaning, with card art' },           icon: Sparkles,      tags: [{ zh: '塔罗', en: 'Tarot' }, { zh: '玄学', en: 'Mystic' }] },
+    { id: 61, name: { zh: '心情树洞', en: 'Mood Tree' },      desc: { zh: '匿名树洞 + 一键平静练习,AI 暖心回信不评判',                       en: 'Anonymous vent + one-tap calming practice, AI replies without judgment' },        icon: Heart,         tags: [{ zh: '心理', en: 'Mind' },  { zh: '陪伴', en: 'Care' }] },
   ],
 };
