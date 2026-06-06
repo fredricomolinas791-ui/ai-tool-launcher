@@ -85,14 +85,25 @@ function BoardCard({ board, onSelect, lang, disabled, disabledReason }: {
    玩家座位(圆形布局)
    ───────────────────────────────────────────── */
 
-function PlayerSeat({ player, isYou, isSpeaking, isCurrentActor, onClick }: {
+function PlayerSeat({ player, isYou, isSpeaking, revealed, onClick }: {
   player: Player;
   isYou: boolean;
   isSpeaking?: boolean;
-  isCurrentActor?: boolean;
+  revealed?: boolean;     // 其他人是否被揭晓(用户自己 / 死亡 / 被预言家验过)
   onClick?: () => void;
 }) {
   const role = ROLES[player.role];
+  // 决定显示什么:
+  // - 死亡 → 显示真实身份(经典规则:死亡亮牌)
+  // - 用户自己 → 真实身份
+  // - revealed → 真实身份
+  // - 其他存活玩家 → 占位头像(不暴露)
+  const showReal = !player.alive || isYou || revealed;
+  const display = !player.alive
+    ? '💀'
+    : showReal
+      ? role.emoji
+      : '👤';   // 神秘占位
   return (
     <button
       onClick={onClick}
@@ -104,11 +115,11 @@ function PlayerSeat({ player, isYou, isSpeaking, isCurrentActor, onClick }: {
         className="w-14 h-14 rounded-full flex items-center justify-center text-2xl border-2 transition-all"
         style={{
           background: player.alive
-            ? (isCurrentActor ? 'var(--color-accent-glow)' : 'var(--color-card-bg)')
+            ? (isSpeaking ? 'var(--color-accent-glow)' : 'var(--color-card-bg)')
             : 'var(--color-bg-deep)',
           borderColor: isYou
             ? 'var(--color-accent)'
-            : isCurrentActor
+            : isSpeaking
               ? 'var(--color-accent)'
               : 'var(--color-border-light)',
           opacity: player.alive ? 1 : 0.4,
@@ -116,7 +127,7 @@ function PlayerSeat({ player, isYou, isSpeaking, isCurrentActor, onClick }: {
           filter: player.alive ? 'none' : 'grayscale(1)',
         }}
       >
-        {player.alive ? role.emoji : '💀'}
+        {display}
       </div>
       <div className="mt-1 text-[10px] font-medium truncate w-full text-center" style={{
         color: player.alive ? 'var(--color-text)' : 'var(--color-text-muted)',
@@ -126,8 +137,10 @@ function PlayerSeat({ player, isYou, isSpeaking, isCurrentActor, onClick }: {
       {isYou && (
         <div className="text-[9px] mt-0.5" style={{ color: 'var(--color-accent)' }}>你</div>
       )}
-      {!player.alive && (
-        <div className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-red-500 text-white text-[8px] flex items-center justify-center">×</div>
+      {showReal && player.alive && !isYou && (
+        <div className="text-[9px] mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+          {role.name.zh}
+        </div>
       )}
     </button>
   );
@@ -365,14 +378,21 @@ function GameRunner({ state: initial, aiConfig, lang, onExit }: {
       {/* 玩家座位 */}
       <div className="p-3 rounded-xl" style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-border-light)' }}>
         <div className="flex flex-wrap gap-2 justify-center">
-          {state.players.map(p => (
-            <PlayerSeat
-              key={p.id}
-              player={p}
-              isYou={p.id === state.userId}
-              isSpeaking={streamingText?.playerId === p.id}
-            />
-          ))}
+          {state.players.map(p => {
+            // 用户已揭晓的人:自己 + 死亡 + 用户(预言家)验过的
+            const userP = state.players[state.userId];
+            const seerCheckedIds = userP.privateMemory.seerChecks.map(c => c.targetId);
+            const revealed = p.id === state.userId || !p.alive || seerCheckedIds.includes(p.id);
+            return (
+              <PlayerSeat
+                key={p.id}
+                player={p}
+                isYou={p.id === state.userId}
+                isSpeaking={streamingText?.playerId === p.id}
+                revealed={revealed}
+              />
+            );
+          })}
         </div>
       </div>
 
