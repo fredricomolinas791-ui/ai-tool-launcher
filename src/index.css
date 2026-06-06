@@ -1,0 +1,653 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* SVG fractalNoise 噪点纹理 —— 抽成 :root 变量方便复用。
+   200×200 viewBox 平铺,baseFrequency=0.85 给出较细的颗粒(数值越大颗粒越细),
+   numOctaves=3 叠多层噪声让颗粒更自然,stitchTiles='stitch' 让边缘可拼接、
+   避免平铺时的接缝痕迹。feColorMatrix 把整体 alpha 降到 0.55,作为「噪点强度」
+   基线;实际可见度由各 [data-background="subtle"] 规则里的 background-blend-mode
+   再次调节。`#` 转义成 `%23`,`100%` 转义成 `100%25`。 */
+:root {
+  --fx-noise: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 0.55 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+@keyframes backdropIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes settingsIn {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* Cyber family tab: pulsing neon halo */
+@keyframes tabPulse {
+  0%, 100% { box-shadow: 0 0 12px var(--color-accent-glow), inset 0 0 8px var(--color-accent-glow); }
+  50%      { box-shadow: 0 0 22px var(--color-accent-glow), inset 0 0 14px var(--color-accent-glow); }
+}
+
+/* Cyber family tab: scan line sweeping top → bottom */
+@keyframes tabScan {
+  0%   { transform: translateY(-100%); opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { transform: translateY(100%); opacity: 0; }
+}
+
+/* ───────────────── Global card glow + scan line in cyber sub-themes ─────────────────
+   Applies to anything tagged with .tool-card when the user has chosen
+   a cyber sub-theme (cyber / magma / ultraviolet). Mirrors the tab's
+   neon pulse + scan effect at card scale, so the whole app feels
+   "alive" in those themes. The accent color drives the hue, so each
+   cyber variant has its own visual identity (cyan / orange / purple). */
+@keyframes cardPulse {
+  0%, 100% { box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.3), 0 0 0 1px var(--color-accent-glow); }
+  50%      { box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.3), 0 0 14px var(--color-accent-glow), 0 0 0 1px var(--color-accent); }
+}
+@keyframes cardScan {
+  0%   { transform: translateY(-110%); opacity: 0; }
+  8%   { opacity: 0.8; }
+  92%  { opacity: 0.8; }
+  100% { transform: translateY(110%); opacity: 0; }
+}
+
+/* 全 9 个主题的工具卡片共享同套动效(cardEnter + cardPulse + cardScan)。
+   之前只在 cyber/magma/ultraviolet 上启用,按用户要求扩到 dark/slate/forest
+   /light/cream/pearl,让 9 张主题的卡片「看起来都在呼吸」,符合「整站活着」
+   的气质。
+
+   NOTE: cardPulse 不能再这里声明 `animation`,会和下面的 .animate-card-enter
+   的 `animation` 简写冲突(会覆盖 entry 阶段导致 opacity:0 卡住),所以
+   呼吸效果放在 entry 复合 animation 里,scan 走 ::after。 */
+[data-theme] .tool-card {
+  position: relative;
+  overflow: hidden;
+  border-color: var(--color-border-light);
+}
+[data-theme] .tool-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, transparent 0%, var(--color-accent-glow) 50%, transparent 100%);
+  animation: cardScan 5s linear infinite;
+  pointer-events: none;
+  border-radius: inherit;
+  z-index: 0;
+}
+[data-theme] .tool-card > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* ───────────────── Dark (Champagne) ───────────────── */
+[data-theme="dark"] {
+  --color-bg-deep: #0a0a0c;
+  --color-bg-main: #0e0e11;
+  --color-bg-card: #131318;
+  --color-bg-card-hover: #18181e;
+  --color-bg-sidebar: #0c0c0e;
+  --color-border: #1f1f25;
+  --color-border-light: #2a2a30;
+  --color-accent: #c9a961;
+  --color-accent-soft: #d9bd7a;
+  --color-accent-glow: rgba(201, 169, 97, 0.16);
+  --color-text-primary: #ededee;
+  --color-text-secondary: #9090a0;
+  --color-text-muted: #5a5a66;
+  --color-success: #34d399;
+  --color-warning: #fbbf24;
+  --color-glow-a: rgba(201, 169, 97, 0.04);
+  --color-glow-b: rgba(160, 110, 60, 0.03);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.2);
+  --shadow-card-hover:
+    0 1px 0 rgba(255, 255, 255, 0.04) inset,
+    0 4px 12px rgba(0, 0, 0, 0.35),
+    0 12px 32px rgba(0, 0, 0, 0.45),
+    0 0 0 1px var(--color-accent-glow);
+  --fx-grid: none;
+  --fx-scanlines: none;
+}
+
+/* ───────────────── Light (Bronze) ───────────────── */
+[data-theme="light"] {
+  --color-bg-deep: #f7f7f8;
+  --color-bg-main: #ffffff;
+  --color-bg-card: #ffffff;
+  --color-bg-card-hover: #fafafb;
+  --color-bg-sidebar: #fafafb;
+  --color-border: #e8e8eb;
+  --color-border-light: #d4d4d8;
+  --color-accent: #8a6d2c;
+  --color-accent-soft: #a8843a;
+  --color-accent-glow: rgba(138, 109, 44, 0.14);
+  --color-text-primary: #18181a;
+  --color-text-secondary: #52525a;
+  --color-text-muted: #8a8a92;
+  --color-success: #16a34a;
+  --color-warning: #d97706;
+  --color-glow-a: rgba(201, 169, 97, 0.05);
+  --color-glow-b: rgba(180, 120, 50, 0.03);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04), 0 2px 8px rgba(0, 0, 0, 0.04);
+  --shadow-card-hover:
+    0 1px 0 rgba(255, 255, 255, 1) inset,
+    0 4px 12px rgba(0, 0, 0, 0.06),
+    0 12px 28px rgba(0, 0, 0, 0.08),
+    0 0 0 1px var(--color-accent-glow);
+  --fx-grid: none;
+  --fx-scanlines: none;
+}
+
+/* ───────────────── Cyber Blue (Futuristic) ───────────────── */
+[data-theme="cyber"] {
+  --color-bg-deep: #050810;
+  --color-bg-main: #080d1a;
+  --color-bg-card: #0c1428;
+  --color-bg-card-hover: #11203e;
+  --color-bg-sidebar: #06091a;
+  --color-border: #1a2a4a;
+  --color-border-light: #243a66;
+  --color-accent: #00d4ff;
+  --color-accent-soft: #4ee5ff;
+  --color-accent-glow: rgba(0, 212, 255, 0.28);
+  --color-text-primary: #e6f4ff;
+  --color-text-secondary: #8aa8cc;
+  --color-text-muted: #4d6a8c;
+  --color-success: #00ff9d;
+  --color-warning: #ffb800;
+  --color-glow-a: rgba(0, 212, 255, 0.10);
+  --color-glow-b: rgba(120, 60, 255, 0.08);
+  --shadow-card:
+    0 0 0 1px rgba(0, 212, 255, 0.08),
+    0 1px 2px rgba(0, 0, 0, 0.5),
+    0 0 24px rgba(0, 212, 255, 0.04);
+  --shadow-card-hover:
+    inset 0 1px 0 rgba(0, 212, 255, 0.15),
+    0 4px 16px rgba(0, 212, 255, 0.18),
+    0 12px 32px rgba(0, 0, 0, 0.6),
+    0 0 0 1px var(--color-accent-glow);
+  --fx-grid: linear-gradient(rgba(0, 212, 255, 0.04) 1px, transparent 1px),
+             linear-gradient(90deg, rgba(0, 212, 255, 0.04) 1px, transparent 1px);
+  --fx-scanlines: linear-gradient(transparent 0px, transparent 3px, rgba(0, 212, 255, 0.015) 3px, rgba(0, 212, 255, 0.015) 4px);
+}
+
+/* ───────────────── Dark · Slate (cooler, blue-gray) ───────── */
+[data-theme="slate"] {
+  --color-bg-deep: #0e1116;
+  --color-bg-main: #13161d;
+  --color-bg-card: #181c25;
+  --color-bg-card-hover: #1f2330;
+  --color-bg-sidebar: #0f1218;
+  --color-border: #262b36;
+  --color-border-light: #323847;
+  --color-accent: #94a3b8;
+  --color-accent-soft: #cbd5e1;
+  --color-accent-glow: rgba(148, 163, 184, 0.20);
+  --color-text-primary: #e2e8f0;
+  --color-text-secondary: #94a3b8;
+  --color-text-muted: #64748b;
+  --color-success: #34d399;
+  --color-warning: #fbbf24;
+  --color-glow-a: rgba(148, 163, 184, 0.05);
+  --color-glow-b: rgba(100, 116, 139, 0.04);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-card-hover:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 4px 12px rgba(0, 0, 0, 0.5),
+    0 12px 32px rgba(0, 0, 0, 0.6),
+    0 0 0 1px var(--color-accent-glow);
+  --fx-grid: none;
+  --fx-scanlines: none;
+}
+
+/* ───────────────── Dark · Forest (green tinted) ───────────────── */
+[data-theme="forest"] {
+  --color-bg-deep: #0a120e;
+  --color-bg-main: #0e1612;
+  --color-bg-card: #121c17;
+  --color-bg-card-hover: #18241d;
+  --color-bg-sidebar: #0b130f;
+  --color-border: #1d2c23;
+  --color-border-light: #283c2f;
+  --color-accent: #4ade80;
+  --color-accent-soft: #86efac;
+  --color-accent-glow: rgba(74, 222, 128, 0.22);
+  --color-text-primary: #e6f5ec;
+  --color-text-secondary: #86a890;
+  --color-text-muted: #5a7565;
+  --color-success: #4ade80;
+  --color-warning: #f59e0b;
+  --color-glow-a: rgba(74, 222, 128, 0.05);
+  --color-glow-b: rgba(34, 197, 94, 0.04);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-card-hover:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 4px 12px rgba(0, 0, 0, 0.5),
+    0 12px 32px rgba(0, 0, 0, 0.6),
+    0 0 0 1px var(--color-accent-glow);
+  --fx-grid: none;
+  --fx-scanlines: none;
+}
+
+/* ───────────────── Light · Cream (warm beige) ─────────────────── */
+[data-theme="cream"] {
+  --color-bg-deep: #faf3e3;
+  --color-bg-main: #fefaf0;
+  --color-bg-card: #fffbf2;
+  --color-bg-card-hover: #fdf3e0;
+  --color-bg-sidebar: #f7eed8;
+  --color-border: #ebe0c6;
+  --color-border-light: #d6c89e;
+  --color-accent: #b8893b;
+  --color-accent-soft: #d4a85a;
+  --color-accent-glow: rgba(184, 137, 59, 0.18);
+  --color-text-primary: #3a2f1a;
+  --color-text-secondary: #6b5a3a;
+  --color-text-muted: #978459;
+  --color-success: #16a34a;
+  --color-warning: #d97706;
+  --color-glow-a: rgba(184, 137, 59, 0.06);
+  --color-glow-b: rgba(212, 168, 90, 0.04);
+  --shadow-card: 0 1px 2px rgba(120, 90, 30, 0.06), 0 2px 8px rgba(120, 90, 30, 0.06);
+  --shadow-card-hover:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    0 4px 12px rgba(120, 90, 30, 0.10),
+    0 12px 28px rgba(120, 90, 30, 0.12),
+    0 0 0 1px var(--color-accent-glow);
+  --fx-grid: none;
+  --fx-scanlines: none;
+}
+
+/* ───────────────── Light · Pearl (cool light gray) ────────────── */
+[data-theme="pearl"] {
+  --color-bg-deep: #f1f5f9;
+  --color-bg-main: #f8fafc;
+  --color-bg-card: #ffffff;
+  --color-bg-card-hover: #f1f5f9;
+  --color-bg-sidebar: #e2e8f0;
+  --color-border: #cbd5e1;
+  --color-border-light: #94a3b8;
+  --color-accent: #64748b;
+  --color-accent-soft: #94a3b8;
+  --color-accent-glow: rgba(100, 116, 139, 0.16);
+  --color-text-primary: #0f172a;
+  --color-text-secondary: #475569;
+  --color-text-muted: #94a3b8;
+  --color-success: #16a34a;
+  --color-warning: #d97706;
+  --color-glow-a: rgba(100, 116, 139, 0.05);
+  --color-glow-b: rgba(148, 163, 184, 0.04);
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.05), 0 2px 8px rgba(15, 23, 42, 0.04);
+  --shadow-card-hover:
+    inset 0 1px 0 rgba(255, 255, 255, 1),
+    0 4px 12px rgba(15, 23, 42, 0.10),
+    0 12px 28px rgba(15, 23, 42, 0.08),
+    0 0 0 1px var(--color-accent-glow);
+  --fx-grid: none;
+  --fx-scanlines: none;
+}
+
+/* ───────────────── Cyber · Magma (warm orange-red) ────────────────── */
+[data-theme="magma"] {
+  --color-bg-deep: #150a0a;
+  --color-bg-main: #1a0d0d;
+  --color-bg-card: #241212;
+  --color-bg-card-hover: #2e1818;
+  --color-bg-sidebar: #170b0b;
+  --color-border: #3a1c1c;
+  --color-border-light: #4f2a2a;
+  --color-accent: #f97316;
+  --color-accent-soft: #fb923c;
+  --color-accent-glow: rgba(249, 115, 22, 0.28);
+  --color-text-primary: #fff7ed;
+  --color-text-secondary: #fdba74;
+  --color-text-muted: #9a5a3a;
+  --color-success: #4ade80;
+  --color-warning: #fbbf24;
+  --color-glow-a: rgba(249, 115, 22, 0.10);
+  --color-glow-b: rgba(220, 38, 38, 0.08);
+  --shadow-card:
+    0 0 0 1px rgba(249, 115, 22, 0.10),
+    0 1px 2px rgba(0, 0, 0, 0.5),
+    0 0 24px rgba(249, 115, 22, 0.05);
+  --shadow-card-hover:
+    inset 0 1px 0 rgba(249, 115, 22, 0.15),
+    0 4px 16px rgba(249, 115, 22, 0.20),
+    0 12px 32px rgba(0, 0, 0, 0.6),
+    0 0 0 1px var(--color-accent-glow);
+  --fx-grid: linear-gradient(rgba(249, 115, 22, 0.04) 1px, transparent 1px),
+             linear-gradient(90deg, rgba(249, 115, 22, 0.04) 1px, transparent 1px);
+  --fx-scanlines: linear-gradient(transparent 0px, transparent 3px, rgba(249, 115, 22, 0.02) 3px, rgba(249, 115, 22, 0.02) 4px);
+}
+
+/* ───────────────── Cyber · Ultraviolet (deep purple/cyan cyberpunk) ────── */
+[data-theme="ultraviolet"] {
+  --color-bg-deep: #0a0814;
+  --color-bg-main: #0f0a1c;
+  --color-bg-card: #16122a;
+  --color-bg-card-hover: #1d1736;
+  --color-bg-sidebar: #0c0818;
+  --color-border: #2a1f4a;
+  --color-border-light: #3b2d6a;
+  --color-accent: #a855f7;
+  --color-accent-soft: #c084fc;
+  --color-accent-glow: rgba(168, 85, 247, 0.30);
+  --color-text-primary: #f5f0ff;
+  --color-text-secondary: #b794f4;
+  --color-text-muted: #6b4d8a;
+  --color-success: #4ade80;
+  --color-warning: #fbbf24;
+  --color-glow-a: rgba(168, 85, 247, 0.12);
+  --color-glow-b: rgba(56, 189, 248, 0.10);
+  --shadow-card:
+    0 0 0 1px rgba(168, 85, 247, 0.12),
+    0 1px 2px rgba(0, 0, 0, 0.5),
+    0 0 24px rgba(168, 85, 247, 0.06);
+  --shadow-card-hover:
+    inset 0 1px 0 rgba(168, 85, 247, 0.20),
+    0 4px 16px rgba(168, 85, 247, 0.22),
+    0 12px 32px rgba(0, 0, 0, 0.6),
+    0 0 0 1px var(--color-accent-glow);
+  --fx-grid: linear-gradient(rgba(168, 85, 247, 0.05) 1px, transparent 1px),
+             linear-gradient(90deg, rgba(168, 85, 247, 0.05) 1px, transparent 1px);
+  --fx-scanlines: linear-gradient(transparent 0px, transparent 3px, rgba(168, 85, 247, 0.02) 3px, rgba(168, 85, 247, 0.02) 4px);
+}
+
+@font-face {
+  font-family: 'Inter';
+  src: url('https://fonts.gstatic.com/s/inter/v18/UcCO3FwrK3iLTeHuS_fvQtMwCp50KnMw2boKoduKmMEVuLyfAZ9hiJ-Ek-_EoY.woff2') format('woff2');
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  font-family: var(--font-sans);
+  background: var(--color-bg-deep);
+  color: var(--color-text-primary);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* Ambient glow */
+[data-theme="dark"] body::before,
+[data-theme="light"] body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 70% 50% at 15% 0%, var(--color-glow-a), transparent 60%),
+    radial-gradient(ellipse 60% 40% at 85% 100%, var(--color-glow-b), transparent 60%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Cyber: full futuristic backdrop (grid + scanlines + moving aurora) */
+[data-theme="cyber"] body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 80% 50% at 20% 0%, rgba(0, 212, 255, 0.18), transparent 60%),
+    radial-gradient(ellipse 60% 40% at 80% 100%, rgba(120, 60, 255, 0.14), transparent 60%);
+  pointer-events: none;
+  z-index: 0;
+  animation: cyberAurora 14s ease-in-out infinite alternate;
+}
+
+[data-theme="cyber"] body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: var(--fx-grid);
+  background-size: 56px 56px;
+  pointer-events: none;
+  z-index: 0;
+  mask-image: radial-gradient(ellipse 100% 80% at 50% 50%, black 30%, transparent 100%);
+  -webkit-mask-image: radial-gradient(ellipse 100% 80% at 50% 50%, black 30%, transparent 100%);
+}
+
+@keyframes cyberAurora {
+  0%   { background-position: 0% 0%, 100% 100%; opacity: 0.85; }
+  50%  { opacity: 1; }
+  100% { background-position: 30% 20%, 70% 80%; opacity: 0.9; }
+}
+
+#root { position: relative; z-index: 1; }
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 3px;
+  transition: background 0.2s ease;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--color-border-light); }
+
+/* ───────────────── Card entry animation ───────────────── */
+@keyframes cardEnter {
+  0% { opacity: 0; transform: translateY(24px) scale(0.92); filter: blur(4px); }
+  60% { opacity: 1; filter: blur(0); }
+  100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+}
+
+.animate-card-enter {
+  animation: cardEnter 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  opacity: 0;
+}
+
+/* 全 9 个主题都用同一套入场 + 呼吸动画 —— 之前是 cyber/magma/UV
+   才有,现在扩到所有主题,让「整站都活着」。必须写在同一个 animation
+   简写里,否则后面的会覆盖前面的,见上面 [data-theme] 规则旁边
+   的长注释。 */
+[data-theme] .animate-card-enter {
+  animation:
+    cardEnter 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards,
+    cardPulse 4s ease-in-out 0.7s infinite;
+}
+
+/* ───────────────── Ripple ───────────────── */
+@keyframes ripple {
+  to { transform: scale(4); opacity: 0; }
+}
+
+.ripple-container { position: relative; overflow: hidden; }
+.ripple {
+  position: absolute;
+  border-radius: 50%;
+  background: var(--color-accent-glow);
+  transform: scale(0);
+  animation: ripple 0.6s linear forwards;
+  pointer-events: none;
+}
+
+/* ───────────────── Card icon ───────────────── */
+.card-icon {
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  position: relative;
+  transition:
+    transform 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+    background 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+[data-theme="light"] .card-icon {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+.group:hover .card-icon {
+  transform: scale(1.06);
+  background: linear-gradient(135deg, var(--color-accent-glow) 0%, var(--color-bg-card) 100%);
+  border-color: var(--color-accent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 0 0 1px var(--color-accent-glow),
+    0 0 32px var(--color-accent-glow);
+}
+
+/* 注:之前霓虹主题独有的 `.group:hover .card-icon` cyberPulse 动画(1.4s
+   脉冲发光环)和 `.card-icon-svg` 双重 drop-shadow 滤镜已按用户要求删除,
+   让霓虹的卡片悬停效果与紫外一致。 */
+
+.card-icon-svg {
+  transition:
+    transform 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+    filter 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.group:hover .card-icon-svg {
+  transform: scale(1.08);
+  filter: brightness(1.15) drop-shadow(0 0 6px var(--color-accent-glow));
+}
+
+/* ───────────────── Card 3D tilt ───────────────── */
+.card-tilt {
+  transition:
+    transform 0.35s cubic-bezier(0.16, 1, 0.3, 1),
+    background-color 0.25s ease,
+    border-color 0.25s ease,
+    box-shadow 0.25s ease;
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+
+/* Card hover state — moved out of JS so the cardPulse animation
+   (cyber/magma/ultraviolet) doesn't constantly clobber the inline
+   box-shadow that the old JS handlers were trying to set. */
+.tool-card:hover {
+  background: var(--color-bg-card-hover);
+  border-color: var(--color-border-light);
+  box-shadow: var(--shadow-card-hover);
+  /* hover 时的 box-shadow 跟 cardPulse 呼吸动画会同时跑(都改 box-shadow);
+     实际表现是 hover 仍看到呼吸效果(本来就不强),无负面影响。
+     之前那 3 行 cyber 重复规则删掉,通用这条已覆盖所有主题。 */
+}
+
+/* 注:之前霓虹主题独有的卡片四角发光括号(.card-tilt::before/::after)
+   和 hover 时的额外 inset box-shadow 已按用户要求删除,让霓虹卡片的
+   悬停效果与紫外一致。 */
+
+/* 之前霓虹主题独有的 4 个规则块(.card-tilt 角标 / 四角发光括号 ::before
+   和 ::after / hover 时显示括号 / hover 边缘 inset glow)已按用户要求删除,
+   让霓虹的卡片悬停效果与紫外完全一致(都只走 .tool-card:hover 的通用规则
+   + cardPulse 呼吸动画 + cardScan 扫描线)。 */
+
+/* ───────────────── Theme / misc transitions ───────────────── */
+.theme-transition { transition: background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease; }
+.text-balance { text-wrap: balance; }
+.text-pretty { text-wrap: pretty; }
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+input:focus-visible { outline: none; }
+
+/* ───────────────── Density ───────────────── */
+[data-density="compact"] .tool-card { min-height: 200px; padding: 14px; }
+[data-density="compact"] .tool-card .card-icon { width: 48px; height: 48px; }
+[data-density="compact"] .tool-card .card-icon svg { width: 22px; height: 22px; }
+[data-density="compact"] .tool-card .tool-desc { display: none; }
+[data-density="compact"] .tool-card .tool-tags { display: none; }
+
+[data-density="spacious"] .tool-card { min-height: 260px; padding: 24px; }
+[data-density="spacious"] .tool-card .card-icon { width: 68px; height: 68px; }
+[data-density="spacious"] .tool-card .card-icon svg { width: 32px; height: 32px; }
+
+/* ───────────────── Background overrides ───────────────── */
+/* User-picked background color (--user-bg-color) overrides the theme
+   default when the main pane paints itself. Empty = use theme default.
+   多层 background:第一层是图案(噪点/渐变/极光),最后一层是底色 fallback。
+   底色必须放在 shorthand 最后,前面的图案才能叠在它上面。 */
+[data-background="none"] main {
+  background: var(--user-bg-color, var(--color-bg-deep));
+}
+[data-background="subtle"] main {
+  /* 真噪点 —— SVG fractalNoise(--fx-noise)平铺,与底色用 blend-mode 混合。
+     深色主题用 overlay:噪点的亮像素提亮、暗像素压暗,在深底上呈现颗粒感。
+     浅色主题在下面单独 override 成 multiply:让噪点的暗像素压暗白底,
+     避免 overlay 在浅底上把噪点漂白成几乎看不见。 */
+  background:
+    var(--fx-noise) repeat,
+    var(--user-bg-color, var(--color-bg-deep));
+  background-blend-mode: overlay, normal;
+}
+[data-theme="light"][data-background="subtle"] main,
+[data-theme="cream"][data-background="subtle"] main,
+[data-theme="pearl"][data-background="subtle"] main {
+  background-blend-mode: multiply, normal;
+}
+[data-background="gradient"] main {
+  background: linear-gradient(
+    var(--user-bg-gradient-angle, 135deg),
+    var(--user-bg-gradient-from, #1a1a24) 0%,
+    var(--user-bg-gradient-to, #0a0a0f) 100%
+  );
+}
+/* Aurora: radial-gradient "northern lights" using the theme's accent
+   glow color. Two offset color stops create the aurora look. */
+[data-background="aurora"] main {
+  background:
+    radial-gradient(ellipse 80% 60% at 20% 0%,
+      var(--color-accent-glow) 0%,
+      transparent 60%),
+    radial-gradient(ellipse 60% 50% at 80% 100%,
+      var(--color-glow-b) 0%,
+      transparent 60%),
+    var(--user-bg-color, var(--color-bg-deep));
+}
+
+/* ───────────────── Font scale ───────────────── */
+[data-font="sm"]  { font-size: 13px; }
+[data-font="md"]  { font-size: 14px; }
+[data-font="lg"]  { font-size: 15px; }
+
+/* ───────────────── UI scale (zoom-like, applied to the whole app) ───
+   之前的实现是 `html { font-size: calc(15px * var(--user-ui-scale)) }`,
+   依赖 rem 继承 —— 但项目里所有元素都用绝对 px(`text-[13px]`、
+   `w-9 h-9` 等),html 字号根本不被继承,uiScale 实际无效。
+
+   现在改用 CSS `zoom`,所有现代浏览器(Chrome / Edge / Safari / Firefox
+   126+)都支持。应用在 #root 上而不是 html / body —— 否则浏览器原生
+   滚动条会跟着缩放,看起来怪。Modal 是 React 渲染在 #root 内部的
+   (没用 portal),会跟着一起缩放,符合预期。 */
+#root {
+  zoom: var(--user-ui-scale, 1);
+}
+
+/* ───────────────── Motion preference ───────────────── */
+[data-motion="reduced"] *,
+[data-motion="reduced"] *::before,
+[data-motion="reduced"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+/* Cyber: scanline overlay for the whole viewport edge */
+[data-theme="cyber"] main::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: var(--fx-scanlines);
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0.6;
+}

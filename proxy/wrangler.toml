@@ -1,0 +1,32 @@
+# ─────────────────────────────────────────────────────────────────────
+#  Cloudflare Worker — CORS / streaming reverse proxy for AI providers
+#  ─────────────────────────────────────────────────────────────────────
+#  Usage
+#  -----
+#    npx wrangler login          # one-time
+#    npm run deploy:proxy        # deploys the worker
+#
+#  After deploy, wrangler prints a URL like:
+#    https://ai-proxy.<your-subdomain>.workers.dev
+#  Use that as the BASE URL prefix in the app's AI Provider settings:
+#    https://ai-proxy.<your-subdomain>.workers.dev/proxy/minimaxi/anthropic/v1
+# ─────────────────────────────────────────────────────────────────────
+
+name = "ai-tools-proxy"
+main = "worker.js"
+compatibility_date = "2024-09-23"
+
+# Workers free tier: 100,000 requests/day.
+# Move to "paid" plan in the dashboard if you need more.
+
+# Optional: pin a custom route under your own domain
+# (set this in the Cloudflare dashboard for a zone you own, then
+#  uncomment and edit the lines below).
+#
+# routes = [
+#   { pattern = "ai-proxy.your-domain.com/*", custom_domain = true }
+# ]
+#
+# [vars]
+# # If you want to override default behavior globally. Left empty by default.
+# ALLOWED_ORIGIN = ""
