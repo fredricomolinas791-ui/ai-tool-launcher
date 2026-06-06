@@ -1,25 +1,27 @@
 /* ═══════════════════════════════════════════════════════════════════
    AI 狼人杀 —— 主 UI
    ─────────────────────────────────────────────────────────────
-   Phase 1: 5 板子都可选,9 人预女猎白 完整跑通
-           12 人板子点击后展示"敬请期待"占位
-   Phase 2+: 12 人板特殊技能(狼王带人/狼美人殉情/骑士决斗/石像鬼/丘比特)
+   Phase 2-A: 9 人预女猎白 + 12 人狼王守卫 完整跑通
+             其他 3 个 12 人板点进去显示"敬请推出"
    ═══════════════════════════════════════════════════════════════════ */
 
 import { useState, useEffect, useRef } from 'react';
-import { Drama, Sparkles, Moon, ChevronRight, MessageCircle, Crown, AlertTriangle, Play, X } from 'lucide-react';
+import { Drama, Sparkles, Moon, Sun, ChevronRight, MessageCircle, Crown, AlertTriangle, Play, X, Skull, Shield, Users, Swords } from 'lucide-react';
 import { Button } from '../../ui/Button';
 import { useI18n } from '../../../hooks/useI18n';
 import {
-  BOARDS, BOARD_LIST, ROLES, type BoardId, type GameState, type Player,
+  BOARDS, BOARD_LIST, ROLES, type BoardId, type GameState, type Player, type RoleId,
   initGame, loadAIConfig, callAIStream, checkWinner, parseAIDecision,
 } from './engine';
 import type { BoardDef } from './data';
 import { PersonalityRender } from './Personalities';
 
-/* ─────────────────────────────────────────────
+/* ── 哪些板子 Phase 2-A 完整跑通 ── */
+const PLAYABLE_BOARDS: BoardId[] = ['p9-classic', 'p12-wolfking'];
+
+/* ═══════════════════════════════════════════════════════════════════
    板子选择卡片
-   ───────────────────────────────────────────── */
+   ═══════════════════════════════════════════════════════════════════ */
 
 function BoardCard({ board, onSelect, lang, disabled, disabledReason }: {
   board: BoardDef; onSelect: () => void;
@@ -41,121 +43,71 @@ function BoardCard({ board, onSelect, lang, disabled, disabledReason }: {
     >
       <div className="flex items-start gap-3">
         <div className="shrink-0 w-12 h-12 rounded-lg flex items-center justify-center text-2xl"
-          style={{ background: 'var(--color-accent-glow)' }}>
-          🎭
-        </div>
+          style={{ background: 'var(--color-accent-glow)' }}>🎭</div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <h3 className="font-semibold truncate" style={{ color: 'var(--color-text)' }}>
-              {board.name[lang]}
-            </h3>
+            <h3 className="font-semibold truncate" style={{ color: 'var(--color-text)' }}>{board.name[lang]}</h3>
             <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: 'var(--color-accent-glow)', color: 'var(--color-accent)' }}>
               {board.playerCount} {lang === 'zh' ? '人' : 'P'}
             </span>
           </div>
-          <p className="text-xs mt-1 line-clamp-2" style={{ color: 'var(--color-text-muted)' }}>
-            {board.desc[lang]}
-          </p>
+          <p className="text-xs mt-1 line-clamp-2" style={{ color: 'var(--color-text-muted)' }}>{board.desc[lang]}</p>
           <div className="flex items-center gap-2 mt-2 flex-wrap">
-            <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(220,38,38,0.15)', color: '#dc2626' }}>
-              🐺 {wolfCount}
-            </span>
-            <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(34,197,94,0.15)', color: '#16a34a' }}>
-              🛡️ {godCount}
-            </span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(220,38,38,0.15)', color: '#dc2626' }}>🐺 {wolfCount}</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(34,197,94,0.15)', color: '#16a34a' }}>🛡️ {godCount}</span>
           </div>
           {board.feature && (
-            <p className="text-[10px] mt-1.5 italic" style={{ color: 'var(--color-text-muted)' }}>
-              ✨ {board.feature[lang]}
-            </p>
+            <p className="text-[10px] mt-1.5 italic" style={{ color: 'var(--color-text-muted)' }}>✨ {board.feature[lang]}</p>
           )}
         </div>
       </div>
       {disabled && disabledReason && (
         <div className="mt-2 text-[10px] flex items-center gap-1" style={{ color: 'var(--color-text-muted)' }}>
-          <AlertTriangle size={11} />
-          {disabledReason}
+          <AlertTriangle size={11} />{disabledReason}
         </div>
       )}
     </button>
   );
 }
 
-/* ─────────────────────────────────────────────
-   玩家座位(圆形布局)
-   ───────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════
+   玩家座位
+   ═══════════════════════════════════════════════════════════════════ */
 
-function PlayerSeat({ player, isYou, isSpeaking, revealed, onClick }: {
-  player: Player;
-  isYou: boolean;
-  isSpeaking?: boolean;
-  revealed?: boolean;     // 其他人是否被揭晓(用户自己 / 死亡 / 被预言家验过)
-  onClick?: () => void;
+function PlayerSeat({ player, isYou, isSpeaking, revealed }: {
+  player: Player; isYou: boolean; isSpeaking?: boolean; revealed?: boolean;
 }) {
   const role = ROLES[player.role];
-  // 决定显示什么:
-  // - 死亡 → 显示真实身份(经典规则:死亡亮牌)
-  // - 用户自己 → 真实身份
-  // - revealed → 真实身份
-  // - 其他存活玩家 → 占位头像(不暴露)
   const showReal = !player.alive || isYou || revealed;
-  const display = !player.alive
-    ? '💀'
-    : showReal
-      ? role.emoji
-      : '👤';   // 神秘占位
+  const display = !player.alive ? '💀' : showReal ? role.emoji : '👤';
   return (
-    <button
-      onClick={onClick}
-      disabled={!onClick}
-      className="relative group flex flex-col items-center"
-      style={{ width: 72 }}
-    >
+    <div className="relative flex flex-col items-center" style={{ width: 72 }}>
       <div
         className="w-14 h-14 rounded-full flex items-center justify-center text-2xl border-2 transition-all"
         style={{
-          background: player.alive
-            ? (isSpeaking ? 'var(--color-accent-glow)' : 'var(--color-card-bg)')
-            : 'var(--color-bg-deep)',
-          borderColor: isYou
-            ? 'var(--color-accent)'
-            : isSpeaking
-              ? 'var(--color-accent)'
-              : 'var(--color-border-light)',
+          background: player.alive ? (isSpeaking ? 'var(--color-accent-glow)' : 'var(--color-card-bg)') : 'var(--color-bg-deep)',
+          borderColor: isYou ? 'var(--color-accent)' : isSpeaking ? 'var(--color-accent)' : 'var(--color-border-light)',
           opacity: player.alive ? 1 : 0.4,
           boxShadow: isSpeaking ? '0 0 0 4px var(--color-accent-glow)' : 'none',
-          filter: player.alive ? 'none' : 'grayscale(1)',
         }}
-      >
-        {display}
-      </div>
-      <div className="mt-1 text-[10px] font-medium truncate w-full text-center" style={{
-        color: player.alive ? 'var(--color-text)' : 'var(--color-text-muted)',
-      }}>
+      >{display}</div>
+      <div className="mt-1 text-[10px] font-medium truncate w-full text-center" style={{ color: player.alive ? 'var(--color-text)' : 'var(--color-text-muted)' }}>
         {player.id + 1}. {player.name}
       </div>
-      {isYou && (
-        <div className="text-[9px] mt-0.5" style={{ color: 'var(--color-accent)' }}>你</div>
-      )}
+      {isYou && <div className="text-[9px] mt-0.5" style={{ color: 'var(--color-accent)' }}>你</div>}
       {showReal && player.alive && !isYou && (
-        <div className="text-[9px] mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
-          {role.name.zh}
-        </div>
+        <div className="text-[9px] mt-0.5" style={{ color: 'var(--color-text-muted)' }}>{role.name.zh}</div>
       )}
-    </button>
+    </div>
   );
 }
 
-/* ─────────────────────────────────────────────
+/* ═══════════════════════════════════════════════════════════════════
    发言气泡
-   ───────────────────────────────────────────── */
+   ═══════════════════════════════════════════════════════════════════ */
 
 function SpeechBubble({ player, text, streaming, lang, isRevealed }: {
-  player: Player;
-  text: string;
-  streaming?: boolean;
-  lang: 'zh' | 'en';
-  isRevealed?: boolean;
+  player: Player; text: string; streaming?: boolean; lang: 'zh' | 'en'; isRevealed?: boolean;
 }) {
   return (
     <div className="flex gap-2 mb-2 animate-fade-in">
@@ -165,19 +117,12 @@ function SpeechBubble({ player, text, streaming, lang, isRevealed }: {
       </div>
       <div className="flex-1 min-w-0">
         <div className="text-[11px] mb-0.5 flex items-center gap-1.5" style={{ color: 'var(--color-text-muted)' }}>
-          <span className="font-medium" style={{ color: 'var(--color-text)' }}>
-            {player.id + 1}. {player.name}
-          </span>
-          {isRevealed && (
-            <span style={{ color: 'var(--color-accent)' }}>
-              {ROLES[player.role].name.zh}
-            </span>
-          )}
+          <span className="font-medium" style={{ color: 'var(--color-text)' }}>{player.id + 1}. {player.name}</span>
+          {isRevealed && <span style={{ color: 'var(--color-accent)' }}>{ROLES[player.role].name.zh}</span>}
           <PersonalityRender id={player.personality} lang={lang} />
         </div>
         <div className="rounded-lg p-2 text-sm" style={{
-          background: 'var(--color-card-bg)',
-          color: 'var(--color-text)',
+          background: 'var(--color-card-bg)', color: 'var(--color-text)',
           border: '1px solid var(--color-border-light)',
         }}>
           {text || (streaming ? <span style={{ color: 'var(--color-text-muted)' }}>...</span> : '')}
@@ -188,14 +133,13 @@ function SpeechBubble({ player, text, streaming, lang, isRevealed }: {
   );
 }
 
-/* ─────────────────────────────────────────────
-   主游戏
-   ───────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════
+   顶层组件
+   ═══════════════════════════════════════════════════════════════════ */
 
 export function WerewolfGame() {
   const { lang: iLang } = useI18n();
   const lang = (iLang === 'en' ? 'en' : 'zh') as 'zh' | 'en';
-
   const [phase, setPhase] = useState<'select' | 'playing'>('select');
   const [state, setState] = useState<GameState | null>(null);
   const [aiConfig, setAIConfig] = useState<ReturnType<typeof loadAIConfig>>(null);
@@ -215,68 +159,49 @@ export function WerewolfGame() {
         setPhase('playing');
       }} />;
   }
-
-  if (noKey || !aiConfig) {
-    return <NoKeyWarn lang={lang} />;
-  }
-
+  if (noKey || !aiConfig) return <NoKeyWarn lang={lang} />;
   return <GameRunner state={state} aiConfig={aiConfig} lang={lang}
     onExit={() => { setState(null); setPhase('select'); }} />;
 }
 
-/* ─────────────────────────────────────────────
-   板子选择
-   ───────────────────────────────────────────── */
-
 function BoardSelect({ lang, noKey, onStart }: {
-  lang: 'zh' | 'en';
-  noKey: boolean;
-  onStart: (boardId: BoardId) => void;
+  lang: 'zh' | 'en'; noKey: boolean; onStart: (boardId: BoardId) => void;
 }) {
   return (
     <div className="space-y-4">
       <div className="rounded-xl p-4" style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-border-light)' }}>
         <div className="flex items-center gap-2 mb-2">
           <Drama size={20} style={{ color: 'var(--color-accent)' }} />
-          <h2 className="text-lg font-semibold" style={{ color: 'var(--color-text)' }}>
-            {lang === 'zh' ? 'AI 狼人杀' : 'AI Werewolf'}
-          </h2>
+          <h2 className="text-lg font-semibold" style={{ color: 'var(--color-text)' }}>{lang === 'zh' ? 'AI 狼人杀' : 'AI Werewolf'}</h2>
         </div>
         <p className="text-xs leading-relaxed" style={{ color: 'var(--color-text-muted)' }}>
           {lang === 'zh'
             ? '你是 1 个真人 + 5-11 个 LLM 玩家。系统随机分配角色,夜晚闭眼行动,白天发言投票,流式观看 AI 玩家斗智斗勇。'
-            : 'You + 5-11 LLM players. Random role assignment, night actions, day speeches & voting. Watch the LLM chaos unfold.'}
+            : 'You + 5-11 LLM players. Random role assignment, night actions, day speeches & voting.'}
         </p>
         {noKey && (
           <div className="mt-3 p-2 rounded text-xs flex items-start gap-2" style={{ background: 'rgba(220,38,38,0.1)', color: '#dc2626' }}>
             <AlertTriangle size={14} className="shrink-0 mt-0.5" />
-            <div>
-              {lang === 'zh'
-                ? '未检测到 AI API Key,请先去「设置 → API Key 配置」添加至少一个 provider 的 key。'
-                : 'No AI API key detected. Add one in Settings → API Key first.'}
-            </div>
+            <div>{lang === 'zh' ? '未检测到 AI API Key,请先去「设置 → API Key 配置」添加至少一个 provider 的 key。' : 'No AI API key detected. Add one in Settings → API Key first.'}</div>
           </div>
         )}
       </div>
-
       <div className="space-y-2">
         <h3 className="text-sm font-medium flex items-center gap-1.5" style={{ color: 'var(--color-text)' }}>
-          <Sparkles size={14} style={{ color: 'var(--color-accent)' }} />
-          {lang === 'zh' ? '选择板子' : 'Pick a board'}
+          <Sparkles size={14} style={{ color: 'var(--color-accent)' }} />{lang === 'zh' ? '选择板子' : 'Pick a board'}
         </h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-          {BOARD_LIST.map(b => (
-            <BoardCard
-              key={b.id}
-              board={b}
-              lang={lang}
-              disabled={b.id !== 'p9-classic' || noKey}
-              disabledReason={b.id !== 'p9-classic'
-                ? (lang === 'zh' ? '该板子即将推出,先玩 9 人经典局' : 'Coming soon — try 9-player classic')
-                : undefined}
-              onSelect={() => onStart(b.id)}
-            />
-          ))}
+          {BOARD_LIST.map(b => {
+            const isPlayable = PLAYABLE_BOARDS.includes(b.id);
+            return (
+              <BoardCard key={b.id} board={b} lang={lang}
+                disabled={!isPlayable || noKey}
+                disabledReason={!isPlayable
+                  ? (lang === 'zh' ? '该板子即将推出,先玩 9 人经典 / 12 人狼王守卫' : 'Coming soon — try 9P classic / 12P wolf king')
+                  : undefined}
+                onSelect={() => onStart(b.id)} />
+            );
+          })}
         </div>
       </div>
     </div>
@@ -288,29 +213,22 @@ function NoKeyWarn({ lang }: { lang: 'zh' | 'en' }) {
     <div className="p-4 rounded-xl" style={{ background: 'rgba(220,38,38,0.1)', color: '#dc2626' }}>
       <div className="flex items-center gap-2">
         <AlertTriangle size={18} />
-        <div className="text-sm">
-          {lang === 'zh'
-            ? '请先在「设置 → API Key 配置」中添加至少一个 provider 的 API key。'
-            : 'Add an API key in Settings → API Key first.'}
-        </div>
+        <div className="text-sm">{lang === 'zh' ? '请先在「设置 → API Key 配置」中添加至少一个 provider 的 API key。' : 'Add an API key in Settings → API Key first.'}</div>
       </div>
     </div>
   );
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   游戏运行器(主流程)
+   游戏运行器 —— 完整循环
    ═══════════════════════════════════════════════════════════════════ */
 
 function GameRunner({ state: initial, aiConfig, lang, onExit }: {
-  state: GameState;
-  aiConfig: NonNullable<ReturnType<typeof loadAIConfig>>;
-  lang: 'zh' | 'en';
-  onExit: () => void;
+  state: GameState; aiConfig: NonNullable<ReturnType<typeof loadAIConfig>>;
+  lang: 'zh' | 'en'; onExit: () => void;
 }) {
   const [state, setState] = useState<GameState>(initial);
   const [streamingText, setStreamingText] = useState<{ playerId: number; text: string } | null>(null);
-  const streamAbort = useRef<(() => void) | null>(null);
 
   const alivePlayers = state.players.filter(p => p.alive);
   const winner = checkWinner(state);
@@ -320,26 +238,14 @@ function GameRunner({ state: initial, aiConfig, lang, onExit }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [winner]);
 
-  const advance = () => {
-    if (state.phase === 'role-reveal') {
-      setState(s => ({ ...s, phase: 'night', round: s.round + 1 }));
-    }
-  };
-
   const aiSpeak = (playerId: number, systemPrompt: string, userPrompt: string): Promise<string> => {
     return new Promise<string>((resolve) => {
       let full = '';
       setStreamingText({ playerId, text: '' });
-      const h = callAIStream(
-        aiConfig,
-        systemPrompt,
-        userPrompt,
-        (chunk: string) => {
-          full += chunk;
-          setStreamingText({ playerId, text: full });
-        },
-      );
-      streamAbort.current = h.abort;
+      const h = callAIStream(aiConfig, systemPrompt, userPrompt, (chunk: string) => {
+        full += chunk;
+        setStreamingText({ playerId, text: full });
+      });
       h.promise.then((text: string) => {
         setStreamingText(null);
         const parsed = parseAIDecision(text);
@@ -354,7 +260,6 @@ function GameRunner({ state: initial, aiConfig, lang, onExit }: {
     });
   };
 
-  /* ───── 渲染 ───── */
   return (
     <div className="space-y-3">
       {/* 顶部信息条 */}
@@ -364,7 +269,7 @@ function GameRunner({ state: initial, aiConfig, lang, onExit }: {
           <Drama size={18} style={{ color: 'var(--color-accent)' }} />
           <div>
             <div className="text-sm font-medium" style={{ color: 'var(--color-text)' }}>
-              {BOARDS[state.boardId].name[lang]} · {lang === 'zh' ? '第' : 'R'}{state.round}{lang === 'zh' ? '夜' : ''}
+              {BOARDS[state.boardId].name[lang]} · {lang === 'zh' ? '第' : 'R'}{state.round}{lang === 'zh' ? '轮' : ''}
             </div>
             <div className="text-[10px]" style={{ color: 'var(--color-text-muted)' }}>
               {lang === 'zh' ? '存活' : 'Alive'} {alivePlayers.length}/{state.players.length} ·{' '}
@@ -382,65 +287,45 @@ function GameRunner({ state: initial, aiConfig, lang, onExit }: {
       <div className="p-3 rounded-xl" style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-border-light)' }}>
         <div className="flex flex-wrap gap-2 justify-center">
           {state.players.map(p => {
-            // 用户已揭晓的人:自己 + 死亡 + 用户(预言家)验过的
             const userP = state.players[state.userId];
             const seerCheckedIds = userP.privateMemory.seerChecks.map(c => c.targetId);
             const revealed = p.id === state.userId || !p.alive || seerCheckedIds.includes(p.id);
             return (
-              <PlayerSeat
-                key={p.id}
-                player={p}
+              <PlayerSeat key={p.id} player={p}
                 isYou={p.id === state.userId}
                 isSpeaking={streamingText?.playerId === p.id}
-                revealed={revealed}
-              />
+                revealed={revealed} />
             );
           })}
         </div>
       </div>
 
       {/* 当前阶段 UI */}
-      {state.phase === 'role-reveal' && (
-        <RoleReveal state={state} lang={lang} onContinue={advance} />
-      )}
-      {state.phase === 'night' && (
-        <NightPanel state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />
-      )}
-      {state.phase === 'gameover' && winner && (
-        <GameOver state={state} winner={winner} lang={lang} onExit={onExit} />
-      )}
+      {state.phase === 'role-reveal' && <RoleRevealPanel state={state} lang={lang} onContinue={() => setState(s => ({ ...s, phase: 'night', round: s.round + 1 }))} />}
+      {state.phase === 'night' && <NightPanel state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
+      {state.phase === 'day-announce' && <DayAnnounce state={state} setState={setState} lang={lang} />}
+      {state.phase === 'day-discuss' && <DayDiscuss state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
+      {state.phase === 'day-vote' && <DayVote state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
+      {state.phase === 'hunter-shoot' && <HunterShoot state={state} setState={setState} lang={lang} />}
+      {state.phase === 'gameover' && winner && <GameOver state={state} winner={winner} lang={lang} onExit={onExit} />}
 
-      {/* 发言流 */}
-      {state.speeches.length > 0 && (
-        <div className="p-3 rounded-xl max-h-80 overflow-y-auto"
+      {/* 发言流(滚动到最新) */}
+      {(state.speeches.length > 0 || streamingText) && state.phase !== 'gameover' && (
+        <div className="p-3 rounded-xl max-h-72 overflow-y-auto"
           style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-border-light)' }}>
           <div className="text-[11px] mb-2 flex items-center gap-1.5" style={{ color: 'var(--color-text-muted)' }}>
-            <MessageCircle size={11} />
-            {lang === 'zh' ? '发言记录' : 'Speeches'}
+            <MessageCircle size={11} />{lang === 'zh' ? '发言记录' : 'Speeches'}
           </div>
-          {state.speeches.slice(-15).map((sp: import('./engine').SpeechRecord, i: number) => {
+          {state.speeches.slice(-12).map((sp, i) => {
             const userP = state.players[state.userId];
             const seerCheckedIds = userP.privateMemory.seerChecks.map(c => c.targetId);
             const p = state.players[sp.playerId];
             const isRevealed = sp.playerId === state.userId || !p.alive || seerCheckedIds.includes(sp.playerId);
-            return (
-              <SpeechBubble
-                key={i}
-                player={p}
-                text={sp.text}
-                lang={lang}
-                isRevealed={isRevealed}
-              />
-            );
+            return <SpeechBubble key={i} player={p} text={sp.text} lang={lang} isRevealed={isRevealed} />;
           })}
           {streamingText && (
-            <SpeechBubble
-              player={state.players[streamingText.playerId]}
-              text={streamingText.text}
-              streaming
-              lang={lang}
-              isRevealed
-            />
+            <SpeechBubble player={state.players[streamingText.playerId]} text={streamingText.text}
+              streaming lang={lang} isRevealed />
           )}
         </div>
       )}
@@ -448,135 +333,126 @@ function GameRunner({ state: initial, aiConfig, lang, onExit }: {
   );
 }
 
-/* ─────────────────────────────────────────────
-   角色公布(开局)
-   ───────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════
+   角色公布
+   ═══════════════════════════════════════════════════════════════════ */
 
-function RoleReveal({ state, lang, onContinue }: {
-  state: GameState; lang: 'zh' | 'en'; onContinue: () => void;
-}) {
+function RoleRevealPanel({ state, lang, onContinue }: { state: GameState; lang: 'zh' | 'en'; onContinue: () => void }) {
   const userP = state.players[state.userId];
   const role = ROLES[userP.role];
+  // 狼人/狼王/狼美人/石像鬼 队友可见
+  let extra = '';
+  if (userP.faction === 'wolf' && userP.privateMemory.wolfTeammates.length) {
+    const mates = userP.privateMemory.wolfTeammates.map(id => `${id + 1}号 ${state.players[id].name}`).join('、');
+    extra = lang === 'zh' ? `\n🐺 你的狼队友:${mates}` : `\n🐺 Your wolf pack: ${mates}`;
+  }
   return (
-    <div className="p-6 rounded-xl text-center" style={{
-      background: 'var(--color-card-bg)',
-      border: '1px solid var(--color-accent)',
-    }}>
+    <div className="p-6 rounded-xl text-center" style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-accent)' }}>
       <div className="text-5xl mb-2">{role.emoji}</div>
-      <h3 className="text-xl font-bold" style={{ color: 'var(--color-text)' }}>
-        {lang === 'zh' ? '你的身份是' : 'Your role is'}: {role.name[lang]}
+      <h3 className="text-xl font-bold whitespace-pre-line" style={{ color: 'var(--color-text)' }}>
+        {lang === 'zh' ? '你的身份是' : 'Your role is'}: {role.name[lang]}{extra}
       </h3>
-      <p className="text-sm mt-2" style={{ color: 'var(--color-text-muted)' }}>
-        {role.shortDesc[lang]}
-      </p>
-      <p className="text-xs mt-3 px-4" style={{ color: 'var(--color-text-muted)' }}>
-        {role.skillHint[lang]}
-      </p>
+      <p className="text-sm mt-2" style={{ color: 'var(--color-text-muted)' }}>{role.shortDesc[lang]}</p>
+      <p className="text-xs mt-2 px-4" style={{ color: 'var(--color-text-muted)' }}>{role.skillHint[lang]}</p>
       <Button onClick={onContinue} className="mt-4">
-        <Play size={14} className="mr-1.5" />
-        {lang === 'zh' ? '进入夜晚' : 'Enter Night'}
+        <Play size={14} className="mr-1.5" />{lang === 'zh' ? '进入夜晚' : 'Enter Night'}
       </Button>
     </div>
   );
 }
 
-/* ─────────────────────────────────────────────
-   夜晚面板(简化版,只做 9 人预女猎白)
-   ───────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════
+   夜晚面板
+   ── 按 nightOrder 顺序,所有 alive 的 night-action 角色依次行动
+   ── AI 角色:自动调用,记录到 privateMemory
+   ── 用户角色:显示 UI 让用户选
+   ═══════════════════════════════════════════════════════════════════ */
 
 function NightPanel({ state, setState, lang, aiSpeak }: {
-  state: GameState;
-  setState: (updater: (s: GameState) => GameState) => void;
+  state: GameState; setState: (updater: (s: GameState) => GameState) => void;
   lang: 'zh' | 'en';
   aiSpeak: (playerId: number, system: string, user: string) => Promise<string>;
 }) {
-  const [step, setStep] = useState(0); // 0=狼人 1=预言家 2=女巫 3=结算
+  // 夜晚行动队列(按 nightOrder 排序)
+  const actions = useRef<{ role: RoleId; playerId: number }[]>([]);
+  const [actionIdx, setActionIdx] = useState(0);
   const [busy, setBusy] = useState(false);
 
-  const userP = state.players[state.userId];
-  const isSeer = userP.role === 'seer';
-  const isWitch = userP.role === 'witch';
+  // 初始化行动队列
+  useEffect(() => {
+    const aliveRoles = state.players.filter(p => p.alive && ROLES[p.role].hasNightAction);
+    actions.current = aliveRoles
+      .map(p => ({ role: p.role, playerId: p.id }))
+      .sort((a, b) => ROLES[a.role].nightOrder - ROLES[b.role].nightOrder);
+    setActionIdx(0);
+  }, [state.round]);
 
-  const advanceStep = async () => {
+  const cur = actions.current[actionIdx];
+
+  // 推进一个行动
+  const runAction = async () => {
+    if (!cur) return;
     setBusy(true);
     try {
-      if (step === 0) {
-        // 狼人阶段
-        const wolf = state.players.find(p => p.alive && p.faction === 'wolf' && p.id !== state.userId);
-        if (wolf) {
-          const sys = buildWolfSystemPrompt(wolf, state, lang);
-          const usr = lang === 'zh'
-            ? '请用 JSON 格式输出:{"speech":"你的发言","target":被杀玩家的座位号(1-based)}。先跟队友协商,说出你的看法,最后用 JSON 决定。'
-            : 'Output JSON: {"speech":"your speech","target":target seat (1-based)}. Discuss with team first, then output JSON.';
-          await aiSpeak(wolf.id, sys, usr);
-        }
-        setStep(1);
-      } else if (step === 1) {
-        // 预言家阶段
-        if (!isSeer) {
-          const seer = state.players.find(p => p.alive && p.role === 'seer');
-          if (seer) {
-            const sys = buildSeerSystemPrompt(seer, state, lang);
-            const usr = lang === 'zh'
-              ? '输出 JSON:{"speech":"你的发言(可以说今天验了谁)","target":被查验者的座位号(1-based)}'
-              : 'Output JSON:{"speech":"your speech (you can reveal who you checked)","target":target seat (1-based)}';
-            await aiSpeak(seer.id, sys, usr);
-            const lastSp = state.speeches[state.speeches.length - 1];
-            if (lastSp && lastSp.playerId === seer.id) {
-              const target = parseAIDecision(lastSp.text).decision;
-              if (target !== undefined && target >= 0 && target < state.players.length) {
-                setState(s => {
-                  const isWolf = s.players[target].faction === 'wolf';
-                  return {
-                    ...s,
-                    players: s.players.map((p, i) => i === seer.id
-                      ? { ...p, privateMemory: { ...p.privateMemory, seerChecks: [...p.privateMemory.seerChecks, { targetId: target, isWolf }] } }
-                      : p),
-                  };
-                });
-              }
-            }
-          }
-        }
-        setStep(2);
-      } else if (step === 2) {
-        // 女巫阶段
-        if (!isWitch) {
-          const witch = state.players.find(p => p.alive && p.role === 'witch');
-          if (witch) {
-            const sys = buildWitchSystemPrompt(witch, state, lang);
-            const usr = lang === 'zh'
-              ? '输出 JSON:{"speech":"你的发言","antidote":true/false,"poison":true/false,"poisonTarget":毒杀目标座位号(1-based,不用毒可不填)}'
-              : 'Output JSON:{"speech":"your speech","antidote":true/false,"poison":true/false,"poisonTarget":target seat (1-based, omit if no poison)}';
-            await aiSpeak(witch.id, sys, usr);
-          }
-        }
-        setStep(3);
-      } else if (step === 3) {
-        // 结算
-        setState(s => {
-          const aliveNonWolves = s.players.filter(p => p.alive && p.faction !== 'wolf');
-          if (aliveNonWolves.length === 0) return { ...s, phase: 'day-announce' };
-          const victim = aliveNonWolves[Math.floor(Math.random() * aliveNonWolves.length)];
-          return {
-            ...s,
-            players: s.players.map(p => p.id === victim.id ? { ...p, alive: false } : p),
-            deadThisNight: [victim.id],
-            publicLog: [...s.publicLog, { kind: 'death', day: s.round, playerId: victim.id, text: `${victim.id + 1}号 ${victim.name} 在夜里被杀了` }],
-            phase: 'day-announce',
-          };
-        });
+      if (cur.playerId === state.userId) {
+        // 用户操作 — 不在这里跑,等用户点 UI
+        return;
+      }
+      // AI 玩家行动
+      const actor = state.players[cur.playerId];
+      const target = await runAIAction(actor, state, lang, aiSpeak);
+      if (target !== null) {
+        // 应用行动结果
+        setState(s => applyNightAction(s, cur.role, cur.playerId, target, lang));
       }
     } finally {
       setBusy(false);
+      setActionIdx(i => i + 1);
     }
   };
 
+  // 用户操作确认
+  const onUserAction = (target: number | null) => {
+    if (!cur) return;
+    setState(s => applyNightAction(s, cur.role, cur.playerId, target, lang));
+    setActionIdx(i => i + 1);
+  };
+
+  // 全部行动完成后结算
+  useEffect(() => {
+    if (actionIdx >= actions.current.length && actions.current.length > 0 && !busy) {
+      // 结算夜晚 → 白天公布
+      setState(s => resolveNight(s, lang));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [actionIdx]);
+
+  // 触发 AI 行动(开场或下一个 AI)
+  useEffect(() => {
+    if (busy) return;
+    if (!cur) return;
+    if (cur.playerId === state.userId) return; // 等用户
+    if (actionIdx === 0) {
+      // 第一次
+      runAction();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cur]);
+
   if (state.phase !== 'night') return null;
-  const stepLabel = [lang === 'zh' ? '🐺 狼人请睁眼' : '🐺 Wolves wake',
-                     lang === 'zh' ? '🔮 预言家请睁眼' : '🔮 Seer wakes',
-                     lang === 'zh' ? '💊 女巫请睁眼' : '💊 Witch wakes',
-                     lang === 'zh' ? '结算中' : 'Resolving'][step];
+
+  if (!cur) {
+    return (
+      <div className="p-4 rounded-xl text-center" style={{ background: 'var(--color-bg-deep)' }}>
+        <div className="text-sm" style={{ color: 'var(--color-text-muted)' }}>{lang === 'zh' ? '夜晚结算中…' : 'Resolving…'}</div>
+      </div>
+    );
+  }
+
+  const actorName = state.players[cur.playerId].name;
+  const isMe = cur.playerId === state.userId;
+  const role = ROLES[cur.role];
+  const stepLabel = `${role.emoji} ${isMe ? (lang === 'zh' ? '你' : 'You') : actorName} · ${role.name[lang]}`;
 
   return (
     <div className="p-4 rounded-xl" style={{ background: 'var(--color-bg-deep)', border: '1px solid var(--color-accent)' }}>
@@ -590,55 +466,553 @@ function NightPanel({ state, setState, lang, aiSpeak }: {
         <div className="text-center text-sm py-4" style={{ color: 'var(--color-text-muted)' }}>
           {lang === 'zh' ? 'AI 玩家正在思考…' : 'AI thinking…'}
         </div>
+      ) : isMe ? (
+        <UserNightActionUI role={cur.role} state={state} lang={lang} onConfirm={onUserAction} />
       ) : (
         <div className="text-center">
-          {step < 3 && (
-            <Button onClick={advanceStep}>
-              {lang === 'zh' ? '继续' : 'Continue'} <ChevronRight size={14} className="ml-1" />
-            </Button>
-          )}
+          <Button onClick={runAction}>
+            {lang === 'zh' ? '继续' : 'Continue'} <ChevronRight size={14} className="ml-1" />
+          </Button>
         </div>
       )}
     </div>
   );
 }
 
-/* ─────────────────────────────────────────────
-   系统 prompt 构建(在 Game.tsx 里内联,避免 engine 太大)
-   ───────────────────────────────────────────── */
+/* ── 用户夜晚行动 UI ── */
+function UserNightActionUI({ role, state, lang, onConfirm }: {
+  role: RoleId; state: GameState; lang: 'zh' | 'en';
+  onConfirm: (target: number | null) => void;
+}) {
+  const userP = state.players[state.userId];
+  const aliveOthers = state.players.filter(p => p.alive && p.id !== state.userId);
+  const [selected, setSelected] = useState<number | null>(null);
 
-function buildWolfSystemPrompt(p: Player, state: GameState, lang: 'zh' | 'en'): string {
-  const role = ROLES.werewolf;
-  const mates = p.privateMemory.wolfTeammates.map(id => `${id + 1}号 ${state.players[id].name}`).join('、');
-  const alive = state.players.filter(x => x.alive).map(x => `${x.id + 1}号 ${x.name}`).join('、');
-  return lang === 'zh'
-    ? `你是狼人杀游戏中的"${p.name}"。\n身份:狼人(🐺) — ${role.shortDesc.zh}\n你的狼队友:${mates}\n存活玩家(${state.players.filter(x => x.alive).length}人):${alive}\n\n你的任务:跟狼队友协商,选择今晚要杀的人。\n\n输出规则:必须用 JSON 格式输出\n- "speech":先跟队友说几句话(30-100 字),讨论今晚杀谁,语气紧张/团结\n- "target":被杀的玩家座位号(1-based)\n\n保持狼人本色,会演好人。`
-    : `You are "${p.name}" in Werewolf.\nRole: Werewolf (🐺) — ${role.shortDesc.en}\nYour wolf teammates: ${mates}\nAlive (${state.players.filter(x => x.alive).length}): ${alive}\n\nMission: coordinate with team to choose tonight's victim.\n\nOutput JSON:\n- "speech": discuss with team (30-100 words), tense/united tone\n- "target": victim seat (1-based)\n\nAct as a wolf who can hide as good.`;
+  // 守卫:不能连守同一人
+  if (role === 'guard') {
+    const lastTarget = userP.privateMemory.guardLastTargetId;
+    return (
+      <div>
+        <p className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>
+          {lang === 'zh' ? '请选择今晚要守护的人:' : 'Choose who to guard:'}
+        </p>
+        <div className="flex flex-wrap gap-1.5 justify-center">
+          {aliveOthers.map(p => {
+            const disabled = p.id === lastTarget;
+            return (
+              <button key={p.id} onClick={() => !disabled && setSelected(p.id)} disabled={disabled}
+                className="px-2 py-1 rounded text-xs"
+                style={{
+                  background: selected === p.id ? 'var(--color-accent)' : 'var(--color-card-bg)',
+                  color: selected === p.id ? '#fff' : disabled ? 'var(--color-text-muted)' : 'var(--color-text)',
+                  opacity: disabled ? 0.4 : 1, cursor: disabled ? 'not-allowed' : 'pointer',
+                }}>
+                {p.id + 1}.{p.name}{disabled && (lang === 'zh' ? ' (上轮已守)' : ' (guarded last)')}
+              </button>
+            );
+          })}
+        </div>
+        <div className="text-center mt-3">
+          <Button onClick={() => onConfirm(selected)} disabled={selected === null}>
+            {lang === 'zh' ? '守护' : 'Guard'} <Shield size={14} className="ml-1" />
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // 预言家 / 狼 / 狼王 / 狼美人:选一个目标
+  if (role === 'seer' || role === 'werewolf' || role === 'wolfking' || role === 'wolfbeauty') {
+    const titles: Partial<Record<RoleId, { zh: string; en: string }>> = {
+      werewolf: { zh: '请选择今晚要杀的人:', en: 'Choose tonight\'s victim:' },
+      wolfking: { zh: '请选择今晚要杀的人(你是狼王):', en: 'Choose victim (you\'re Wolf King):' },
+      wolfbeauty: { zh: '请选择今晚要杀的人(你是狼美人):', en: 'Choose victim (you\'re Wolf Beauty):' },
+      seer: { zh: '请选择要查验的人:', en: 'Choose who to verify:' },
+    };
+    return (
+      <div>
+        <p className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>{titles[role]?.[lang] ?? ''}</p>
+        <div className="flex flex-wrap gap-1.5 justify-center">
+          {aliveOthers.map(p => (
+            <button key={p.id} onClick={() => setSelected(p.id)}
+              className="px-2 py-1 rounded text-xs"
+              style={{
+                background: selected === p.id ? 'var(--color-accent)' : 'var(--color-card-bg)',
+                color: selected === p.id ? '#fff' : 'var(--color-text)',
+              }}>
+              {p.id + 1}.{p.name}
+            </button>
+          ))}
+        </div>
+        <div className="text-center mt-3">
+          <Button onClick={() => onConfirm(selected)} disabled={selected === null}>
+            {lang === 'zh' ? '确认' : 'Confirm'} <ChevronRight size={14} className="ml-1" />
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // 女巫:可选救 / 毒 / 跳过
+  if (role === 'witch') {
+    const mem = userP.privateMemory;
+    const [useAntidote, setUseAntidote] = useState(false);
+    const [poisonTarget, setPoisonTarget] = useState<number | null>(null);
+    // 简单化:系统告诉女巫"今晚狼人想杀的人是 X 号"
+    // (实际:从 state.deadThisNight 找,现在还没结算,假定为第一个非狼的随机)
+    return (
+      <div>
+        <p className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>
+          {lang === 'zh' ? '今晚狼人想杀 1 个好人(系统已随机选好)。你可以:' : 'Wolves killed one player. You can:'}
+        </p>
+        <div className="space-y-1.5">
+          <label className="flex items-center gap-2 text-xs">
+            <input type="checkbox" checked={useAntidote} disabled={mem.witchAntidoteUsed}
+              onChange={e => setUseAntidote(e.target.checked)} />
+            💊 {lang === 'zh' ? '使用解药' : 'Use antidote'} {mem.witchAntidoteUsed ? '(已用)' : '(unused)'}
+          </label>
+          <div>
+            <label className="flex items-center gap-2 text-xs">
+              <input type="checkbox" checked={poisonTarget !== null} disabled={mem.witchPoisonUsed}
+                onChange={e => setPoisonTarget(e.target.checked ? (aliveOthers[0]?.id ?? null) : null)} />
+              ☠️ {lang === 'zh' ? '使用毒药(选一个人杀)' : 'Use poison (kill someone)'} {mem.witchPoisonUsed ? '(已用)' : '(unused)'}
+            </label>
+            {poisonTarget !== null && (
+              <div className="flex flex-wrap gap-1 mt-1 ml-5">
+                {aliveOthers.map(p => (
+                  <button key={p.id} onClick={() => setPoisonTarget(p.id)}
+                    className="px-1.5 py-0.5 rounded text-[10px]"
+                    style={{
+                      background: poisonTarget === p.id ? 'var(--color-accent)' : 'var(--color-card-bg)',
+                      color: poisonTarget === p.id ? '#fff' : 'var(--color-text)',
+                    }}>{p.id + 1}.{p.name}</button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="text-center mt-3">
+          <Button onClick={() => onConfirm(poisonTarget)}>
+            {lang === 'zh' ? '确认行动' : 'Confirm'} <ChevronRight size={14} className="ml-1" />
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // 石像鬼/丘比特 默认占位(完整版后续实现)
+  return (
+    <div className="text-center">
+      <p className="text-xs mb-3" style={{ color: 'var(--color-text-muted)' }}>
+        {lang === 'zh' ? `你(${ROLES[role].name.zh})的行动(简化版:跳过)` : `Your ${ROLES[role].name.en} action (simplified: skip)`}
+      </p>
+      <Button onClick={() => onConfirm(null)}>
+        {lang === 'zh' ? '跳过' : 'Skip'} <ChevronRight size={14} className="ml-1" />
+      </Button>
+    </div>
+  );
 }
 
-function buildSeerSystemPrompt(p: Player, state: GameState, lang: 'zh' | 'en'): string {
-  const checks = p.privateMemory.seerChecks.map(c => `${c.targetId + 1}号 → ${c.isWolf ? '狼人' : '好人'}`).join('、');
-  const alive = state.players.filter(x => x.alive).map(x => `${x.id + 1}号 ${x.name}`).join('、');
-  return lang === 'zh'
-    ? `你是"${p.name}",预言家(🔮)。\n存活玩家:${alive}\n${checks ? `你已查验:${checks}\n` : ''}今晚选择一名玩家查验身份。\n\n输出 JSON:\n- "speech":你可以说几句讨论/伪装(30-100 字),预言家也可以选择沉默以隐藏身份\n- "target":被查验者的座位号(1-based)\n\n预言家通常会在白天跳出来公布查验结果,但你也可以选择隐藏(被狼发现的预言家第一晚就被刀了)。`
-    : `You are "${p.name}", the Seer (🔮).\nAlive: ${alive}\n${checks ? `You have checked: ${checks}\n` : ''}Choose one player to verify tonight.\n\nOutput JSON:\n- "speech": discuss or stay silent (30-100 words), seer can hide\n- "target": target seat (1-based)\n\nSeer usually claims on day 1, but can hide to survive.`;
+/* ═══════════════════════════════════════════════════════════════════
+   夜晚行动逻辑(应用 + 结算)
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* 跑一个 AI 玩家的夜晚行动(返回 target id 或 null) */
+async function runAIAction(
+  actor: Player, state: GameState, lang: 'zh' | 'en',
+  aiSpeak: (id: number, sys: string, usr: string) => Promise<string>,
+): Promise<number | null> {
+  const sys = buildNightPrompt(actor, state, lang);
+  const usr = lang === 'zh'
+    ? '请用 JSON 格式输出:{"speech":"你的发言(可选)","target":你的目标座位号(1-based,无目标填 0)}'
+    : 'Output JSON: {"speech":"your speech (optional)","target":target seat (1-based, 0 if none)}';
+  await aiSpeak(actor.id, sys, usr);
+  // 从最近一条发言中解析 target
+  const lastSp = state.speeches[state.speeches.length - 1];
+  if (lastSp && lastSp.playerId === actor.id) {
+    const target = parseAIDecision(lastSp.text).decision;
+    if (target !== undefined && target >= 0 && target < state.players.length) {
+      return target === 0 ? null : target - 1; // 0 表示无目标
+    }
+  }
+  return null;
 }
 
-function buildWitchSystemPrompt(p: Player, state: GameState, lang: 'zh' | 'en'): string {
-  const mem = p.privateMemory;
-  const alive = state.players.filter(x => x.alive).map(x => `${x.id + 1}号 ${x.name}`).join('、');
-  return lang === 'zh'
-    ? `你是"${p.name}",女巫(💊)。\n存活玩家:${alive}\n解药:${mem.witchAntidoteUsed ? '已用' : '未用'}  毒药:${mem.witchPoisonUsed ? '已用' : '未用'}\n今晚狼人杀了 1 个人(系统会公布),你可以选择是否使用解药救人 / 毒药杀人。\n\n输出 JSON:\n- "speech":你的发言(30-100 字)\n- "antidote":true/false(是否用解药)\n- "poison":true/false(是否用毒药)\n- "poisonTarget":座位号(如果用毒药,1-based)\n\n注意:解药和毒药整局各只能用一次。`
-    : `You are "${p.name}", the Witch (💊).\nAlive: ${alive}\nAntidote: ${mem.witchAntidoteUsed ? 'used' : 'unused'}  Poison: ${mem.witchPoisonUsed ? 'used' : 'unused'}\nWolf killed one player tonight (system will tell you). Choose to use antidote/poison.\n\nOutput JSON:\n- "speech": your speech (30-100 words)\n- "antidote": true/false\n- "poison": true/false\n- "poisonTarget": seat (1-based, if using poison)\n\nNote: each usable only once per game.`;
+/* 应用一个夜晚行动到 GameState */
+function applyNightAction(s: GameState, role: RoleId, actorId: number, target: number | null, _lang: 'zh' | 'en'): GameState {
+  const players = s.players;
+  switch (role) {
+    case 'werewolf':
+    case 'wolfking':
+    case 'wolfbeauty': {
+      if (target === null) return s;
+      // 记录狼队决定的杀(暂存到 publicLog,等结算用)
+      return {
+        ...s,
+        publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: `🐺 狼队选择目标:${target + 1}号` }],
+        players: players.map(p => p.id === actorId
+          ? { ...p, privateMemory: { ...p.privateMemory, /* wolf vote 共用 */ } }
+          : p),
+        // 暂存到 deadThisNight 第一个
+        deadThisNight: [target, ...s.deadThisNight.filter(id => id !== target)],
+      };
+    }
+    case 'seer': {
+      if (target === null) return s;
+      const isWolf = players[target].faction === 'wolf';
+      return {
+        ...s,
+        players: players.map((p, i) => i === actorId
+          ? { ...p, privateMemory: { ...p.privateMemory, seerChecks: [...p.privateMemory.seerChecks, { targetId: target, isWolf }] } }
+          : p),
+      };
+    }
+    case 'witch': {
+      if (target === null) {
+        // 仅用解药
+        return {
+          ...s,
+          players: players.map((p, i) => i === actorId
+            ? { ...p, privateMemory: { ...p.privateMemory, witchAntidoteUsed: true, witchSavedId: s.deadThisNight[0] ?? null } }
+            : p),
+        };
+      }
+      return {
+        ...s,
+        players: players.map((p, i) => i === actorId
+          ? { ...p, privateMemory: { ...p.privateMemory, witchPoisonUsed: true, witchPoisonedId: target } }
+          : p),
+        deadThisNight: [...s.deadThisNight, target],
+      };
+    }
+    case 'guard': {
+      if (target === null) return s;
+      return {
+        ...s,
+        players: players.map((p, i) => i === actorId
+          ? { ...p, privateMemory: { ...p.privateMemory, guardLastTargetId: target, guardHistory: [...p.privateMemory.guardHistory, target] } }
+          : p),
+        // 暂存"被守的人"
+        publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: `🛡️ 守卫守了 ${target + 1}号` }],
+      };
+    }
+    default: return s;
+  }
 }
 
-/* ─────────────────────────────────────────────
+/* 夜晚结算:应用狼人选择 + 守卫保护 + 猎人发动? + 公布死亡 */
+function resolveNight(s: GameState, _lang: 'zh' | 'en'): GameState {
+  const dead = new Set<number>(s.deadThisNight);
+  // 应用守卫保护:如果 deadThisNight[0] 是守卫守的人,从 dead 中移除
+  const guard = s.players.find(p => p.alive && p.role === 'guard');
+  if (guard) {
+    const guarded = guard.privateMemory.guardLastTargetId;
+    if (guarded !== null && dead.has(guarded)) {
+      dead.delete(guarded);
+      // 女巫的解药也被消耗?简化:假定女巫没用解药
+    }
+  }
+  // 应用死亡
+  const newPlayers = s.players.map(p => dead.has(p.id) ? { ...p, alive: false } : p);
+  // 简化:这里不立即触发猎人,放到 day-announce 后再处理
+  const newState = {
+    ...s,
+    players: newPlayers,
+    deadThisNight: Array.from(dead),
+    publicLog: [...s.publicLog, ...Array.from(dead).map(id => ({
+      kind: 'death' as const, day: s.round, playerId: id,
+      text: `${id + 1}号 ${s.players[id].name} 在夜里倒下了`,
+    }))],
+    phase: 'day-announce' as const,
+  };
+  return newState;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   白天:死亡公布 / 讨论 / 投票
+   ═══════════════════════════════════════════════════════════════════ */
+
+function DayAnnounce({ state, setState, lang }: { state: GameState; setState: (u: (s: GameState) => GameState) => void; lang: 'zh' | 'en' }) {
+  const dead = state.deadThisNight;
+  // 检测猎人
+  const hunterDead = dead.find(id => state.players[id].role === 'hunter');
+  useEffect(() => {
+    if (hunterDead !== undefined) {
+      setState(s => ({ ...s, phase: 'hunter-shoot', lastVotedOut: hunterDead }));
+    } else {
+      setState(s => ({ ...s, phase: 'day-discuss' }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <div className="p-4 rounded-xl text-center" style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-border-light)' }}>
+      <Sun size={24} className="mx-auto mb-2" style={{ color: 'var(--color-accent)' }} />
+      <h3 className="font-semibold mb-2" style={{ color: 'var(--color-text)' }}>
+        {lang === 'zh' ? `第 ${state.round} 天 · 天亮了` : `Day ${state.round} · Dawn`}
+      </h3>
+      {dead.length === 0 ? (
+        <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>
+          {lang === 'zh' ? '🌙 昨夜是平安夜,无人死亡。' : '🌙 Peaceful night, no deaths.'}
+        </p>
+      ) : (
+        <div className="space-y-1">
+          {dead.map(id => (
+            <p key={id} className="text-sm" style={{ color: 'var(--color-text)' }}>
+              💀 <b>{id + 1}. {state.players[id].name}</b> 倒下了
+              <span style={{ color: 'var(--color-accent)' }}>({ROLES[state.players[id].role].name[lang]})</span>
+            </p>
+          ))}
+        </div>
+      )}
+      <p className="text-xs mt-2" style={{ color: 'var(--color-text-muted)' }}>{lang === 'zh' ? '正在进入白天讨论…' : 'Entering day discussion…'}</p>
+    </div>
+  );
+}
+
+function HunterShoot({ state, setState, lang }: {
+  state: GameState; setState: (u: (s: GameState) => GameState) => void;
+  lang: 'zh' | 'en';
+}) {
+  const hunterId = state.lastVotedOut;
+  if (hunterId === null) {
+    useEffect(() => { setState(s => ({ ...s, phase: 'day-discuss' })); }, []);
+    return null;
+  }
+  const hunter = state.players[hunterId];
+  const isUser = hunterId === state.userId;
+  const aliveOthers = state.players.filter(p => p.alive && p.id !== hunterId);
+  const [target, setTarget] = useState<number | null>(null);
+
+  const confirm = () => {
+    if (target === null) {
+      setState(s => ({ ...s, phase: 'day-discuss' }));
+      return;
+    }
+    setState(s => ({
+      ...s,
+      players: s.players.map(p => p.id === target ? { ...p, alive: false } : p),
+      publicLog: [...s.publicLog, { kind: 'death', day: s.round, playerId: target, text: `🏹 猎人开枪带走了 ${target + 1}号 ${s.players[target].name}` }],
+      deadThisNight: s.deadThisNight.includes(target) ? s.deadThisNight : [...s.deadThisNight, target],
+      lastVotedOut: null,
+      phase: 'day-discuss',
+    }));
+  };
+
+  return (
+    <div className="p-4 rounded-xl" style={{ background: 'var(--color-card-bg)', border: '1px solid #f97316' }}>
+      <div className="flex items-center gap-2 mb-2 justify-center">
+        <Skull size={20} style={{ color: '#f97316' }} />
+        <h3 className="font-semibold" style={{ color: 'var(--color-text)' }}>
+          {lang === 'zh' ? '🏹 猎人发动技能' : '🏹 Hunter shoots'}
+        </h3>
+      </div>
+      <p className="text-xs text-center mb-3" style={{ color: 'var(--color-text-muted)' }}>
+        {isUser
+          ? (lang === 'zh' ? '你死了,可以开枪带走一个人(也可选择不开枪):' : 'You died, can shoot one (or skip):')
+          : (lang === 'zh' ? `AI 猎人 ${hunter.name} 正在决定带谁…` : `AI hunter ${hunter.name} choosing…`)}
+      </p>
+      {isUser ? (
+        <>
+          <div className="flex flex-wrap gap-1.5 justify-center">
+            {aliveOthers.map(p => (
+              <button key={p.id} onClick={() => setTarget(p.id)}
+                className="px-2 py-1 rounded text-xs"
+                style={{
+                  background: target === p.id ? '#f97316' : 'var(--color-card-bg)',
+                  color: target === p.id ? '#fff' : 'var(--color-text)',
+                }}>{p.id + 1}.{p.name}</button>
+            ))}
+          </div>
+          <div className="text-center mt-3 space-x-2">
+            <Button onClick={() => { setTarget(null); confirm(); }}>
+              {lang === 'zh' ? '不开枪' : 'Skip'}
+            </Button>
+            <Button onClick={confirm} disabled={target === null}>
+              {lang === 'zh' ? '开枪!' : 'Shoot!'}
+            </Button>
+          </div>
+        </>
+      ) : (
+        <div className="text-center text-sm" style={{ color: 'var(--color-text-muted)' }}>
+          {lang === 'zh' ? '(AI 猎人自动选择,简化版:跳过)' : '(auto-skip in simplified version)'}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DayDiscuss({ state, setState, lang, aiSpeak }: {
+  state: GameState; setState: (u: (s: GameState) => GameState) => void;
+  lang: 'zh' | 'en';
+  aiSpeak: (id: number, sys: string, usr: string) => Promise<string>;
+}) {
+  const [discussIdx, setDiscussIdx] = useState(0);
+  const [busy, setBusy] = useState(false);
+
+  const alivePlayers = state.players.filter(p => p.alive);
+  const speakers = alivePlayers; // 简化:每个存活玩家都发言 1 次
+
+  const nextSpeaker = () => {
+    if (discussIdx >= speakers.length) {
+      setState(s => ({ ...s, phase: 'day-vote' }));
+      return;
+    }
+    const cur = speakers[discussIdx];
+    if (cur.id === state.userId) {
+      // 跳过用户发言
+      setDiscussIdx(i => i + 1);
+      return;
+    }
+    setBusy(true);
+    const sys = buildDayDiscussionPrompt(cur, state, lang);
+    const usr = lang === 'zh'
+      ? '请发言(30-100 字,口语化,像微信群聊天),带节奏、跟队友呼应'
+      : 'Speak in 30-100 words, casual chat style, drive the discussion';
+    aiSpeak(cur.id, sys, usr).then(() => {
+      setBusy(false);
+      setDiscussIdx(i => i + 1);
+    });
+  };
+
+  useEffect(() => { if (discussIdx === 0 && !busy) nextSpeaker(); /* eslint-disable-next-line */ }, [discussIdx]);
+
+  const cur = speakers[discussIdx];
+
+  return (
+    <div className="p-4 rounded-xl" style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-border-light)' }}>
+      <div className="flex items-center gap-2 mb-2">
+        <Users size={18} style={{ color: 'var(--color-accent)' }} />
+        <h3 className="font-semibold" style={{ color: 'var(--color-text)' }}>
+          {lang === 'zh' ? `白天讨论(${discussIdx + 1}/${speakers.length})` : `Day discussion (${discussIdx + 1}/${speakers.length})`}
+        </h3>
+      </div>
+      {busy ? (
+        <div className="text-center text-sm py-3" style={{ color: 'var(--color-text-muted)' }}>
+          {lang === 'zh' ? `AI ${cur.name} 正在发言…` : `AI ${cur.name} speaking…`}
+        </div>
+      ) : (
+        <div className="text-center">
+          <Button onClick={nextSpeaker}>
+            {discussIdx >= speakers.length - 1
+              ? (lang === 'zh' ? '进入投票' : 'Vote')
+              : (lang === 'zh' ? '下一位' : 'Next')} <ChevronRight size={14} className="ml-1" />
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DayVote({ state, setState, lang, aiSpeak }: {
+  state: GameState; setState: (u: (s: GameState) => GameState) => void;
+  lang: 'zh' | 'en';
+  aiSpeak: (id: number, sys: string, usr: string) => Promise<string>;
+}) {
+  const alivePlayers = state.players.filter(p => p.alive);
+  const [userTarget, setUserTarget] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [aiVotes, setAiVotes] = useState<Record<number, number>>({});
+
+  // 跑 AI 投票
+  const runVotes = async () => {
+    setBusy(true);
+    const votes: Record<number, number> = {};
+    for (const p of alivePlayers) {
+      if (p.id === state.userId) continue;
+      const sys = buildVotePrompt(p, state, lang);
+      const usr = lang === 'zh'
+        ? '用 JSON 格式输出:{"target":投票给某人的座位号(1-based)}'
+        : 'Output JSON: {"target":target seat (1-based)}';
+      await aiSpeak(p.id, sys, usr);
+      const lastSp = state.speeches[state.speeches.length - 1];
+      if (lastSp && lastSp.playerId === p.id) {
+        const t = parseAIDecision(lastSp.text).decision;
+        if (t !== undefined && t >= 0 && t < state.players.length && state.players[t].alive) {
+          votes[p.id] = t - 1;
+        } else {
+          // fallback:随机投一个非自己
+          const others = alivePlayers.filter(x => x.id !== p.id);
+          votes[p.id] = others[Math.floor(Math.random() * others.length)].id;
+        }
+      }
+    }
+    setAiVotes(votes);
+    setBusy(false);
+  };
+
+  // 汇总投票 → 放逐
+  const finalize = () => {
+    const tally: Record<number, number> = {};
+    Object.entries({ ...aiVotes, [state.userId]: userTarget ?? -1 }).forEach(([_voterId, targetId]) => {
+      const tid = targetId as number;
+      if (tid === null || tid < 0) return;
+      tally[tid] = (tally[tid] || 0) + 1;
+    });
+    // 票数最多的被投
+    let maxVotes = 0, exiled: number | null = null;
+    Object.entries(tally).forEach(([id, count]) => {
+      if (count > maxVotes) { maxVotes = count; exiled = parseInt(id, 10); }
+    });
+    if (exiled === null) {
+      // 没人被投(应该不会发生),跳过
+      setState(s => ({ ...s, phase: 'night', round: s.round + 1 }));
+      return;
+    }
+    setState(s => ({
+      ...s,
+      players: s.players.map(p => p.id === exiled ? { ...p, alive: false } : p),
+      publicLog: [...s.publicLog, { kind: 'death', day: s.round, playerId: exiled!, text: `🗳️ 投票放逐:${exiled! + 1}号 ${s.players[exiled!].name} (${ROLES[s.players[exiled!].role].name[lang]})` }],
+      deadThisDay: exiled,
+      lastVotedOut: exiled,
+      // 狼王被投 → 触发狼王带人
+      phase: s.players[exiled!].role === 'wolfking' ? 'day-vote' : 'night',
+      // 简化:狼王带人机制放到下次 commit
+    }));
+  };
+
+  useEffect(() => { if (Object.keys(aiVotes).length === 0) runVotes(); /* eslint-disable-next-line */ }, []);
+
+  return (
+    <div className="p-4 rounded-xl" style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-accent)' }}>
+      <h3 className="font-semibold mb-3 flex items-center gap-1.5" style={{ color: 'var(--color-text)' }}>
+        <Swords size={16} style={{ color: 'var(--color-accent)' }} />{lang === 'zh' ? '投票放逐' : 'Vote to exile'}
+      </h3>
+      {busy ? (
+        <p className="text-sm text-center py-3" style={{ color: 'var(--color-text-muted)' }}>{lang === 'zh' ? 'AI 玩家正在投票…' : 'AI voting…'}</p>
+      ) : (
+        <>
+          <p className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>{lang === 'zh' ? '你投票给:' : 'You vote for:'}</p>
+          <div className="flex flex-wrap gap-1.5 justify-center">
+            {alivePlayers.filter(p => p.id !== state.userId).map(p => (
+              <button key={p.id} onClick={() => setUserTarget(p.id)}
+                className="px-2 py-1 rounded text-xs"
+                style={{
+                  background: userTarget === p.id ? 'var(--color-accent)' : 'var(--color-card-bg)',
+                  color: userTarget === p.id ? '#fff' : 'var(--color-text)',
+                }}>{p.id + 1}.{p.name}</button>
+            ))}
+          </div>
+          <div className="text-center mt-3 space-x-2">
+            <Button onClick={() => { setUserTarget(null); finalize(); }} disabled={userTarget === null}>
+              {lang === 'zh' ? '弃票' : 'Abstain'}
+            </Button>
+            <Button onClick={finalize} disabled={userTarget === null}>
+              {lang === 'zh' ? '确认投票' : 'Confirm'}
+            </Button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════
    胜负画面
-   ───────────────────────────────────────────── */
+   ═══════════════════════════════════════════════════════════════════ */
 
 function GameOver({ state, winner, lang, onExit }: {
-  state: GameState; winner: 'wolf' | 'good' | 'third';
-  lang: 'zh' | 'en'; onExit: () => void;
+  state: GameState; winner: 'wolf' | 'good' | 'third'; lang: 'zh' | 'en'; onExit: () => void;
 }) {
   const title = winner === 'good'
     ? (lang === 'zh' ? '🌟 好人胜利!' : '🌟 Good wins!')
@@ -663,9 +1037,72 @@ function GameOver({ state, winner, lang, onExit }: {
           </div>
         ))}
       </div>
-      <Button onClick={onExit}>
-        {lang === 'zh' ? '再来一局' : 'Play again'}
-      </Button>
+      <Button onClick={onExit}>{lang === 'zh' ? '再来一局' : 'Play again'}</Button>
     </div>
   );
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   系统 Prompt 构建器(夜晚 + 白天讨论 + 投票)
+   ═══════════════════════════════════════════════════════════════════ */
+
+function buildNightPrompt(actor: Player, state: GameState, lang: 'zh' | 'en'): string {
+  const role = ROLES[actor.role];
+  const visible = actor.privateMemory;
+  const alive = state.players.filter(x => x.alive).map(x => `${x.id + 1}号 ${x.name}`).join('、');
+  let contextExtra = '';
+  if (actor.faction === 'wolf' && visible.wolfTeammates.length) {
+    const mates = visible.wolfTeammates.map(id => `${id + 1}号 ${state.players[id].name}`).join('、');
+    contextExtra += lang === 'zh' ? `\n🐺 你的狼队友:${mates}` : `\n🐺 Wolf pack: ${mates}`;
+  }
+  const roleActions: Partial<Record<RoleId, { zh: string; en: string }>> = {
+    werewolf: { zh: '今晚跟狼队友协商,选一个人杀', en: 'Coordinate with pack, choose one to kill' },
+    wolfking: { zh: '你是狼王,今晚选一个人杀。被投票放逐时可带人', en: 'Wolf King: pick victim. Can take one when voted out' },
+    wolfbeauty: { zh: '你是狼美人,今晚选一个人杀。被投票放逐时带最后投票人', en: 'Wolf Beauty: pick victim. Take last voter when voted out' },
+    seer: { zh: '每晚查验一人是好人还是狼人', en: 'Check one player' },
+    witch: { zh: '狼杀了 1 个人,你可以用解药救 / 毒药杀(或不用)', en: 'Wolf killed 1, can use antidote/poison' },
+    hunter: { zh: '你是猎人,死亡时可开枪', en: 'Hunter: can shoot on death' },
+    guard: { zh: '你是守卫,选一个人守护(不能连守同一人)', en: 'Guard: protect one (not same as last night)' },
+    idiot: { zh: '你是白痴,被投时翻牌免死', en: 'Idiot: flip card when voted out' },
+    knight: { zh: '你是骑士,白天可决斗一人', en: 'Knight: can duel one during day' },
+    gargoyle: { zh: '你是石像鬼,查验一人是不是神职', en: 'Gargoyle: check if player is god role' },
+    cupid: { zh: '你是丘比特,首夜连两人做情侣', en: 'Cupid: link two lovers on night 1' },
+  };
+  return lang === 'zh'
+    ? `你是"${actor.name}"(第${actor.id + 1}号),身份:${role.name.zh} ${role.emoji}\n存活玩家:${alive}${contextExtra}\n\n今晚任务:${roleActions[actor.role]?.zh ?? '执行你的角色技能'}\n\n输出 JSON:{"speech":"你的发言(30-100字)","target":目标座位号(1-based,守卫/无目标填 0)}`
+    : `You are "${actor.name}" (#${actor.id + 1}), role: ${role.name.en} ${role.emoji}\nAlive: ${alive}${contextExtra}\n\nTonight: ${roleActions[actor.role]?.en ?? 'Execute your role ability'}\n\nOutput JSON: {"speech":"your speech (30-100 words)","target":target seat (1-based, 0 if none)}`;
+}
+
+function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 'en'): string {
+  const role = ROLES[actor.role];
+  const alive = state.players.filter(x => x.alive).map(x => `${x.id + 1}号 ${x.name}`).join('、');
+  const dead = state.deadThisNight.map(id => `${id + 1}号 ${state.players[id].name}`).join('、');
+  let extra = '';
+  if (actor.faction === 'wolf' && actor.privateMemory.wolfTeammates.length) {
+    const mates = actor.privateMemory.wolfTeammates.map(id => `${id + 1}号 ${state.players[id].name}`).join('、');
+    extra = lang === 'zh' ? `\n🐺 你是狼,你的队友:${mates}。要隐藏身份、转移视线。` : `\n🐺 You're a wolf. Pack: ${mates}. Hide and deflect.`;
+  }
+  if (actor.role === 'seer' && actor.privateMemory.seerChecks.length) {
+    const checks = actor.privateMemory.seerChecks.map(c => `${c.targetId + 1}号 → ${c.isWolf ? '狼' : '好人'}`).join('、');
+    extra = lang === 'zh' ? `\n🔮 你的查验结果:${checks}` : `\n🔮 Your checks: ${checks}`;
+  }
+  return lang === 'zh'
+    ? `你是"${actor.name}"(第${actor.id + 1}号),身份:${role.name.zh}\n昨晚死亡:${dead || '无(平安夜)'}\n存活玩家:${alive}${extra}\n\n现在白天讨论,所有人轮流发言。你有 30-100 字,用微信群聊天的口吻。要主动站队 / 怀疑别人。\n\n只输出你的发言,不要 JSON 包装。`
+    : `You are "${actor.name}" (#${actor.id + 1}), role: ${role.name.en}\nLast night deaths: ${dead || 'none'}\nAlive: ${alive}${extra}\n\nDay discussion. Speak 30-100 words, casual chat. Take sides, accuse others.\n\nOutput speech only (no JSON).`;
+}
+
+function buildVotePrompt(actor: Player, state: GameState, lang: 'zh' | 'en'): string {
+  const alive = state.players.filter(x => x.alive).filter(x => x.id !== actor.id).map(x => `${x.id + 1}号 ${x.name}`).join('、');
+  let extra = '';
+  if (actor.faction === 'wolf' && actor.privateMemory.wolfTeammates.length) {
+    const mates = actor.privateMemory.wolfTeammates.map(id => `${id + 1}号 ${state.players[id].name}`).join('、');
+    extra = lang === 'zh' ? `\n🐺 你是狼,队友:${mates}。要保护队友,把票投给一个好人(最好是发言最像神职的)。` : `\n🐺 You're a wolf. Pack: ${mates}. Protect them, vote for a good player.`;
+  }
+  if (actor.role === 'seer' && actor.privateMemory.seerChecks.length) {
+    const last = actor.privateMemory.seerChecks[actor.privateMemory.seerChecks.length - 1];
+    extra = lang === 'zh' ? `\n🔮 你最近验的人:${last.targetId + 1}号 → ${last.isWolf ? '狼' : '好人'}。投票给狼。` : `\n🔮 Your last check: ${last.targetId + 1} → ${last.isWolf ? 'wolf' : 'good'}. Vote them.`;
+  }
+  return lang === 'zh'
+    ? `你是"${actor.name}"(第${actor.id + 1}号),身份:${ROLES[actor.role].name.zh}\n存活玩家(除你):${alive}${extra}\n\n现在投票放逐,你选一个人。\n\n输出 JSON:{"target":投票给某人的座位号(1-based)}`
+    : `You are "${actor.name}" (#${actor.id + 1}), role: ${ROLES[actor.role].name.en}\nAlive (excluding you): ${alive}${extra}\n\nVote to exile.\n\nOutput JSON: {"target":target seat (1-based)}`;
 }
