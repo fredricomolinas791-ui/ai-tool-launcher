@@ -131,8 +131,10 @@ function generatePlayerNamesLocal(count: number, userName: string): { name: stri
 }
 
 /* ─────────────────────────────────────────────
-   AI 配置(localStorage 拿)
+   AI 配置(从项目统一的 aiStore 取,XOR 加密由 aiStore 内部处理)
    ───────────────────────────────────────────── */
+
+import { aiStore } from '../../../lib/ai';
 
 export interface AIConfig {
   apiKey: string;
@@ -141,20 +143,28 @@ export interface AIConfig {
 }
 
 export function loadAIConfig(): AIConfig | null {
-  try {
-    const raw = localStorage.getItem('ai-tools-launcher.aisettings.v1');
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    const k = parsed.keys || {};
-    // 取第一个有 key 的 provider
-    const firstProvider = Object.values(k).find((v: any) => v && v.apiKey) as any;
-    if (!firstProvider) return null;
+  // 1) 优先当前激活 provider
+  const active = aiStore.getActiveKey();
+  if (active && active.apiKey) {
     return {
-      apiKey: firstProvider.apiKey,
-      baseURL: firstProvider.baseURL,
-      model: firstProvider.model,
+      apiKey: active.apiKey,
+      baseURL: active.baseURL || 'https://api.openai.com/v1',
+      model: active.model || 'gpt-4o-mini',
     };
-  } catch { return null; }
+  }
+  // 2) 兜底:任意一个有 key 的 provider
+  const all = aiStore.getKeys();
+  for (const id of Object.keys(all)) {
+    const k = all[id];
+    if (k && k.apiKey) {
+      return {
+        apiKey: k.apiKey,
+        baseURL: k.baseURL || 'https://api.openai.com/v1',
+        model: k.model || 'gpt-4o-mini',
+      };
+    }
+  }
+  return null;
 }
 
 /* ─────────────────────────────────────────────
