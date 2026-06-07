@@ -5,7 +5,7 @@
              其他 3 个 12 人板点进去显示"敬请推出"
    ═══════════════════════════════════════════════════════════════════ */
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, type Dispatch, type SetStateAction } from 'react';
 import { Drama, Sparkles, Sun, ChevronRight, Crown, AlertTriangle, Play, X, Skull, Shield, Users, Swords } from 'lucide-react';
 import { Button } from '../../ui/Button';
 import { useI18n } from '../../../hooks/useI18n';
@@ -137,14 +137,29 @@ function SpeechBubble({ player, text, streaming, lang, isRevealed }: {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   顶层组件
+   顶层组件 —— 关键改进:游戏 state 同步到 sessionStorage
+   ── 即使父组件(ToolPanel 模态)关闭,下次打开狼人杀时游戏状态会恢复
+   ── 主动「退出游戏」时清空 sessionStorage
    ═══════════════════════════════════════════════════════════════════ */
+
+const WEREWOLF_SAVE_KEY = 'ai-tools-launcher.werewolf.state.v1';
 
 export function WerewolfGame() {
   const { lang: iLang } = useI18n();
   const lang = (iLang === 'en' ? 'en' : 'zh') as 'zh' | 'en';
   const [phase, setPhase] = useState<'select' | 'playing'>('select');
-  const [state, setState] = useState<GameState | null>(null);
+  /* 初始化时优先从 sessionStorage 恢复(避免关闭弹窗后状态全丢) */
+  const [state, setState] = useState<GameState | null>(() => {
+    try {
+      const raw = sessionStorage.getItem(WEREWOLF_SAVE_KEY);
+      if (raw) {
+        const s = JSON.parse(raw) as GameState;
+        // 简单健全性检查
+        if (s && s.boardId && Array.isArray(s.players) && s.players.length >= 5) return s;
+      }
+    } catch { /* ignore */ }
+    return null;
+  });
   const [aiConfig, setAIConfig] = useState<ReturnType<typeof loadAIConfig>>(null);
   const [noKey, setNoKey] = useState(false);
 
@@ -153,6 +168,24 @@ export function WerewolfGame() {
     setAIConfig(cfg);
     if (!cfg) setNoKey(true);
   }, []);
+
+  /* 同步 state 到 sessionStorage —— 关闭弹窗后重开可恢复 */
+  useEffect(() => {
+    try {
+      if (state) {
+        sessionStorage.setItem(WEREWOLF_SAVE_KEY, JSON.stringify(state));
+        if (phase === 'playing') setPhase('playing'); // 触发 select/playing 切回
+      } else {
+        sessionStorage.removeItem(WEREWOLF_SAVE_KEY);
+      }
+    } catch { /* quota / 隐私模式 ignore */ }
+  }, [state]);
+
+  // 如果有恢复的 state,直接进入 playing
+  useEffect(() => {
+    if (state && phase === 'select') setPhase('playing');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state]);
 
   if (phase === 'select' || !state) {
     return <BoardSelect lang={lang} noKey={noKey}
@@ -163,8 +196,12 @@ export function WerewolfGame() {
       }} />;
   }
   if (noKey || !aiConfig) return <NoKeyWarn lang={lang} />;
-  return <GameRunner state={state} aiConfig={aiConfig} lang={lang}
-    onExit={() => { setState(null); setPhase('select'); }} />;
+  return <GameRunner
+    state={state}
+    setState={setState}
+    aiConfig={aiConfig}
+    lang={lang}
+    onExit={() => { setState(null); setPhase('select'); sessionStorage.removeItem(WEREWOLF_SAVE_KEY); }} />;
 }
 
 function BoardSelect({ lang, noKey, onStart }: {
@@ -226,12 +263,19 @@ function NoKeyWarn({ lang }: { lang: 'zh' | 'en' }) {
    游戏运行器 —— 完整循环
    ═══════════════════════════════════════════════════════════════════ */
 
-function GameRunner({ state: initial, aiConfig, lang, onExit }: {
-  state: GameState; aiConfig: NonNullable<ReturnType<typeof loadAIConfig>>;
+function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, onExit }: {
+  state: GameState;
+  setState: Dispatch<SetStateAction<GameState | null>>;
+  aiConfig: NonNullable<ReturnType<typeof loadAIConfig>>;
   lang: 'zh' | 'en'; onExit: () => void;
 }) {
-  const [state, setState] = useState<GameState>(initial);
+  // 内部 state 仅用于派生 UI(比如 streamingText),游戏 state 走 prop
   const [streamingText, setStreamingText] = useState<{ playerId: number; text: string } | null>(null);
+  /* setState wrapper:把 (s:GameState) => GameState 形式适配到 prop 的 Dispatch<SetStateAction<GameState|null>>
+     —— 子组件里都假设 state 非 null,这里用 prev ? u(prev) : prev 兜底(理论上 prop 永远非 null) */
+  const setState = (u: (s: GameState) => GameState) =>
+    setStateProp((prev) => (prev ? u(prev) : prev));
+  const state = initial;
 
   const alivePlayers = state.players.filter(p => p.alive);
   const winner = checkWinner(state);
@@ -241,26 +285,33 @@ function GameRunner({ state: initial, aiConfig, lang, onExit }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [winner]);
 
-  const aiSpeak = (playerId: number, systemPrompt: string, userPrompt: string): Promise<string> => {
-    return new Promise<string>((resolve) => {
-      let full = '';
-      setStreamingText({ playerId, text: '' });
-      const h = callAIStream(aiConfig, systemPrompt, userPrompt, (chunk: string) => {
-        full += chunk;
-        setStreamingText({ playerId, text: full });
-      });
-      h.promise.then((text: string) => {
-        setStreamingText(null);
-        const parsed = parseAIDecision(text);
-        const speech = parsed.speech || text;
-        setState(s => ({
-          ...s,
-          speeches: [...s.speeches, { playerId, day: s.round, text: speech }],
-          publicLog: [...s.publicLog, { kind: 'speech', day: s.round, playerId, text: speech }],
-        }));
-        resolve(speech);
-      });
+  /* aiSpeak 返回 {speech, target} —— 让调用方(夜晚行动/投票)能直接拿到 target,
+     避免「读 state.speeches[length-1]」的闭包过时问题。
+     target 是 1-based 座位号(0 表示无目标),由 parseAIDecision 从 AI 输出中解析。 */
+  const aiSpeak = async (playerId: number, systemPrompt: string, userPrompt: string): Promise<{ speech: string; target: number | null }> => {
+    let full = '';
+    setStreamingText({ playerId, text: '' });
+    const h = callAIStream(aiConfig, systemPrompt, userPrompt, (chunk: string) => {
+      full += chunk;
+      setStreamingText({ playerId, text: full });
     });
+    const text = await h.promise;
+    setStreamingText(null);
+    const parsed = parseAIDecision(text);
+    const speech = (parsed.speech || text || '').trim();
+    // 直接同步写进 state(不读闭包)
+    setState(s => ({
+      ...s,
+      speeches: [...s.speeches, { playerId, day: s.round, text: speech }],
+      publicLog: [...s.publicLog, { kind: 'speech', day: s.round, playerId, text: speech }],
+    }));
+    // 解析 target:0-based,无目标=0 转为 null
+    let target: number | null = null;
+    if (parsed.decision !== undefined) {
+      const t1 = parsed.decision + 1; // 0-based → 1-based
+      if (t1 >= 1 && t1 <= initial.players.length) target = t1 - 1;
+    }
+    return { speech, target };
   };
 
   // 座位分栏:9 人 → 左 6 / 右 3;12 人 → 左 6 / 右 6
@@ -467,116 +518,154 @@ function RoleRevealPanel({ state, lang, onContinue }: { state: GameState; lang: 
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   夜晚面板 —— 分幕模式
-   ── 每幕 3 阶段:睁眼字幕(2s) → 行动(用户/AI,30s 倒计时)→ 闭眼字幕(1.5s)
+   夜晚面板 —— 分幕模式(完全用 setTimeout 驱动,不用 useEffect[timeLeft, scene, busy])
+   ── 每幕 3 阶段:睁眼字幕(2.5s) → 行动(用户/AI,30s 倒计时)→ 闭眼字幕(1.5s)
    ── 所有人都能看到字幕(村民 / 守卫 / 女巫 / 狼都能看,但不知道具体行动)
+   ── 关键改进:
+   · 状态用 setTimeout 推进,不用 timeLeft<=0 触发 setState(避免 useEffect 互相干扰)
+   · state/aiSpeak 用 useRef 存最新值(避免异步闭包读旧 state)
+   · 行动阶段 AI/用户都有 35s 超时强制推进(不卡死)
+   · StrictMode 双跑安全:cancelled 标记 + cleanup clearTimeout/Interval
    ═══════════════════════════════════════════════════════════════════ */
 
-const NIGHT_INTRO_SEC = 2.5;    // 睁眼字幕时长
-const NIGHT_OUTRO_SEC = 1.5;    // 闭眼字幕时长
-const NIGHT_ACTION_TIMEOUT = 35; // 行动阶段超时(秒)
+const NIGHT_INTRO_SEC = 2.5;
+const NIGHT_OUTRO_SEC = 1.5;
+const NIGHT_ACTION_TIMEOUT = 35;
 
 function NightPanel({ state, setState, lang, aiSpeak }: {
   state: GameState; setState: (updater: (s: GameState) => GameState) => void;
   lang: 'zh' | 'en';
-  aiSpeak: (playerId: number, system: string, user: string) => Promise<string>;
+  aiSpeak: (playerId: number, system: string, user: string) => Promise<{ speech: string; target: number | null }>;
 }) {
-  // 夜晚行动队列(按 nightOrder 排序,只包含有 nightAction 的角色)
-  const actions = useRef<{ role: RoleId; playerId: number }[]>([]);
+  // 行动队列(用 useState,render 时能拿到)
+  const [actions, setActions] = useState<{ role: RoleId; playerId: number }[]>([]);
   const [actionIdx, setActionIdx] = useState(0);
   const [scene, setScene] = useState<'intro' | 'action' | 'outro' | 'done'>('intro');
   const [timeLeft, setTimeLeft] = useState(NIGHT_INTRO_SEC);
   const [busy, setBusy] = useState(false);
-  const timerRef = useRef<number | null>(null);
 
-  // 初始化行动队列(当 round 变化)
+  // ref 存最新 state / aiSpeak(避免异步闭包读旧值)
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const aiSpeakRef = useRef(aiSpeak);
+  aiSpeakRef.current = aiSpeak;
+  // AI 完成标记:防止「超时强制 outro」和「AI 正常完成 outro」双触发
+  const aiDoneRef = useRef(false);
+
+  // 当 round 变化时,初始化行动队列
   useEffect(() => {
     const aliveRoles = state.players.filter(p => p.alive && ROLES[p.role].hasNightAction);
-    actions.current = aliveRoles
+    const sorted = aliveRoles
       .map(p => ({ role: p.role, playerId: p.id }))
       .sort((a, b) => ROLES[a.role].nightOrder - ROLES[b.role].nightOrder);
+    setActions(sorted);
     setActionIdx(0);
     setScene('intro');
     setTimeLeft(NIGHT_INTRO_SEC);
   }, [state.round]);
 
-  const cur = actions.current[actionIdx];
+  const cur = actions[actionIdx];
 
-  // 倒计时管理
+  // 每次 scene/actionIdx 变化时,重置 aiDone
   useEffect(() => {
-    if (timerRef.current) { window.clearInterval(timerRef.current); timerRef.current = null; }
+    aiDoneRef.current = false;
+  }, [scene, actionIdx]);
+
+  // 场景驱动:每个 scene 各自用 setTimeout + setInterval 推进
+  useEffect(() => {
     if (scene === 'done' || !cur) return;
-    timerRef.current = window.setInterval(() => {
-      setTimeLeft(t => Math.max(0, t - 0.1));
-    }, 100);
-    return () => { if (timerRef.current) { window.clearInterval(timerRef.current); timerRef.current = null; } };
-  }, [scene, actionIdx]);
 
-  // 阶段超时自动推进
-  useEffect(() => {
-    if (scene === 'intro' && timeLeft <= 0) { setScene('action'); setTimeLeft(NIGHT_ACTION_TIMEOUT); return; }
-    if (scene === 'outro' && timeLeft <= 0) { advanceAction(); return; }
-    if (scene === 'action' && timeLeft <= 0 && !busy) {
-      // 超时:对 AI 玩家强制推进,对 用户 自动用默认(null)
-      handleTimeout();
-      return;
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timeLeft, scene, busy]);
+    let cancelled = false;
+    const timeouts: number[] = [];
+    const intervals: number[] = [];
 
-  function advanceAction() {
-    if (actionIdx + 1 >= actions.current.length) {
-      // 夜晚结束,进入白天
-      setScene('done');
-      setState(s => resolveNight(s, lang));
-    } else {
-      setActionIdx(i => i + 1);
-      setScene('intro');
-      setTimeLeft(NIGHT_INTRO_SEC);
-    }
-  }
+    /* 倒计时 helper:实时更新 timeLeft,seconds 后回调 */
+    const startCountdown = (seconds: number, onDone: () => void) => {
+      setTimeLeft(seconds);
+      const start = Date.now();
+      const id = window.setInterval(() => {
+        if (cancelled) { clearInterval(id); return; }
+        const left = Math.max(0, seconds - (Date.now() - start) / 1000);
+        setTimeLeft(left);
+      }, 100);
+      intervals.push(id);
+      const t = window.setTimeout(() => {
+        if (cancelled) return;
+        clearInterval(id);
+        onDone();
+      }, seconds * 1000);
+      timeouts.push(t);
+    };
 
-  // AI 行动(开场:scene 进入 action 时)
-  useEffect(() => {
-    if (scene !== 'action' || busy || !cur) return;
-    if (cur.playerId === state.userId) return; // 等用户操作
-    setBusy(true);
-    (async () => {
-      const actor = state.players[cur.playerId];
-      try {
-        const target = await runAIAction(actor, state, lang, aiSpeak);
-        if (target !== null) {
-          setState(s => applyNightAction(s, cur.role, cur.playerId, target, lang));
+    if (scene === 'intro') {
+      // 睁眼字幕 N 秒
+      startCountdown(NIGHT_INTRO_SEC, () => {
+        if (cancelled) return;
+        setScene('action');
+      });
+    } else if (scene === 'outro') {
+      // 闭眼字幕 N 秒 → 推进到下一个角色
+      startCountdown(NIGHT_OUTRO_SEC, () => {
+        if (cancelled) return;
+        if (actionIdx + 1 >= actions.length) {
+          setScene('done');
+          setState(s => resolveNight(s, lang));
+        } else {
+          setActionIdx(i => i + 1);
+          setScene('intro');
         }
-      } finally {
+      });
+    } else if (scene === 'action') {
+      setBusy(true);
+      if (cur.playerId === state.userId) {
+        // 用户行动:不调 AI,等用户点;超时强制 null
         setBusy(false);
-        // 行动完毕 → outro
-        setScene('outro');
-        setTimeLeft(NIGHT_OUTRO_SEC);
+        startCountdown(NIGHT_ACTION_TIMEOUT, () => {
+          if (cancelled) return;
+          setState(s => applyNightAction(s, cur.role, cur.playerId, null, lang));
+          setScene('outro');
+        });
+      } else {
+        // AI 行动:异步跑 runAIAction + 同步倒计时(超时强制 null 兜底)
+        const actor = state.players[cur.playerId];
+        startCountdown(NIGHT_ACTION_TIMEOUT, () => {
+          if (aiDoneRef.current) return;
+          aiDoneRef.current = true;
+          if (cancelled) return;
+          setState(s => applyNightAction(s, cur.role, cur.playerId, null, lang));
+          setBusy(false);
+          setScene('outro');
+        });
+        runAIAction(actor, stateRef.current, lang, aiSpeakRef.current).then((target) => {
+          if (cancelled || aiDoneRef.current) return;
+          aiDoneRef.current = true;
+          if (target !== null) {
+            setState(s => applyNightAction(s, cur.role, cur.playerId, target, lang));
+          }
+          setBusy(false);
+          setScene('outro');
+        });
       }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scene, actionIdx]);
-
-  function handleTimeout() {
-    if (!cur) return;
-    if (cur.playerId === state.userId) {
-      // 用户超时:自动跳过(无目标)
-      onUserAction(null);
     }
-    // AI 超时:runAIAction 会自然完成(可能 null),不用管
-  }
 
+    return () => {
+      cancelled = true;
+      timeouts.forEach(clearTimeout);
+      intervals.forEach(clearInterval);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scene, actionIdx, actions.length]);
+
+  // 用户手动确认行动
   function onUserAction(target: number | null) {
     if (!cur) return;
     setState(s => applyNightAction(s, cur.role, cur.playerId, target, lang));
     setScene('outro');
-    setTimeLeft(NIGHT_OUTRO_SEC);
   }
 
   if (state.phase !== 'night') return null;
 
-  // 渲染:全暗幕布,中央显示字幕 + 倒计时
+  // 渲染
   return (
     <div className="p-6 rounded-xl text-center" style={{
       background: 'rgba(0,0,0,0.6)', border: '1px solid var(--color-accent)',
@@ -585,7 +674,7 @@ function NightPanel({ state, setState, lang, aiSpeak }: {
       <div className="text-[10px] mb-2" style={{ color: 'var(--color-text-muted)' }}>
         {lang === 'zh' ? `第 ${state.round} 夜` : `Night ${state.round}`}
       </div>
-      {cur && scene !== 'done' && (
+      {cur && scene !== 'done' ? (
         <NightSceneDisplay
           scene={scene}
           cur={cur}
@@ -595,13 +684,12 @@ function NightPanel({ state, setState, lang, aiSpeak }: {
           onUserAction={onUserAction}
           busy={busy}
         />
-      )}
+      ) : null}
       {scene === 'done' && (
         <div className="text-sm" style={{ color: 'var(--color-text-muted)' }}>
           {lang === 'zh' ? '🌅 天快亮了…' : '🌅 Dawn approaching…'}
         </div>
       )}
-      {/* 当前行动玩家头像高亮提示(座位 UI 之外) */}
       {cur && scene === 'action' && (
         <div className="mt-3 text-[10px]" style={{ color: 'var(--color-text-muted)' }}>
           {lang === 'zh' ? '当前行动:' : 'Acting now:'} {ROLES[cur.role].emoji} {ROLES[cur.role].name[lang]}
@@ -864,23 +952,20 @@ function UserNightActionUI({ role, state, lang, onConfirm }: {
    夜晚行动逻辑(应用 + 结算)
    ═══════════════════════════════════════════════════════════════════ */
 
-/* 跑一个 AI 玩家的夜晚行动(返回 target id 或 null) */
+/* 跑一个 AI 玩家的夜晚行动(返回 target id 或 null)
+   —— 直接用 aiSpeak 返回的 target,不走 state.speeches 闭包(避免读旧 state) */
 async function runAIAction(
   actor: Player, state: GameState, lang: 'zh' | 'en',
-  aiSpeak: (id: number, sys: string, usr: string) => Promise<string>,
+  aiSpeak: (id: number, sys: string, usr: string) => Promise<{ speech: string; target: number | null }>,
 ): Promise<number | null> {
   const sys = buildNightPrompt(actor, state, lang);
   const usr = lang === 'zh'
     ? '请用 JSON 格式输出:{"speech":"你的发言(可选)","target":你的目标座位号(1-based,无目标填 0)}'
     : 'Output JSON: {"speech":"your speech (optional)","target":target seat (1-based, 0 if none)}';
-  await aiSpeak(actor.id, sys, usr);
-  // 从最近一条发言中解析 target
-  const lastSp = state.speeches[state.speeches.length - 1];
-  if (lastSp && lastSp.playerId === actor.id) {
-    const target = parseAIDecision(lastSp.text).decision;
-    if (target !== undefined && target >= 0 && target < state.players.length) {
-      return target === 0 ? null : target - 1; // 0 表示无目标
-    }
+  const { target } = await aiSpeak(actor.id, sys, usr);
+  // target 已经是 0-based(null 表示无目标)
+  if (target !== null && target >= 0 && target < state.players.length && state.players[target].alive) {
+    return target;
   }
   return null;
 }
@@ -1125,7 +1210,7 @@ function HunterShoot({ state, setState, lang }: {
 function DayDiscuss({ state, setState, lang, aiSpeak }: {
   state: GameState; setState: (u: (s: GameState) => GameState) => void;
   lang: 'zh' | 'en';
-  aiSpeak: (id: number, sys: string, usr: string) => Promise<string>;
+  aiSpeak: (id: number, sys: string, usr: string) => Promise<{ speech: string; target: number | null }>;
 }) {
   const [discussIdx, setDiscussIdx] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -1187,7 +1272,7 @@ function DayDiscuss({ state, setState, lang, aiSpeak }: {
 function DayVote({ state, setState, lang, aiSpeak }: {
   state: GameState; setState: (u: (s: GameState) => GameState) => void;
   lang: 'zh' | 'en';
-  aiSpeak: (id: number, sys: string, usr: string) => Promise<string>;
+  aiSpeak: (id: number, sys: string, usr: string) => Promise<{ speech: string; target: number | null }>;
 }) {
   const alivePlayers = state.players.filter(p => p.alive);
   const [userTarget, setUserTarget] = useState<number | null>(null);
@@ -1204,17 +1289,14 @@ function DayVote({ state, setState, lang, aiSpeak }: {
       const usr = lang === 'zh'
         ? '用 JSON 格式输出:{"target":投票给某人的座位号(1-based)}'
         : 'Output JSON: {"target":target seat (1-based)}';
-      await aiSpeak(p.id, sys, usr);
-      const lastSp = state.speeches[state.speeches.length - 1];
-      if (lastSp && lastSp.playerId === p.id) {
-        const t = parseAIDecision(lastSp.text).decision;
-        if (t !== undefined && t >= 0 && t < state.players.length && state.players[t].alive) {
-          votes[p.id] = t - 1;
-        } else {
-          // fallback:随机投一个非自己
-          const others = alivePlayers.filter(x => x.id !== p.id);
-          votes[p.id] = others[Math.floor(Math.random() * others.length)].id;
-        }
+      // 直接用 aiSpeak 返回的 target,不走 state.speeches 闭包
+      const { target } = await aiSpeak(p.id, sys, usr);
+      if (target !== null && target >= 0 && target < state.players.length && state.players[target].alive && target !== p.id) {
+        votes[p.id] = target;
+      } else {
+        // fallback:随机投一个非自己
+        const others = alivePlayers.filter(x => x.id !== p.id);
+        votes[p.id] = others[Math.floor(Math.random() * others.length)].id;
       }
     }
     setAiVotes(votes);
