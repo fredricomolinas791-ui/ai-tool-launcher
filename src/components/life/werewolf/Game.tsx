@@ -11,13 +11,16 @@ import { Button } from '../../ui/Button';
 import { useI18n } from '../../../hooks/useI18n';
 import {
   BOARDS, BOARD_LIST, ROLES, type BoardId, type GameState, type Player, type RoleId,
-  initGame, loadAIConfig, callAIStream, checkWinner, parseAIDecision,
+  initGame, loadAIConfig, callAIStream, checkWinner, parseAIDecision, applyLoversChain,
 } from './engine';
 import type { BoardDef } from './data';
 import { PersonalityRender } from './Personalities';
 
-/* ── 哪些板子 Phase 2-A 完整跑通 ── */
-const PLAYABLE_BOARDS: BoardId[] = ['p9-classic', 'p12-classic', 'p12-wolfking'];
+/* ── 所有 6 个板子都可玩 ── */
+const PLAYABLE_BOARDS: BoardId[] = [
+  'p9-classic', 'p12-classic', 'p12-wolfking',
+  'p12-wolfbeauty', 'p12-gargoyle', 'p12-cupid',
+];
 
 /* ═══════════════════════════════════════════════════════════════════
    板子选择卡片
@@ -792,11 +795,63 @@ function UserNightActionUI({ role, state, lang, onConfirm }: {
     );
   }
 
-  // 石像鬼/丘比特 默认占位(完整版后续实现)
+  // 石像鬼:查验一个玩家是不是神职
+  if (role === 'gargoyle') {
+    return (
+      <div>
+        <p className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>
+          {lang === 'zh' ? '🗿 选一个玩家查验他是不是「神职」:' : 'Gargoyle: check if player is a god role:'}
+        </p>
+        <div className="flex flex-wrap gap-1.5 justify-center">
+          {aliveOthers.map(p => (
+            <button key={p.id} onClick={() => setSelected(p.id)}
+              className="px-2 py-1 rounded text-xs"
+              style={{
+                background: selected === p.id ? 'var(--color-accent)' : 'var(--color-card-bg)',
+                color: selected === p.id ? '#fff' : 'var(--color-text)',
+              }}>{p.id + 1}.{p.name}</button>
+          ))}
+        </div>
+        <div className="text-center mt-3">
+          <Button onClick={() => onConfirm(selected)} disabled={selected === null}>
+            {lang === 'zh' ? '查验' : 'Check'} <ChevronRight size={14} className="ml-1" />
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // 丘比特:首夜连 2 个人做情侣
+  if (role === 'cupid') {
+    return (
+      <div>
+        <p className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>
+          {lang === 'zh' ? '💘 选第 1 个情侣(另一个系统随机):' : 'Cupid: pick lover #1 (lover #2 random):'}
+        </p>
+        <div className="flex flex-wrap gap-1.5 justify-center">
+          {aliveOthers.map(p => (
+            <button key={p.id} onClick={() => setSelected(p.id)}
+              className="px-2 py-1 rounded text-xs"
+              style={{
+                background: selected === p.id ? '#ec4899' : 'var(--color-card-bg)',
+                color: selected === p.id ? '#fff' : 'var(--color-text)',
+              }}>{p.id + 1}.{p.name}</button>
+          ))}
+        </div>
+        <div className="text-center mt-3">
+          <Button onClick={() => onConfirm(selected)} disabled={selected === null}>
+            {lang === 'zh' ? '连情侣' : 'Link'} <ChevronRight size={14} className="ml-1" />
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // 骑士 / 猎人 / 白痴 默认占位(白天发动)
   return (
     <div className="text-center">
       <p className="text-xs mb-3" style={{ color: 'var(--color-text-muted)' }}>
-        {lang === 'zh' ? `你(${ROLES[role].name.zh})的行动(简化版:跳过)` : `Your ${ROLES[role].name.en} action (simplified: skip)`}
+        {lang === 'zh' ? `你(${ROLES[role].name.zh})无夜晚行动,白天发动技能` : `Your ${ROLES[role].name.en} has no night action`}
       </p>
       <Button onClick={() => onConfirm(null)}>
         {lang === 'zh' ? '跳过' : 'Skip'} <ChevronRight size={14} className="ml-1" />
@@ -888,6 +943,39 @@ function applyNightAction(s: GameState, role: RoleId, actorId: number, target: n
         publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: `🛡️ 守卫守了 ${target + 1}号` }],
       };
     }
+    case 'gargoyle': {
+      if (target === null) return s;
+      // 查验目标是不是"神职"(seer/witch/hunter/guard/knight)
+      const godRoles: RoleId[] = ['seer', 'witch', 'hunter', 'guard', 'knight'];
+      const isGod = godRoles.includes(players[target].role);
+      return {
+        ...s,
+        players: players.map((p, i) => i === actorId
+          ? { ...p, privateMemory: { ...p.privateMemory, gargoyleChecks: [...p.privateMemory.gargoyleChecks, { targetId: target, isGod }] } }
+          : p),
+        publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: `🗿 石像鬼查验了 ${target + 1}号 (${isGod ? '神职' : '非神职'})` }],
+      };
+    }
+    case 'cupid': {
+      // 丘比特首夜连 2 个人(我们把 target 当作第 1 个,默认连自己随机另一个)
+      // 简化:用 target 字段存"第一个人",第二人随机
+      if (target === null) return s;
+      const aliveOthers = s.players.filter(p => p.alive && p.id !== actorId && p.id !== target);
+      const secondId = aliveOthers.length > 0 ? aliveOthers[Math.floor(Math.random() * aliveOthers.length)].id : null;
+      if (secondId === null) return s;
+      return {
+        ...s,
+        players: players.map((p, i) => {
+          if (i === actorId) return { ...p, privateMemory: { ...p.privateMemory, cupidLinkedIds: [target, secondId] } };
+          if (i === target || i === secondId) return { ...p, privateMemory: { ...p.privateMemory, cupidLinkedIds: [target, secondId] } };
+          return p;
+        }),
+        publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: `💘 丘比特连了 ${target + 1}号 和 ${secondId + 1}号 做情侣` }],
+      };
+    }
+    case 'knight':
+    case 'hunter':
+    case 'idiot': return s;  // 这些白天发动
     default: return s;
   }
 }
@@ -1135,32 +1223,71 @@ function DayVote({ state, setState, lang, aiSpeak }: {
 
   // 汇总投票 → 放逐
   const finalize = () => {
-    const tally: Record<number, number> = {};
-    Object.entries({ ...aiVotes, [state.userId]: userTarget ?? -1 }).forEach(([_voterId, targetId]) => {
+    // 收集所有投票(用于狼美人殉情)
+    const allVotes: { voterId: number; targetId: number }[] = [];
+    Object.entries(aiVotes).forEach(([voterId, targetId]) => {
       const tid = targetId as number;
       if (tid === null || tid < 0) return;
-      tally[tid] = (tally[tid] || 0) + 1;
+      allVotes.push({ voterId: parseInt(voterId, 10), targetId: tid });
     });
+    if (userTarget !== null && userTarget >= 0) {
+      allVotes.push({ voterId: state.userId, targetId: userTarget });
+    }
     // 票数最多的被投
+    const tally: Record<number, number> = {};
+    allVotes.forEach(v => { tally[v.targetId] = (tally[v.targetId] || 0) + 1; });
     let maxVotes = 0, exiled: number | null = null;
     Object.entries(tally).forEach(([id, count]) => {
       if (count > maxVotes) { maxVotes = count; exiled = parseInt(id, 10); }
     });
     if (exiled === null) {
-      // 没人被投(应该不会发生),跳过
       setState(s => ({ ...s, phase: 'night', round: s.round + 1 }));
       return;
     }
-    setState(s => ({
-      ...s,
-      players: s.players.map(p => p.id === exiled ? { ...p, alive: false } : p),
-      publicLog: [...s.publicLog, { kind: 'death', day: s.round, playerId: exiled!, text: `🗳️ 投票放逐:${exiled! + 1}号 ${s.players[exiled!].name} (${ROLES[s.players[exiled!].role].name[lang]})` }],
-      deadThisDay: exiled,
-      lastVotedOut: exiled,
-      // 狼王被投 → 触发狼王带人
-      phase: s.players[exiled!].role === 'wolfking' ? 'day-vote' : 'night',
-      // 简化:狼王带人机制放到下次 commit
-    }));
+    setState(s => {
+      let newState: GameState = {
+        ...s,
+        players: s.players.map(p => p.id === exiled ? { ...p, alive: false } : p),
+        publicLog: [...s.publicLog, { kind: 'death', day: s.round, playerId: exiled!, text: `🗳️ 投票放逐:${exiled! + 1}号 ${s.players[exiled!].name} (${ROLES[s.players[exiled!].role].name[lang]})` }],
+        deadThisDay: exiled,
+        lastVotedOut: exiled,
+        phase: 'night',
+      };
+      // 狼美人殉情:被投人是 wolfbeauty → 找最后投 ta 的人 → 也死
+      if (s.players[exiled!].role === 'wolfbeauty') {
+        const lastVoter = [...allVotes].reverse().find(v => v.targetId === exiled!);
+        if (lastVoter) {
+          newState = {
+            ...newState,
+            players: newState.players.map(p => p.id === lastVoter.voterId ? { ...p, alive: false } : p),
+            publicLog: [...newState.publicLog, { kind: 'death', day: s.round, playerId: lastVoter.voterId, text: `💋 狼美人殉情:带走了 ${lastVoter.voterId + 1}号 ${s.players[lastVoter.voterId].name}` }],
+          };
+          // 触发情侣殉情链
+          const { state: afterLovers } = applyLoversChain(newState, [exiled!, lastVoter.voterId]);
+          newState = afterLovers;
+        }
+      }
+      // 狼王带人(简化版:随机带一个,后续可让用户选)
+      if (s.players[exiled!].role === 'wolfking') {
+        const aliveAfter = newState.players.filter(p => p.alive);
+        if (aliveAfter.length > 0) {
+          const victim = aliveAfter[Math.floor(Math.random() * aliveAfter.length)].id;
+          newState = {
+            ...newState,
+            players: newState.players.map(p => p.id === victim ? { ...p, alive: false } : p),
+            publicLog: [...newState.publicLog, { kind: 'death', day: s.round, playerId: victim, text: `👑 狼王被投,带走 ${victim + 1}号 ${s.players[victim].name}` }],
+          };
+          const { state: afterLovers2 } = applyLoversChain(newState, [exiled!, victim]);
+          newState = afterLovers2;
+        }
+      }
+      // 情侣殉情(如果被投人是情侣)
+      if (s.players[exiled!].role !== 'wolfbeauty' && s.players[exiled!].role !== 'wolfking') {
+        const { state: afterLovers3 } = applyLoversChain(newState, [exiled!]);
+        newState = afterLovers3;
+      }
+      return newState;
+    });
   };
 
   useEffect(() => { if (Object.keys(aiVotes).length === 0) runVotes(); /* eslint-disable-next-line */ }, []);

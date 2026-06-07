@@ -45,6 +45,12 @@ export interface PrivateMemory {
   cupidLinkedIds: [number, number] | null;
   /** 石像鬼查过的人 */
   gargoyleChecks: { targetId: number; isGod: boolean }[];
+  /** 骑士是否已用过决斗(整局限一次) */
+  knightUsed: boolean;
+  /** 骑士今晚的决斗目标(白天发动) */
+  knightDuelTargetId: number | null;
+  /** 被投票放逐时的"狼美人"被投记录 — 谁最后投了我 */
+  wolfbeautyLastVoter: number | null;
 }
 
 export interface SpeechRecord {
@@ -81,6 +87,7 @@ const defaultMemory = (): PrivateMemory => ({
   wolfTeammates: [], seerChecks: [], witchAntidoteUsed: false, witchPoisonUsed: false,
   witchSavedId: null, witchPoisonedId: null, guardLastTargetId: null, guardHistory: [],
   cupidLinkedIds: null, gargoyleChecks: [],
+  knightUsed: false, knightDuelTargetId: null, wolfbeautyLastVoter: null,
 });
 
 /* ─────────────────────────────────────────────
@@ -256,14 +263,75 @@ export function checkWinner(state: GameState): Faction | null {
   const wolves = alive.filter(p => p.faction === 'wolf').length;
   const goods = alive.filter(p => p.faction === 'good').length;
   const thirds = alive.filter(p => p.faction === 'third').length;
+  // 丘比特胜利:任意情侣阵营胜利(好人/狼人),丘比特也胜
+  // 简化:第三方(丘比特)如果还活着 + (狼0 → 好人胜,或好人压倒 → 狼胜),丘比特胜
   if (wolves === 0 && thirds === 0) return 'good';
-  if (wolves >= goods + thirds) return 'wolf';
+  if (wolves >= goods + thirds && thirds > 0) return 'wolf';      // 狼阵营胜(丘比特+狼)
+  if (wolves >= goods + thirds && thirds === 0) return 'wolf';    // 纯狼阵营胜
+  if (wolves === 0 && thirds > 0) return 'third';                  // 丘比特+好人阵营胜(丘比特随好人阵营胜)
   // 第三方独立胜利:只剩 1 个第三方 + 1 个其他
   if (thirds === 1 && alive.length === 2) {
     const t = alive.find(p => p.faction === 'third')!;
     if (t.role === 'gargoyle' || t.role === 'cupid') return 'third';
   }
   return null;
+}
+
+/* ─────────────────────────────────────────────
+   情侣殉情 helper
+   ── 输入:已死的人 id 列表,返回新增殉情死亡的人
+   ── 规则:任一情侣死亡,另一人也死亡
+   ───────────────────────────────────────────── */
+export function applyLoversChain(state: GameState, newlyDead: number[]): { state: GameState; chained: number[] } {
+  let s = state;
+  const chained: number[] = [];
+  // 找所有情侣(从任一死者的 cupidLinkedIds 字段)
+  for (const deadId of newlyDead) {
+    const dead = s.players[deadId];
+    if (!dead) continue;
+    // 找这个人的情侣
+    let loverId: number | null = null;
+    for (const p of s.players) {
+      const linked = p.privateMemory.cupidLinkedIds;
+      if (linked && linked.includes(deadId)) {
+        loverId = linked.find(id => id !== deadId) ?? null;
+        break;
+      }
+    }
+    if (loverId !== null && s.players[loverId].alive && !chained.includes(loverId) && !newlyDead.includes(loverId)) {
+      s = {
+        ...s,
+        players: s.players.map(p => p.id === loverId ? { ...p, alive: false } : p),
+        publicLog: [...s.publicLog, {
+          kind: 'death', day: s.round, playerId: loverId,
+          text: `💘 情侣殉情:${loverId + 1}号 ${s.players[loverId].name} 跟着去了`,
+        }],
+      };
+      chained.push(loverId);
+    }
+  }
+  return { state: s, chained };
+}
+
+/* ─────────────────────────────────────────────
+   通用"杀 N 个人" helper
+   ───────────────────────────────────────────── */
+export function killPlayers(state: GameState, ids: number[], reason: string, killer: string): GameState {
+  const dead = ids.filter(id => state.players[id].alive);
+  if (dead.length === 0) return state;
+  let s: GameState = {
+    ...state,
+    players: state.players.map(p => dead.includes(p.id) ? { ...p, alive: false } : p),
+    publicLog: [...state.publicLog, ...dead.map(id => ({
+      kind: 'death' as const, day: state.round, playerId: id,
+      text: `${reason} ${id + 1}号 ${state.players[id].name}`,
+    }))],
+  };
+  // 触发情侣殉情
+  const { state: s2, chained } = applyLoversChain(s, dead);
+  s = s2;
+  if (chained.length > 0) void killer; // 暂时 unused
+  return s;
 }
 
 /* ─────────────────────────────────────────────
