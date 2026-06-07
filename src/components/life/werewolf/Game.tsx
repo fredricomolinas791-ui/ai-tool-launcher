@@ -77,27 +77,38 @@ function BoardCard({ board, onSelect, lang, disabled, disabledReason }: {
    玩家座位
    ═══════════════════════════════════════════════════════════════════ */
 
-function PlayerSeat({ player, isYou, isSpeaking, lang }: {
-  player: Player; isYou: boolean; isSpeaking?: boolean; lang: 'zh' | 'en';
+function PlayerSeat({ player, isYou, isSpeaking, isActing, lang }: {
+  player: Player; isYou: boolean; isSpeaking?: boolean; isActing?: boolean; lang: 'zh' | 'en';
 }) {
   const role = ROLES[player.role];
   // 严格隐藏:座位框里永远不显示角色名,只用 emoji(只对自己显示真实身份)
   const display = !player.alive ? '💀' : isYou ? role.emoji : '👤';
+  const isSheriff = player.privateMemory.isSheriff;
   return (
     <div className="relative flex flex-col items-center" style={{ width: 72 }}>
       <div
-        className="w-14 h-14 rounded-full flex items-center justify-center text-2xl border-2 transition-all"
+        className={`w-14 h-14 rounded-full flex items-center justify-center text-2xl border-2 transition-all ${isActing ? 'animate-pulse' : ''}`}
         style={{
-          background: player.alive ? (isSpeaking ? 'var(--color-accent-glow)' : 'var(--color-card-bg)') : 'var(--color-bg-deep)',
-          borderColor: isYou ? 'var(--color-accent)' : isSpeaking ? 'var(--color-accent)' : 'var(--color-border-light)',
+          background: player.alive
+            ? (isActing ? 'rgba(250,204,21,0.25)' : (isSpeaking ? 'var(--color-accent-glow)' : 'var(--color-card-bg)'))
+            : 'var(--color-bg-deep)',
+          borderColor: isYou ? 'var(--color-accent)'
+            : isActing ? '#facc15'
+            : isSpeaking ? 'var(--color-accent)'
+            : 'var(--color-border-light)',
           opacity: player.alive ? 1 : 0.4,
-          boxShadow: isSpeaking ? '0 0 0 4px var(--color-accent-glow)' : 'none',
+          boxShadow: isActing
+            ? '0 0 0 4px rgba(250,204,21,0.35), 0 0 16px rgba(250,204,21,0.5)'
+            : (isSpeaking ? '0 0 0 4px var(--color-accent-glow)' : 'none'),
         }}
       >{display}</div>
       <div className="mt-1 text-[10px] font-medium truncate w-full text-center" style={{ color: player.alive ? 'var(--color-text)' : 'var(--color-text-muted)' }}>
         {player.id + 1}. {player.name}
       </div>
       {isYou && <div className="text-[9px] mt-0.5" style={{ color: 'var(--color-accent)' }}>{lang === 'zh' ? '你' : 'You'}</div>}
+      {isSheriff && player.alive && (
+        <div className="text-[9px] mt-0.5" title={lang === 'zh' ? '警长(1.5 票)' : 'Sheriff (1.5 votes)'} style={{ color: '#facc15' }}>⭐ {lang === 'zh' ? '警长' : 'Sheriff'}</div>
+      )}
     </div>
   );
 }
@@ -268,6 +279,8 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
 }) {
   // 内部 state 仅用于派生 UI(比如 streamingText),游戏 state 走 prop
   const [streamingText, setStreamingText] = useState<{ playerId: number; text: string } | null>(null);
+  /* 当前夜晚正在行动的玩家 ID(用于座位高亮) */
+  const [actingPlayerId, setActingPlayerId] = useState<number | null>(null);
   /* setState wrapper:把 (s:GameState) => GameState 形式适配到 prop 的 Dispatch<SetStateAction<GameState|null>>
      —— 子组件里都假设 state 非 null,这里用 prev ? u(prev) : prev 兜底(理论上 prop 永远非 null) */
   const setState = (u: (s: GameState) => GameState) =>
@@ -360,6 +373,7 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
                   <PlayerSeat key={p.id} player={p}
                     isYou={p.id === state.userId}
                     isSpeaking={streamingText?.playerId === p.id}
+                    isActing={actingPlayerId === p.id}
                     lang={lang} />
                 ))}
               </div>
@@ -369,6 +383,7 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
                   <PlayerSeat key={p.id} player={p}
                     isYou={p.id === state.userId}
                     isSpeaking={streamingText?.playerId === p.id}
+                    isActing={actingPlayerId === p.id}
                     lang={lang} />
                 ))}
               </div>
@@ -376,8 +391,9 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
           </div>
           {/* 当前阶段 UI */}
           {state.phase === 'role-reveal' && <RoleRevealPanel state={state} lang={lang} onContinue={() => setState(s => ({ ...s, phase: 'night', round: s.round + 1 }))} />}
-          {state.phase === 'night' && <NightPanel state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
+          {state.phase === 'night' && <NightPanel state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} onActingChange={setActingPlayerId} />}
           {state.phase === 'day-announce' && <DayAnnounce state={state} setState={setState} lang={lang} />}
+          {state.phase === 'sheriff-election' && <SheriffElection state={state} setState={setState} lang={lang} />}
           {state.phase === 'day-discuss' && <DayDiscuss state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
           {state.phase === 'day-vote' && <DayVote state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
           {state.phase === 'hunter-shoot' && <HunterShoot state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
@@ -539,10 +555,11 @@ const NIGHT_INTRO_SEC = 2.5;
 const NIGHT_OUTRO_SEC = 1.5;
 const NIGHT_ACTION_TIMEOUT = 35;
 
-function NightPanel({ state, setState, lang, aiSpeak }: {
+function NightPanel({ state, setState, lang, aiSpeak, onActingChange }: {
   state: GameState; setState: (updater: (s: GameState) => GameState) => void;
   lang: 'zh' | 'en';
   aiSpeak: (playerId: number, system: string, user: string, silent?: boolean) => Promise<{ speech: string; target: number | null }>;
+  onActingChange?: (playerId: number | null) => void;
 }) {
   // 行动队列(用 useState,render 时能拿到)
   const [actions, setActions] = useState<{ role: RoleId; playerId: number }[]>([]);
@@ -572,6 +589,13 @@ function NightPanel({ state, setState, lang, aiSpeak }: {
   }, [state.round]);
 
   const cur = actions[actionIdx];
+
+  // 通知 GameRunner 当前行动玩家(action 阶段通知 cur,其他阶段清空)
+  useEffect(() => {
+    if (scene === 'action' && cur) onActingChange?.(cur.playerId);
+    else onActingChange?.(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scene, actionIdx, cur?.playerId]);
 
   // 每次 scene/actionIdx 变化时,重置 aiDone
   useEffect(() => {
@@ -1093,7 +1117,7 @@ function resolveNight(s: GameState, _lang: 'zh' | 'en'): GameState {
     deadThisNight: Array.from(dead),
     publicLog: [...s.publicLog, ...Array.from(dead).map(id => ({
       kind: 'death' as const, day: s.round, playerId: id,
-      text: `${id + 1}号 ${s.players[id].name} 在夜里倒下了`,
+      text: `${s.players[id].name} 在夜里倒下了`,
     }))],
     phase: 'day-announce' as const,
   };
@@ -1147,7 +1171,7 @@ function IdiotFlip({ state, setState, lang, aiSpeak }: {
           players: s.players.map(p => p.id === idiotId
             ? { ...p, privateMemory: { ...p.privateMemory, /* idiot 已翻牌:失去投票权 */ } }
             : p),
-          publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: `🤪 ${idiotId + 1}号 ${s.players[idiotId].name} 翻牌免死(之后失去投票权)` }],
+          publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: `🤪 ${s.players[idiotId].name} 翻牌免死(之后失去投票权)` }],
           lastVotedOut: null,
           phase: 'night',
           round: s.round + 1,
@@ -1157,7 +1181,7 @@ function IdiotFlip({ state, setState, lang, aiSpeak }: {
         ns = {
           ...s,
           players: s.players.map(p => p.id === idiotId ? { ...p, alive: false } : p),
-          publicLog: [...s.publicLog, { kind: 'death', day: s.round, playerId: idiotId, text: `🤪 ${idiotId + 1}号 ${s.players[idiotId].name} 认命了` }],
+          publicLog: [...s.publicLog, { kind: 'death', day: s.round, playerId: idiotId, text: `🤪 ${s.players[idiotId].name} 认命了` }],
           lastVotedOut: null,
           phase: 'night',
           round: s.round + 1,
@@ -1214,13 +1238,103 @@ function IdiotFlip({ state, setState, lang, aiSpeak }: {
    白天:死亡公布 / 讨论 / 投票
    ═══════════════════════════════════════════════════════════════════ */
 
+/* ═══════════════════════════════════════════════════════════════════
+   警长竞选(只在 12 人局 + 没有警长时出现一次,第一个白天)
+   ── 所有存活玩家投票选警长(可以选自己,不能弃权,简化版)
+   ── 票数最多的当警长(同票随机)
+   ── 警长 = 1.5 票投票权(vote 票数 = 2,普通玩家 = 1)
+   ═══════════════════════════════════════════════════════════════════ */
+
+function SheriffElection({ state, setState, lang }: {
+  state: GameState; setState: (u: (s: GameState) => GameState) => void;
+  lang: 'zh' | 'en';
+}) {
+  const alivePlayers = state.players.filter(p => p.alive);
+  const [userPick, setUserPick] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [aiVotes, setAiVotes] = useState<Record<number, number>>({});
+
+  const runVotes = async () => {
+    setBusy(true);
+    const votes: Record<number, number> = {};
+    for (const p of alivePlayers) {
+      if (p.id === state.userId) continue;
+      // 随机选一个(包括自己)
+      const choice = alivePlayers[Math.floor(Math.random() * alivePlayers.length)].id;
+      votes[p.id] = choice;
+    }
+    setAiVotes(votes);
+    setBusy(false);
+  };
+
+  useEffect(() => { if (Object.keys(aiVotes).length === 0) runVotes(); /* eslint-disable-next-line */ }, []);
+
+  const finalize = () => {
+    const tally: Record<number, number> = {};
+    Object.values(aiVotes).forEach(t => { tally[t] = (tally[t] || 0) + 1; });
+    if (userPick !== null) tally[userPick] = (tally[userPick] || 0) + 1;
+    let winner: number | null = null;
+    const candidates = Object.entries(tally).filter(([_, c]) => c === Math.max(...Object.values(tally)));
+    if (candidates.length > 0) {
+      winner = parseInt(candidates[Math.floor(Math.random() * candidates.length)][0], 10);
+    }
+    if (winner === null) {
+      // 兜底:随机选
+      winner = alivePlayers[Math.floor(Math.random() * alivePlayers.length)].id;
+    }
+    setState(s => ({
+      ...s,
+      players: s.players.map(p => p.id === winner ? { ...p, privateMemory: { ...p.privateMemory, isSheriff: true } } : p),
+      publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: `⭐ ${state.players[winner].name} 当选警长(拥有 1.5 票投票权)` }],
+      phase: 'day-discuss',
+    }));
+  };
+
+  return (
+    <div className="p-4 rounded-xl" style={{ background: 'var(--color-card-bg)', border: '1px solid #facc15' }}>
+      <h3 className="font-semibold mb-2 flex items-center gap-1.5 justify-center" style={{ color: '#facc15' }}>
+        ⭐ {lang === 'zh' ? '警长竞选' : 'Sheriff Election'}
+      </h3>
+      <p className="text-xs text-center mb-3" style={{ color: 'var(--color-text-muted)' }}>
+        {lang === 'zh' ? '首日警长竞选!每人选 1 个玩家(含自己),票数最多者当选(1.5 票投票权)' : 'Day 1 sheriff election! Pick 1 (incl. yourself). Most votes wins (1.5 vote power)'}
+      </p>
+      {busy ? (
+        <p className="text-sm text-center py-3" style={{ color: 'var(--color-text-muted)' }}>{lang === 'zh' ? 'AI 玩家正在投票…' : 'AI voting…'}</p>
+      ) : (
+        <>
+          <p className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>{lang === 'zh' ? '你选:' : 'You pick:'}</p>
+          <div className="flex flex-wrap gap-1.5 justify-center">
+            {alivePlayers.map(p => (
+              <button key={p.id} onClick={() => setUserPick(p.id)}
+                className="px-2 py-1 rounded text-xs"
+                style={{
+                  background: userPick === p.id ? '#facc15' : 'var(--color-card-bg)',
+                  color: userPick === p.id ? '#000' : 'var(--color-text)',
+                }}>{p.id + 1}.{p.name}{p.id === state.userId && (lang === 'zh' ? ' (你)' : ' (You)')}</button>
+            ))}
+          </div>
+          <div className="text-center mt-3">
+            <Button onClick={finalize} disabled={userPick === null}>
+              {lang === 'zh' ? '确认 + 揭晓' : 'Confirm & Reveal'} <ChevronRight size={14} className="ml-1" />
+            </Button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function DayAnnounce({ state, setState, lang }: { state: GameState; setState: (u: (s: GameState) => GameState) => void; lang: 'zh' | 'en' }) {
   const dead = state.deadThisNight;
   // 检测所有死亡者里是否有猎人(包括殉情带走的)
   const hunterDead = dead.find(id => state.players[id].role === 'hunter');
+  // 12 人局第一天(没有警长时)→ 警长竞选;否则 → 讨论
+  const needSheriff = state.players.length >= 12 && !state.players.some(p => p.privateMemory.isSheriff);
   useEffect(() => {
     if (hunterDead !== undefined) {
       setState(s => ({ ...s, phase: 'hunter-shoot', lastVotedOut: hunterDead }));
+    } else if (needSheriff) {
+      setState(s => ({ ...s, phase: 'sheriff-election' }));
     } else {
       setState(s => ({ ...s, phase: 'day-discuss' }));
     }
@@ -1306,7 +1420,7 @@ function HunterShoot({ state, setState, lang, aiSpeak }: {
       let ns: GameState = {
         ...s,
         players: s.players.map(p => p.id === chosen ? { ...p, alive: false } : p),
-        publicLog: [...s.publicLog, { kind: 'death', day: s.round, playerId: chosen, text: `🏹 ${chosen + 1}号 ${s.players[chosen].name} 跟着去了` }],
+        publicLog: [...s.publicLog, { kind: 'death', day: s.round, playerId: chosen, text: `🏹 ${s.players[chosen].name} 跟着去了` }],
         lastVotedOut: null,
       };
       // 情侣殉情
@@ -1520,13 +1634,17 @@ function DayVote({ state, setState, lang, aiSpeak }: {
     if (userTarget !== null && userTarget >= 0) {
       allVotes.push({ voterId: state.userId, targetId: userTarget });
     }
-    // 票数最多的被投
+    // 票数最多的被投(警长的票算 2 票 = 1.5 票权重,简化取整)
     const tally: Record<number, number> = {};
-    allVotes.forEach(v => { tally[v.targetId] = (tally[v.targetId] || 0) + 1; });
+    allVotes.forEach(v => {
+      const weight = state.players[v.voterId]?.privateMemory.isSheriff ? 2 : 1;
+      tally[v.targetId] = (tally[v.targetId] || 0) + weight;
+    });
     let maxVotes = 0, exiled: number | null = null;
     Object.entries(tally).forEach(([id, count]) => {
       if (count > maxVotes) { maxVotes = count; exiled = parseInt(id, 10); }
     });
+    void maxVotes; // 用于调试,可保留
     if (exiled === null) {
       setState(s => ({ ...s, phase: 'night', round: s.round + 1 }));
       return;
@@ -1548,7 +1666,7 @@ function DayVote({ state, setState, lang, aiSpeak }: {
     // 分支 B/C/D: 标记被投者死亡 + 计算链式死亡
     let newlyDead: number[] = [exiled];
     const logEntries: { kind: 'death'; day: number; playerId: number; text: string }[] = [
-      { kind: 'death', day: state.round, playerId: exiled, text: `🗳️ ${exiled + 1}号 ${state.players[exiled].name} 被投票放逐` },
+      { kind: 'death', day: state.round, playerId: exiled, text: `🗳️ ${state.players[exiled].name} 被投票放逐` },
     ];
 
     // 狼美人殉情:带最后投她的人
@@ -1556,7 +1674,7 @@ function DayVote({ state, setState, lang, aiSpeak }: {
       const lastVoter = [...allVotes].reverse().find(v => v.targetId === exiled);
       if (lastVoter) {
         newlyDead.push(lastVoter.voterId);
-        logEntries.push({ kind: 'death', day: state.round, playerId: lastVoter.voterId, text: `💋 ${lastVoter.voterId + 1}号 ${state.players[lastVoter.voterId].name} 跟着去了` });
+        logEntries.push({ kind: 'death', day: state.round, playerId: lastVoter.voterId, text: `💋 ${state.players[lastVoter.voterId].name} 跟着去了` });
       }
     }
     // 狼王带人:随机带一个还活着的
@@ -1565,7 +1683,7 @@ function DayVote({ state, setState, lang, aiSpeak }: {
       if (aliveAfter.length > 0) {
         const victim = aliveAfter[Math.floor(Math.random() * aliveAfter.length)].id;
         newlyDead.push(victim);
-        logEntries.push({ kind: 'death', day: state.round, playerId: victim, text: `👑 ${victim + 1}号 ${state.players[victim].name} 跟着去了` });
+        logEntries.push({ kind: 'death', day: state.round, playerId: victim, text: `👑 ${state.players[victim].name} 跟着去了` });
       }
     }
 
@@ -1684,7 +1802,7 @@ function GameOver({ state, winner, lang, onExit }: {
 function buildNightPrompt(actor: Player, state: GameState, lang: 'zh' | 'en'): string {
   const role = ROLES[actor.role];
   const visible = actor.privateMemory;
-  const alive = state.players.filter(x => x.alive).map(x => `${x.id + 1}号 ${x.name}`).join('、');
+  const alive = state.players.filter(x => x.alive).map(x => `${x.name}`).join('、');
   let contextExtra = '';
   if (actor.faction === 'wolf' && visible.wolfTeammates.length) {
     const mates = visible.wolfTeammates.map(id => `${state.players[id].name}`).join('、');
@@ -1710,7 +1828,7 @@ function buildNightPrompt(actor: Player, state: GameState, lang: 'zh' | 'en'): s
 
 function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 'en'): string {
   const role = ROLES[actor.role];
-  const alive = state.players.filter(x => x.alive).map(x => `${x.id + 1}号 ${x.name}`).join('、');
+  const alive = state.players.filter(x => x.alive).map(x => `${x.name}`).join('、');
   const dead = state.deadThisNight.map(id => `${state.players[id].name}`).join('、');
   let extra = '';
   if (actor.faction === 'wolf' && actor.privateMemory.wolfTeammates.length) {
@@ -1727,7 +1845,7 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
 }
 
 function buildVotePrompt(actor: Player, state: GameState, lang: 'zh' | 'en'): string {
-  const alive = state.players.filter(x => x.alive).filter(x => x.id !== actor.id).map(x => `${x.id + 1}号 ${x.name}`).join('、');
+  const alive = state.players.filter(x => x.alive).filter(x => x.id !== actor.id).map(x => `${x.name}`).join('、');
   let extra = '';
   if (actor.faction === 'wolf' && actor.privateMemory.wolfTeammates.length) {
     const mates = actor.privateMemory.wolfTeammates.map(id => `${state.players[id].name}`).join('、');

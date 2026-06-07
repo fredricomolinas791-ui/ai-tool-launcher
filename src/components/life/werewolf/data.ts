@@ -24,7 +24,7 @@ export type Faction = 'wolf' | 'good' | 'third';
 export type Phase =
   | 'setup' | 'role-reveal'
   | 'night' | 'night-resolve'
-  | 'day-announce' | 'knight-duel' | 'day-discuss' | 'day-vote'
+  | 'day-announce' | 'sheriff-election' | 'knight-duel' | 'day-discuss' | 'day-vote'
   | 'hunter-shoot' | 'idiot-flip'
   | 'judge' | 'gameover';
 export type Personality =

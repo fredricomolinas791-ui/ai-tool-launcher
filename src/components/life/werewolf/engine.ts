@@ -51,6 +51,8 @@ export interface PrivateMemory {
   knightDuelTargetId: number | null;
   /** 被投票放逐时的"狼美人"被投记录 — 谁最后投了我 */
   wolfbeautyLastVoter: number | null;
+  /** 是否是警长(12 人局首日竞选产生) */
+  isSheriff: boolean;
 }
 
 export interface SpeechRecord {
@@ -88,6 +90,7 @@ const defaultMemory = (): PrivateMemory => ({
   witchSavedId: null, witchPoisonedId: null, guardLastTargetId: null, guardHistory: [],
   cupidLinkedIds: null, gargoyleChecks: [],
   knightUsed: false, knightDuelTargetId: null, wolfbeautyLastVoter: null,
+  isSheriff: false,
 });
 
 /* ─────────────────────────────────────────────
