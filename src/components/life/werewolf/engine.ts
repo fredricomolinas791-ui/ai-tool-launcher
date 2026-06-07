@@ -129,12 +129,12 @@ export function initGame(boardId: BoardId, userName: string, lang: 'zh' | 'en' =
 }
 
 function generatePlayerNamesLocal(count: number, userName: string): { name: string; isUser: boolean }[] {
-  const pool = ['李建国','王晓东','张丽华','陈思远','刘文博','赵子涵','黄俊豪','周婷婷','吴佳怡','徐志远',
-                '孙明哲','林晓雪','何雨桐','马天宇','罗思琪','高博文','梁嘉怡','宋子轩','韩雪儿','冯子墨',
-                '邓文君','蔡子昂','蒋梦琪','杜俊熙','叶思雨'];
-  const sh = [...pool].sort(() => Math.random() - 0.5).slice(0, count);
+  // 全部用「X号玩家」,不用真名(避免 AI 起假名露馅)
   const u = Math.floor(Math.random() * count);
-  return sh.map((n, i) => ({ name: i === u ? userName : n, isUser: i === u }));
+  return Array.from({ length: count }, (_, i) => ({
+    name: i === u ? userName : `${i + 1}号玩家`,
+    isUser: i === u,
+  }));
 }
 
 /* ─────────────────────────────────────────────

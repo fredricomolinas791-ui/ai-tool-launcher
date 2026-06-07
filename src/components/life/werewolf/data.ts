@@ -24,7 +24,7 @@ export type Faction = 'wolf' | 'good' | 'third';
 export type Phase =
   | 'setup' | 'role-reveal'
   | 'night' | 'night-resolve'
-  | 'day-announce' | 'day-discuss' | 'day-vote'
+  | 'day-announce' | 'knight-duel' | 'day-discuss' | 'day-vote'
   | 'hunter-shoot' | 'idiot-flip'
   | 'judge' | 'gameover';
 export type Personality =
@@ -244,21 +244,12 @@ export function pickPersonality(): Personality {
 }
 
 /* ─────────────────────────────────────────────
-   玩家名字池
+   玩家名字 —— 全部用「X号玩家」,不用真名(避免 AI 起假名露馅)
    ───────────────────────────────────────────── */
-const AI_NAMES = [
-  '李建国', '王晓东', '张丽华', '陈思远', '刘文博',
-  '赵子涵', '黄俊豪', '周婷婷', '吴佳怡', '徐志远',
-  '孙明哲', '林晓雪', '何雨桐', '马天宇', '罗思琪',
-  '高博文', '梁嘉怡', '宋子轩', '韩雪儿', '冯子墨',
-  '邓文君', '蔡子昂', '蒋梦琪', '杜俊熙', '叶思雨',
-];
-
 export function generatePlayerNames(count: number, userName = '你'): { name: string; isUser: boolean }[] {
-  const shuffled = [...AI_NAMES].sort(() => Math.random() - 0.5).slice(0, count);
   const userPos = Math.floor(Math.random() * count);
-  return shuffled.map((name, i) => ({
-    name: i === userPos ? userName : name,
+  return Array.from({ length: count }, (_, i) => ({
+    name: i === userPos ? userName : `${i + 1}号玩家`,
     isUser: i === userPos,
   }));
 }
