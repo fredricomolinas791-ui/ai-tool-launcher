@@ -6,7 +6,7 @@
    ═══════════════════════════════════════════════════════════════════ */
 
 import { useState, useEffect, useRef } from 'react';
-import { Drama, Sparkles, Moon, Sun, ChevronRight, MessageCircle, Crown, AlertTriangle, Play, X, Skull, Shield, Users, Swords } from 'lucide-react';
+import { Drama, Sparkles, Sun, ChevronRight, MessageCircle, Crown, AlertTriangle, Play, X, Skull, Shield, Users, Swords } from 'lucide-react';
 import { Button } from '../../ui/Button';
 import { useI18n } from '../../../hooks/useI18n';
 import {
@@ -362,119 +362,209 @@ function RoleRevealPanel({ state, lang, onContinue }: { state: GameState; lang: 
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   夜晚面板
-   ── 按 nightOrder 顺序,所有 alive 的 night-action 角色依次行动
-   ── AI 角色:自动调用,记录到 privateMemory
-   ── 用户角色:显示 UI 让用户选
+   夜晚面板 —— 分幕模式
+   ── 每幕 3 阶段:睁眼字幕(2s) → 行动(用户/AI,30s 倒计时)→ 闭眼字幕(1.5s)
+   ── 所有人都能看到字幕(村民 / 守卫 / 女巫 / 狼都能看,但不知道具体行动)
    ═══════════════════════════════════════════════════════════════════ */
+
+const NIGHT_INTRO_SEC = 2.5;    // 睁眼字幕时长
+const NIGHT_OUTRO_SEC = 1.5;    // 闭眼字幕时长
+const NIGHT_ACTION_TIMEOUT = 35; // 行动阶段超时(秒)
 
 function NightPanel({ state, setState, lang, aiSpeak }: {
   state: GameState; setState: (updater: (s: GameState) => GameState) => void;
   lang: 'zh' | 'en';
   aiSpeak: (playerId: number, system: string, user: string) => Promise<string>;
 }) {
-  // 夜晚行动队列(按 nightOrder 排序)
+  // 夜晚行动队列(按 nightOrder 排序,只包含有 nightAction 的角色)
   const actions = useRef<{ role: RoleId; playerId: number }[]>([]);
   const [actionIdx, setActionIdx] = useState(0);
+  const [scene, setScene] = useState<'intro' | 'action' | 'outro' | 'done'>('intro');
+  const [timeLeft, setTimeLeft] = useState(NIGHT_INTRO_SEC);
   const [busy, setBusy] = useState(false);
+  const timerRef = useRef<number | null>(null);
 
-  // 初始化行动队列
+  // 初始化行动队列(当 round 变化)
   useEffect(() => {
     const aliveRoles = state.players.filter(p => p.alive && ROLES[p.role].hasNightAction);
     actions.current = aliveRoles
       .map(p => ({ role: p.role, playerId: p.id }))
       .sort((a, b) => ROLES[a.role].nightOrder - ROLES[b.role].nightOrder);
     setActionIdx(0);
+    setScene('intro');
+    setTimeLeft(NIGHT_INTRO_SEC);
   }, [state.round]);
 
   const cur = actions.current[actionIdx];
 
-  // 推进一个行动
-  const runAction = async () => {
-    if (!cur) return;
-    setBusy(true);
-    try {
-      if (cur.playerId === state.userId) {
-        // 用户操作 — 不在这里跑,等用户点 UI
-        return;
-      }
-      // AI 玩家行动
-      const actor = state.players[cur.playerId];
-      const target = await runAIAction(actor, state, lang, aiSpeak);
-      if (target !== null) {
-        // 应用行动结果
-        setState(s => applyNightAction(s, cur.role, cur.playerId, target, lang));
-      }
-    } finally {
-      setBusy(false);
-      setActionIdx(i => i + 1);
-    }
-  };
+  // 倒计时管理
+  useEffect(() => {
+    if (timerRef.current) { window.clearInterval(timerRef.current); timerRef.current = null; }
+    if (scene === 'done' || !cur) return;
+    timerRef.current = window.setInterval(() => {
+      setTimeLeft(t => Math.max(0, t - 0.1));
+    }, 100);
+    return () => { if (timerRef.current) { window.clearInterval(timerRef.current); timerRef.current = null; } };
+  }, [scene, actionIdx]);
 
-  // 用户操作确认
-  const onUserAction = (target: number | null) => {
+  // 阶段超时自动推进
+  useEffect(() => {
+    if (scene === 'intro' && timeLeft <= 0) { setScene('action'); setTimeLeft(NIGHT_ACTION_TIMEOUT); return; }
+    if (scene === 'outro' && timeLeft <= 0) { advanceAction(); return; }
+    if (scene === 'action' && timeLeft <= 0 && !busy) {
+      // 超时:对 AI 玩家强制推进,对 用户 自动用默认(null)
+      handleTimeout();
+      return;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timeLeft, scene, busy]);
+
+  function advanceAction() {
+    if (actionIdx + 1 >= actions.current.length) {
+      // 夜晚结束,进入白天
+      setScene('done');
+      setState(s => resolveNight(s, lang));
+    } else {
+      setActionIdx(i => i + 1);
+      setScene('intro');
+      setTimeLeft(NIGHT_INTRO_SEC);
+    }
+  }
+
+  // AI 行动(开场:scene 进入 action 时)
+  useEffect(() => {
+    if (scene !== 'action' || busy || !cur) return;
+    if (cur.playerId === state.userId) return; // 等用户操作
+    setBusy(true);
+    (async () => {
+      const actor = state.players[cur.playerId];
+      try {
+        const target = await runAIAction(actor, state, lang, aiSpeak);
+        if (target !== null) {
+          setState(s => applyNightAction(s, cur.role, cur.playerId, target, lang));
+        }
+      } finally {
+        setBusy(false);
+        // 行动完毕 → outro
+        setScene('outro');
+        setTimeLeft(NIGHT_OUTRO_SEC);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scene, actionIdx]);
+
+  function handleTimeout() {
+    if (!cur) return;
+    if (cur.playerId === state.userId) {
+      // 用户超时:自动跳过(无目标)
+      onUserAction(null);
+    }
+    // AI 超时:runAIAction 会自然完成(可能 null),不用管
+  }
+
+  function onUserAction(target: number | null) {
     if (!cur) return;
     setState(s => applyNightAction(s, cur.role, cur.playerId, target, lang));
-    setActionIdx(i => i + 1);
-  };
-
-  // 全部行动完成后结算
-  useEffect(() => {
-    if (actionIdx >= actions.current.length && actions.current.length > 0 && !busy) {
-      // 结算夜晚 → 白天公布
-      setState(s => resolveNight(s, lang));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [actionIdx]);
-
-  // 触发 AI 行动(开场或下一个 AI)
-  useEffect(() => {
-    if (busy) return;
-    if (!cur) return;
-    if (cur.playerId === state.userId) return; // 等用户
-    if (actionIdx === 0) {
-      // 第一次
-      runAction();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cur]);
+    setScene('outro');
+    setTimeLeft(NIGHT_OUTRO_SEC);
+  }
 
   if (state.phase !== 'night') return null;
 
-  if (!cur) {
+  // 渲染:全暗幕布,中央显示字幕 + 倒计时
+  return (
+    <div className="p-6 rounded-xl text-center" style={{
+      background: 'rgba(0,0,0,0.6)', border: '1px solid var(--color-accent)',
+      minHeight: 200, position: 'relative',
+    }}>
+      <div className="text-[10px] mb-2" style={{ color: 'var(--color-text-muted)' }}>
+        {lang === 'zh' ? `第 ${state.round} 夜` : `Night ${state.round}`}
+      </div>
+      {cur && scene !== 'done' && (
+        <NightSceneDisplay
+          scene={scene}
+          cur={cur}
+          state={state}
+          lang={lang}
+          timeLeft={timeLeft}
+          onUserAction={onUserAction}
+          busy={busy}
+        />
+      )}
+      {scene === 'done' && (
+        <div className="text-sm" style={{ color: 'var(--color-text-muted)' }}>
+          {lang === 'zh' ? '🌅 天快亮了…' : '🌅 Dawn approaching…'}
+        </div>
+      )}
+      {/* 当前行动玩家头像高亮提示(座位 UI 之外) */}
+      {cur && scene === 'action' && (
+        <div className="mt-3 text-[10px]" style={{ color: 'var(--color-text-muted)' }}>
+          {lang === 'zh' ? '当前行动:' : 'Acting now:'} {ROLES[cur.role].emoji} {ROLES[cur.role].name[lang]}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── 夜晚分幕具体显示 ── */
+function NightSceneDisplay({ scene, cur, state, lang, timeLeft, onUserAction, busy }: {
+  scene: 'intro' | 'action' | 'outro';
+  cur: { role: RoleId; playerId: number };
+  state: GameState; lang: 'zh' | 'en';
+  timeLeft: number;
+  onUserAction: (t: number | null) => void;
+  busy: boolean;
+}) {
+  const role = ROLES[cur.role];
+  const isMe = cur.playerId === state.userId;
+  const actorName = state.players[cur.playerId].name;
+
+  // 字幕
+  if (scene === 'intro') {
     return (
-      <div className="p-4 rounded-xl text-center" style={{ background: 'var(--color-bg-deep)' }}>
-        <div className="text-sm" style={{ color: 'var(--color-text-muted)' }}>{lang === 'zh' ? '夜晚结算中…' : 'Resolving…'}</div>
+      <div>
+        <div className="text-5xl mb-3 animate-pulse">{role.emoji}</div>
+        <div className="text-2xl font-bold mb-2" style={{ color: 'var(--color-accent)' }}>
+          {lang === 'zh' ? `${role.name.zh}请睁眼` : `${role.name.en}, wake up`}
+        </div>
+        <div className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+          {lang === 'zh' ? `${(timeLeft).toFixed(1)}s 后开始行动` : `Action starts in ${timeLeft.toFixed(1)}s`}
+        </div>
       </div>
     );
   }
-
-  const actorName = state.players[cur.playerId].name;
-  const isMe = cur.playerId === state.userId;
-  const role = ROLES[cur.role];
-  const stepLabel = `${role.emoji} ${isMe ? (lang === 'zh' ? '你' : 'You') : actorName} · ${role.name[lang]}`;
-
-  return (
-    <div className="p-4 rounded-xl" style={{ background: 'var(--color-bg-deep)', border: '1px solid var(--color-accent)' }}>
-      <div className="text-center mb-3">
-        <Moon size={24} className="mx-auto mb-1" style={{ color: 'var(--color-accent)' }} />
-        <h3 className="font-semibold" style={{ color: 'var(--color-text)' }}>
-          {lang === 'zh' ? `第 ${state.round} 夜` : `Night ${state.round}`} · {stepLabel}
-        </h3>
+  if (scene === 'outro') {
+    return (
+      <div>
+        <div className="text-5xl mb-3">😴</div>
+        <div className="text-2xl font-bold mb-2" style={{ color: 'var(--color-text)' }}>
+          {lang === 'zh' ? `${role.name.zh}请闭眼` : `${role.name.en}, close your eyes`}
+        </div>
+        <div className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+          {lang === 'zh' ? `下一位…` : 'Next…'}
+        </div>
       </div>
-      {busy ? (
-        <div className="text-center text-sm py-4" style={{ color: 'var(--color-text-muted)' }}>
-          {lang === 'zh' ? 'AI 玩家正在思考…' : 'AI thinking…'}
-        </div>
-      ) : isMe ? (
+    );
+  }
+  // action
+  return (
+    <div>
+      <div className="text-4xl mb-2">{role.emoji}</div>
+      <div className="text-sm mb-1" style={{ color: 'var(--color-text)' }}>
+        {isMe
+          ? (lang === 'zh' ? '轮到你了' : 'Your turn')
+          : (lang === 'zh' ? `AI ${actorName} 正在行动` : `AI ${actorName} acting`)}
+      </div>
+      <div className="text-[10px] mb-3" style={{ color: timeLeft < 10 ? '#dc2626' : 'var(--color-text-muted)' }}>
+        ⏱ {timeLeft.toFixed(1)}s {lang === 'zh' ? '后超时自动跳过' : 'timeout auto-skip'}
+      </div>
+      {isMe ? (
         <UserNightActionUI role={cur.role} state={state} lang={lang} onConfirm={onUserAction} />
-      ) : (
-        <div className="text-center">
-          <Button onClick={runAction}>
-            {lang === 'zh' ? '继续' : 'Continue'} <ChevronRight size={14} className="ml-1" />
-          </Button>
+      ) : busy ? (
+        <div className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+          {lang === 'zh' ? '🤔 思考中…' : '🤔 thinking…'}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
