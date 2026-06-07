@@ -590,8 +590,12 @@ function NightPanel({ state, setState, lang, aiSpeak, onActingChange }: {
 
   // 当 round 变化时,初始化行动队列
   // 标准规则:狼队(所有狼)同时行动(一起睁眼、互相知道身份),其他角色独立行动
+  // 丘比特仅首夜行动(round === 1)
   useEffect(() => {
-    const aliveRoles = state.players.filter(p => p.alive && ROLES[p.role].hasNightAction);
+    const aliveRoles = state.players.filter(p =>
+      p.alive && ROLES[p.role].hasNightAction
+      && !(p.role === 'cupid' && state.round > 1)
+    );
     // 狼合并成一个行动组
     const wolves = aliveRoles.filter(p => p.faction === 'wolf');
     const nonWolves = aliveRoles.filter(p => p.faction !== 'wolf');
