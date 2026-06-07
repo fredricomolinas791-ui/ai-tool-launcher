@@ -131,7 +131,7 @@ export const ROLES: Record<RoleId, RoleDef> = {
   },
 };
 
-export type BoardId = 'p9-classic' | 'p12-wolfking' | 'p12-wolfbeauty' | 'p12-gargoyle' | 'p12-cupid';
+export type BoardId = 'p9-classic' | 'p12-classic' | 'p12-wolfking' | 'p12-wolfbeauty' | 'p12-gargoyle' | 'p12-cupid';
 export type Variant = 'standard' | 'plague' | /* future: */ 'assassin' | 'mimic';
 
 export interface BoardDef {
@@ -150,14 +150,25 @@ export interface BoardDef {
    5 个经典板子
    ───────────────────────────────────────────── */
 
-/** 9 人标准局 · 预女猎白(经典入门板) */
+/** 9 人标准局 · 预女猎(无白痴,极简入门) */
 const BOARD_9_CLASSIC: BoardDef = {
   id: 'p9-classic', playerCount: 9, variant: 'standard',
-  name: { zh: '9 人 · 预女猎白', en: '9-Player Classic' },
-  desc: { zh: '狼3 + 村2 + 预言家 + 女巫 + 猎人 + 白痴', en: '3 wolves · 2 villagers · seer · witch · hunter · idiot' },
-  feature: { zh: '经典入门板,神职齐全,平衡度高', en: 'Classic starter — balanced god roles' },
+  name: { zh: '9 人 · 预女猎', en: '9-Player Classic' },
+  desc: { zh: '狼3 + 村3 + 预言家 + 女巫 + 猎人', en: '3 wolves · 3 villagers · seer · witch · hunter' },
+  feature: { zh: '极简入门板,无白痴无守卫,节奏快', en: 'Minimal starter — no idiot/guard, fast pace' },
   roles: ['werewolf', 'werewolf', 'werewolf',
-          'villager', 'villager',
+          'villager', 'villager', 'villager',
+          'seer', 'witch', 'hunter'],
+};
+
+/** 12 人标准局 · 预女猎白(经典预女猎白) */
+const BOARD_12_CLASSIC: BoardDef = {
+  id: 'p12-classic', playerCount: 12, variant: 'standard',
+  name: { zh: '12 人 · 预女猎白', en: '12-Player Classic' },
+  desc: { zh: '狼4 + 村4 + 预言家 + 女巫 + 猎人 + 白痴', en: '4 wolves · 4 villagers · seer · witch · hunter · idiot' },
+  feature: { zh: '经典预女猎白,神职齐全,平衡度高', en: 'Classic seer+witch+hunter+idiot — balanced god roles' },
+  roles: ['werewolf', 'werewolf', 'werewolf', 'werewolf',
+          'villager', 'villager', 'villager', 'villager',
           'seer', 'witch', 'hunter', 'idiot'],
 };
 
@@ -207,6 +218,7 @@ const BOARD_12_CUPID: BoardDef = {
 
 export const BOARDS: Record<BoardId, BoardDef> = {
   'p9-classic':     BOARD_9_CLASSIC,
+  'p12-classic':    BOARD_12_CLASSIC,
   'p12-wolfking':   BOARD_12_WOLFKING,
   'p12-wolfbeauty': BOARD_12_WOLFBEAUTY,
   'p12-gargoyle':   BOARD_12_GARGOYLE,

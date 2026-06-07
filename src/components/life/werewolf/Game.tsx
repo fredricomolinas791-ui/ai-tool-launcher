@@ -17,7 +17,7 @@ import type { BoardDef } from './data';
 import { PersonalityRender } from './Personalities';
 
 /* ── 哪些板子 Phase 2-A 完整跑通 ── */
-const PLAYABLE_BOARDS: BoardId[] = ['p9-classic', 'p12-wolfking'];
+const PLAYABLE_BOARDS: BoardId[] = ['p9-classic', 'p12-classic', 'p12-wolfking'];
 
 /* ═══════════════════════════════════════════════════════════════════
    板子选择卡片
