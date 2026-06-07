@@ -6,7 +6,7 @@
    ═══════════════════════════════════════════════════════════════════ */
 
 import { useState, useEffect, useRef } from 'react';
-import { Drama, Sparkles, Sun, ChevronRight, MessageCircle, Crown, AlertTriangle, Play, X, Skull, Shield, Users, Swords } from 'lucide-react';
+import { Drama, Sparkles, Sun, ChevronRight, Crown, AlertTriangle, Play, X, Skull, Shield, Users, Swords } from 'lucide-react';
 import { Button } from '../../ui/Button';
 import { useI18n } from '../../../hooks/useI18n';
 import {
@@ -260,6 +260,10 @@ function GameRunner({ state: initial, aiConfig, lang, onExit }: {
     });
   };
 
+  // 座位分栏:9 人 → 左 6 / 右 3;12 人 → 左 6 / 右 6
+  const leftIds = state.players.slice(0, Math.ceil(state.players.length / 2));
+  const rightIds = state.players.slice(Math.ceil(state.players.length / 2));
+
   return (
     <div className="space-y-3">
       {/* 顶部信息条 */}
@@ -283,52 +287,150 @@ function GameRunner({ state: initial, aiConfig, lang, onExit }: {
         </button>
       </div>
 
-      {/* 玩家座位 */}
-      <div className="p-3 rounded-xl" style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-border-light)' }}>
-        <div className="flex flex-wrap gap-2 justify-center">
-          {state.players.map(p => {
-            const userP = state.players[state.userId];
-            const seerCheckedIds = userP.privateMemory.seerChecks.map(c => c.targetId);
-            const revealed = p.id === state.userId || !p.alive || seerCheckedIds.includes(p.id);
-            return (
-              <PlayerSeat key={p.id} player={p}
-                isYou={p.id === state.userId}
-                isSpeaking={streamingText?.playerId === p.id}
-                revealed={revealed} />
-            );
-          })}
+      {/* 左右分栏主区域 */}
+      <div className="grid grid-cols-2 gap-3">
+        {/* 左侧:座位(竖排) + 当前阶段 UI */}
+        <div className="space-y-2">
+          <div className="p-2 rounded-xl" style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-border-light)' }}>
+            <div className="grid grid-cols-2 gap-1.5">
+              {/* 左列 */}
+              <div className="flex flex-col gap-1.5">
+                {leftIds.map(p => {
+                  const userP = state.players[state.userId];
+                  const seerCheckedIds = userP.privateMemory.seerChecks.map(c => c.targetId);
+                  const revealed = p.id === state.userId || !p.alive || seerCheckedIds.includes(p.id);
+                  return (
+                    <PlayerSeat key={p.id} player={p}
+                      isYou={p.id === state.userId}
+                      isSpeaking={streamingText?.playerId === p.id}
+                      revealed={revealed} />
+                  );
+                })}
+              </div>
+              {/* 右列 */}
+              <div className="flex flex-col gap-1.5">
+                {rightIds.map(p => {
+                  const userP = state.players[state.userId];
+                  const seerCheckedIds = userP.privateMemory.seerChecks.map(c => c.targetId);
+                  const revealed = p.id === state.userId || !p.alive || seerCheckedIds.includes(p.id);
+                  return (
+                    <PlayerSeat key={p.id} player={p}
+                      isYou={p.id === state.userId}
+                      isSpeaking={streamingText?.playerId === p.id}
+                      revealed={revealed} />
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+          {/* 当前阶段 UI */}
+          {state.phase === 'role-reveal' && <RoleRevealPanel state={state} lang={lang} onContinue={() => setState(s => ({ ...s, phase: 'night', round: s.round + 1 }))} />}
+          {state.phase === 'night' && <NightPanel state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
+          {state.phase === 'day-announce' && <DayAnnounce state={state} setState={setState} lang={lang} />}
+          {state.phase === 'day-discuss' && <DayDiscuss state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
+          {state.phase === 'day-vote' && <DayVote state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
+          {state.phase === 'hunter-shoot' && <HunterShoot state={state} setState={setState} lang={lang} />}
         </div>
+
+        {/* 右侧:信息流(发言 + 法官 + 死亡 + 投票,可滚动) */}
+        <InfoStream state={state} lang={lang} streamingText={streamingText} />
       </div>
 
-      {/* 当前阶段 UI */}
-      {state.phase === 'role-reveal' && <RoleRevealPanel state={state} lang={lang} onContinue={() => setState(s => ({ ...s, phase: 'night', round: s.round + 1 }))} />}
-      {state.phase === 'night' && <NightPanel state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
-      {state.phase === 'day-announce' && <DayAnnounce state={state} setState={setState} lang={lang} />}
-      {state.phase === 'day-discuss' && <DayDiscuss state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
-      {state.phase === 'day-vote' && <DayVote state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
-      {state.phase === 'hunter-shoot' && <HunterShoot state={state} setState={setState} lang={lang} />}
       {state.phase === 'gameover' && winner && <GameOver state={state} winner={winner} lang={lang} onExit={onExit} />}
+    </div>
+  );
+}
 
-      {/* 发言流(滚动到最新) */}
-      {(state.speeches.length > 0 || streamingText) && state.phase !== 'gameover' && (
-        <div className="p-3 rounded-xl max-h-72 overflow-y-auto"
-          style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-border-light)' }}>
-          <div className="text-[11px] mb-2 flex items-center gap-1.5" style={{ color: 'var(--color-text-muted)' }}>
-            <MessageCircle size={11} />{lang === 'zh' ? '发言记录' : 'Speeches'}
+/* ═══════════════════════════════════════════════════════════════════
+   右侧信息流(发言 + 法官字幕 + 死亡 + 投票结果,可上下滑动)
+   ═══════════════════════════════════════════════════════════════════ */
+
+function InfoStream({ state, lang, streamingText }: {
+  state: GameState; lang: 'zh' | 'en';
+  streamingText: { playerId: number; text: string } | null;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  // 自动滚到底
+  useEffect(() => {
+    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
+  }, [state.publicLog.length, state.speeches.length, streamingText]);
+
+  const userP = state.players[state.userId];
+  const seerCheckedIds = userP.privateMemory.seerChecks.map(c => c.targetId);
+
+  // 死亡记录
+  const deaths = state.publicLog.filter(e => e.kind === 'death');
+  // 法官字幕(系统消息)
+  const systemEvents = state.publicLog.filter(e => e.kind === 'system');
+  // 投票放逐记录
+  const exiles = state.publicLog.filter(e => e.kind === 'death' && e.text.startsWith('🗳️'));
+
+  return (
+    <div ref={ref} className="p-3 rounded-xl space-y-3 overflow-y-auto"
+      style={{
+        background: 'var(--color-card-bg)', border: '1px solid var(--color-border-light)',
+        maxHeight: 'calc(100vh - 200px)', minHeight: 400,
+      }}>
+      {/* 法官字幕(系统事件) */}
+      {systemEvents.length > 0 && (
+        <div>
+          <div className="text-[10px] mb-1.5 flex items-center gap-1 font-semibold" style={{ color: 'var(--color-accent)' }}>
+            ⚖️ {lang === 'zh' ? '法官信息' : 'Judge'}
           </div>
-          {state.speeches.slice(-12).map((sp, i) => {
-            const userP = state.players[state.userId];
-            const seerCheckedIds = userP.privateMemory.seerChecks.map(c => c.targetId);
-            const p = state.players[sp.playerId];
-            const isRevealed = sp.playerId === state.userId || !p.alive || seerCheckedIds.includes(sp.playerId);
-            return <SpeechBubble key={i} player={p} text={sp.text} lang={lang} isRevealed={isRevealed} />;
-          })}
-          {streamingText && (
-            <SpeechBubble player={state.players[streamingText.playerId]} text={streamingText.text}
-              streaming lang={lang} isRevealed />
-          )}
+          {systemEvents.slice(-8).map((e, i) => (
+            <div key={i} className="text-[11px] py-1 px-2 rounded mb-1"
+              style={{ background: 'var(--color-bg-deep)', color: 'var(--color-text-muted)' }}>
+              {e.text}
+            </div>
+          ))}
         </div>
       )}
+
+      {/* 死亡记录 */}
+      {deaths.length > 0 && (
+        <div>
+          <div className="text-[10px] mb-1.5 flex items-center gap-1 font-semibold" style={{ color: '#dc2626' }}>
+            💀 {lang === 'zh' ? '死亡记录' : 'Deaths'}
+          </div>
+          {deaths.slice(-8).map((e, i) => (
+            <div key={i} className="text-[11px] py-1 px-2 rounded mb-1 flex items-center gap-1.5"
+              style={{ background: 'rgba(220,38,38,0.08)', color: 'var(--color-text)' }}>
+              {e.text}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 投票放逐 */}
+      {exiles.length > 0 && (
+        <div>
+          <div className="text-[10px] mb-1.5 flex items-center gap-1 font-semibold" style={{ color: '#a855f7' }}>
+            🗳️ {lang === 'zh' ? '投票放逐' : 'Exile'}
+          </div>
+          {exiles.slice(-5).map((e, i) => (
+            <div key={i} className="text-[11px] py-1 px-2 rounded mb-1"
+              style={{ background: 'rgba(168,85,247,0.08)', color: 'var(--color-text)' }}>
+              {e.text}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 发言流 */}
+      <div>
+        <div className="text-[10px] mb-1.5 flex items-center gap-1 font-semibold" style={{ color: 'var(--color-text-muted)' }}>
+          🗣️ {lang === 'zh' ? '发言' : 'Speeches'} ({state.speeches.length})
+        </div>
+        {state.speeches.slice(-15).map((sp, i) => {
+          const p = state.players[sp.playerId];
+          const isRevealed = sp.playerId === state.userId || !p.alive || seerCheckedIds.includes(sp.playerId);
+          return <SpeechBubble key={i} player={p} text={sp.text} lang={lang} isRevealed={isRevealed} />;
+        })}
+        {streamingText && (
+          <SpeechBubble player={state.players[streamingText.playerId]} text={streamingText.text}
+            streaming lang={lang} isRevealed />
+        )}
+      </div>
     </div>
   );
 }
