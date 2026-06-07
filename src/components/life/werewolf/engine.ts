@@ -80,6 +80,13 @@ export interface GameState {
   pkPlayers: number[] | null;
   /** 上一轮投票是否已 PK 过(再次平票 = 平安日) */
   pkUsed: boolean;
+  /** 最近一次投票的完整数据(用于 vote-results 阶段展示) */
+  lastVoteData: {
+    allVotes: { voterId: number; targetId: number }[];
+    tally: Record<number, number>;
+    exiled: number | null;
+    tied?: boolean;
+  } | null;
   winner: Faction | null;
   /** 公开事件日志(所有人都能看到的) */
   publicLog: { kind: 'speech' | 'death' | 'system'; text: string; day: number; playerId?: number }[];
@@ -131,7 +138,7 @@ export function initGame(boardId: BoardId, userName: string, lang: 'zh' | 'en' =
   return {
     boardId, round: 0, phase: 'role-reveal', players, userId,
     deadThisNight: [], deadThisDay: null, lastVotedOut: null,
-    pkPlayers: null, pkUsed: false,
+    pkPlayers: null, pkUsed: false, lastVoteData: null,
     winner: null,
     publicLog: [], speeches: [], lang,
   };

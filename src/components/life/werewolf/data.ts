@@ -25,7 +25,7 @@ export type Phase =
   | 'setup' | 'role-reveal'
   | 'night' | 'night-resolve'
   | 'day-announce' | 'sheriff-election' | 'knight-duel' | 'day-discuss' | 'day-vote'
-  | 'pk-speech' | 'pk-vote'
+  | 'vote-results' | 'pk-speech' | 'pk-vote'
   | 'hunter-shoot' | 'idiot-flip' | 'last-words'
   | 'judge' | 'gameover';
 export type Personality =
