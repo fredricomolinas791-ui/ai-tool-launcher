@@ -493,7 +493,7 @@ function RoleRevealPanel({ state, lang, onContinue }: { state: GameState; lang: 
   // 狼人/狼王/狼美人/石像鬼 队友可见
   let extra = '';
   if (userP.faction === 'wolf' && userP.privateMemory.wolfTeammates.length) {
-    const mates = userP.privateMemory.wolfTeammates.map(id => `${id + 1}号 ${state.players[id].name}`).join('、');
+    const mates = userP.privateMemory.wolfTeammates.map(id => `${state.players[id].name}`).join('、');
     extra = lang === 'zh' ? `\n🐺 你的狼队友:${mates}` : `\n🐺 Your wolf pack: ${mates}`;
   }
   return (
@@ -504,9 +504,22 @@ function RoleRevealPanel({ state, lang, onContinue }: { state: GameState; lang: 
       </h3>
       <p className="text-sm mt-2" style={{ color: 'var(--color-text-muted)' }}>{role.shortDesc[lang]}</p>
       <p className="text-xs mt-2 px-4" style={{ color: 'var(--color-text-muted)' }}>{role.skillHint[lang]}</p>
-      <Button onClick={onContinue} className="mt-4">
-        <Play size={14} className="mr-1.5" />{lang === 'zh' ? '进入夜晚' : 'Enter Night'}
-      </Button>
+      <div className="mt-5 flex justify-center">
+        <button
+          onClick={onContinue}
+          className="px-6 py-2.5 rounded-xl text-sm font-semibold flex items-center gap-2 transition-all hover:scale-105"
+          style={{
+            background: 'var(--color-accent)',
+            color: '#fff',
+            boxShadow: '0 0 0 3px var(--color-accent-glow), 0 4px 12px rgba(0,0,0,0.3)',
+          }}
+        >
+          <Play size={14} />{lang === 'zh' ? '进入夜晚' : 'Enter Night'}
+        </button>
+      </div>
+      <p className="text-[10px] mt-2" style={{ color: 'var(--color-text-muted)' }}>
+        {lang === 'zh' ? '👆 点上面按钮开始' : '👆 Click above to start'}
+      </p>
     </div>
   );
 }
@@ -1674,7 +1687,7 @@ function buildNightPrompt(actor: Player, state: GameState, lang: 'zh' | 'en'): s
   const alive = state.players.filter(x => x.alive).map(x => `${x.id + 1}号 ${x.name}`).join('、');
   let contextExtra = '';
   if (actor.faction === 'wolf' && visible.wolfTeammates.length) {
-    const mates = visible.wolfTeammates.map(id => `${id + 1}号 ${state.players[id].name}`).join('、');
+    const mates = visible.wolfTeammates.map(id => `${state.players[id].name}`).join('、');
     contextExtra += lang === 'zh' ? `\n🐺 你的狼队友:${mates}` : `\n🐺 Wolf pack: ${mates}`;
   }
   const roleActions: Partial<Record<RoleId, { zh: string; en: string }>> = {
@@ -1698,10 +1711,10 @@ function buildNightPrompt(actor: Player, state: GameState, lang: 'zh' | 'en'): s
 function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 'en'): string {
   const role = ROLES[actor.role];
   const alive = state.players.filter(x => x.alive).map(x => `${x.id + 1}号 ${x.name}`).join('、');
-  const dead = state.deadThisNight.map(id => `${id + 1}号 ${state.players[id].name}`).join('、');
+  const dead = state.deadThisNight.map(id => `${state.players[id].name}`).join('、');
   let extra = '';
   if (actor.faction === 'wolf' && actor.privateMemory.wolfTeammates.length) {
-    const mates = actor.privateMemory.wolfTeammates.map(id => `${id + 1}号 ${state.players[id].name}`).join('、');
+    const mates = actor.privateMemory.wolfTeammates.map(id => `${state.players[id].name}`).join('、');
     extra = lang === 'zh' ? `\n🐺 你是狼,你的队友:${mates}。要隐藏身份、转移视线。` : `\n🐺 You're a wolf. Pack: ${mates}. Hide and deflect.`;
   }
   if (actor.role === 'seer' && actor.privateMemory.seerChecks.length) {
@@ -1717,7 +1730,7 @@ function buildVotePrompt(actor: Player, state: GameState, lang: 'zh' | 'en'): st
   const alive = state.players.filter(x => x.alive).filter(x => x.id !== actor.id).map(x => `${x.id + 1}号 ${x.name}`).join('、');
   let extra = '';
   if (actor.faction === 'wolf' && actor.privateMemory.wolfTeammates.length) {
-    const mates = actor.privateMemory.wolfTeammates.map(id => `${id + 1}号 ${state.players[id].name}`).join('、');
+    const mates = actor.privateMemory.wolfTeammates.map(id => `${state.players[id].name}`).join('、');
     extra = lang === 'zh' ? `\n🐺 你是狼,队友:${mates}。要保护队友,把票投给一个好人(最好是发言最像神职的)。` : `\n🐺 You're a wolf. Pack: ${mates}. Protect them, vote for a good player.`;
   }
   if (actor.role === 'seer' && actor.privateMemory.seerChecks.length) {
