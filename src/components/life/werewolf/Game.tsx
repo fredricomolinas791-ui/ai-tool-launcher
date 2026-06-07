@@ -11,7 +11,7 @@ import { Button } from '../../ui/Button';
 import { useI18n } from '../../../hooks/useI18n';
 import {
   BOARDS, BOARD_LIST, ROLES, type BoardId, type GameState, type Player, type RoleId,
-  initGame, loadAIConfig, callAIStream, checkWinner, parseAIDecision, applyLoversChain,
+  initGame, loadAIConfig, callAIStream, checkWinner, parseAIDecision, tryJsonExtract, applyLoversChain,
 } from './engine';
 import type { BoardDef } from './data';
 import { PersonalityRender } from './Personalities';
@@ -284,24 +284,35 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
 
   /* aiSpeak 返回 {speech, target} —— 让调用方(夜晚行动/投票)能直接拿到 target,
      避免「读 state.speeches[length-1]」的闭包过时问题。
-     target 是 1-based 座位号(0 表示无目标),由 parseAIDecision 从 AI 输出中解析。 */
-  const aiSpeak = async (playerId: number, systemPrompt: string, userPrompt: string): Promise<{ speech: string; target: number | null }> => {
+     target 是 1-based 座位号(0 表示无目标),由 parseAIDecision 从 AI 输出中解析。
+     silent=true:不把 speech 写进公开记录(用于夜晚,避免 AI 自爆身份)
+     重要:即使 prompt 没说要用 JSON 包装,AI 经常自己加 JSON。
+     这里用 tryJsonExtract 把纯文本从可能的 JSON 包装里抽出来,避免显示 {"speech":"..."} 这种原始 JSON。 */
+  const aiSpeak = async (playerId: number, systemPrompt: string, userPrompt: string, silent: boolean = false): Promise<{ speech: string; target: number | null }> => {
     let full = '';
     setStreamingText({ playerId, text: '' });
     const h = callAIStream(aiConfig, systemPrompt, userPrompt, (chunk: string) => {
       full += chunk;
-      setStreamingText({ playerId, text: full });
+      if (!silent) setStreamingText({ playerId, text: full });
     });
     const text = await h.promise;
-    setStreamingText(null);
+    if (silent) setStreamingText(null);
+    // 先尝试从 JSON 包装里抽取 speech + target
     const parsed = parseAIDecision(text);
-    const speech = (parsed.speech || text || '').trim();
-    // 直接同步写进 state(不读闭包)
-    setState(s => ({
-      ...s,
-      speeches: [...s.speeches, { playerId, day: s.round, text: speech }],
-      publicLog: [...s.publicLog, { kind: 'speech', day: s.round, playerId, text: speech }],
-    }));
+    let speech = (parsed.speech || '').trim();
+    if (!speech) {
+      // 没 JSON,或者 JSON 里没 speech → 用 tryJsonExtract 再试一次
+      const extracted = tryJsonExtract(text);
+      speech = (extracted.speech || text || '').trim();
+    }
+    if (!silent) {
+      setStreamingText(null);
+      setState(s => ({
+        ...s,
+        speeches: [...s.speeches, { playerId, day: s.round, text: speech }],
+        publicLog: [...s.publicLog, { kind: 'speech', day: s.round, playerId, text: speech }],
+      }));
+    }
     // 解析 target:0-based,无目标=0 转为 null
     let target: number | null = null;
     if (parsed.decision !== undefined) {
@@ -518,7 +529,7 @@ const NIGHT_ACTION_TIMEOUT = 35;
 function NightPanel({ state, setState, lang, aiSpeak }: {
   state: GameState; setState: (updater: (s: GameState) => GameState) => void;
   lang: 'zh' | 'en';
-  aiSpeak: (playerId: number, system: string, user: string) => Promise<{ speech: string; target: number | null }>;
+  aiSpeak: (playerId: number, system: string, user: string, silent?: boolean) => Promise<{ speech: string; target: number | null }>;
 }) {
   // 行动队列(用 useState,render 时能拿到)
   const [actions, setActions] = useState<{ role: RoleId; playerId: number }[]>([]);
@@ -939,13 +950,13 @@ function UserNightActionUI({ role, state, lang, onConfirm }: {
    —— 直接用 aiSpeak 返回的 target,不走 state.speeches 闭包(避免读旧 state) */
 async function runAIAction(
   actor: Player, state: GameState, lang: 'zh' | 'en',
-  aiSpeak: (id: number, sys: string, usr: string) => Promise<{ speech: string; target: number | null }>,
+  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean) => Promise<{ speech: string; target: number | null }>,
 ): Promise<number | null> {
   const sys = buildNightPrompt(actor, state, lang);
   const usr = lang === 'zh'
     ? '请用 JSON 格式输出:{"speech":"你的发言(可选)","target":你的目标座位号(1-based,无目标填 0)}'
     : 'Output JSON: {"speech":"your speech (optional)","target":target seat (1-based, 0 if none)}';
-  const { target } = await aiSpeak(actor.id, sys, usr);
+  const { target } = await aiSpeak(actor.id, sys, usr, true /* silent:夜晚不暴露 */);
   // target 已经是 0-based(null 表示无目标)
   if (target !== null && target >= 0 && target < state.players.length && state.players[target].alive) {
     return target;
@@ -1083,7 +1094,7 @@ function resolveNight(s: GameState, _lang: 'zh' | 'en'): GameState {
 function IdiotFlip({ state, setState, lang, aiSpeak }: {
   state: GameState; setState: (u: (s: GameState) => GameState) => void;
   lang: 'zh' | 'en';
-  aiSpeak: (id: number, sys: string, usr: string) => Promise<{ speech: string; target: number | null }>;
+  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean) => Promise<{ speech: string; target: number | null }>;
 }) {
   const idiotId = state.lastVotedOut;
   if (idiotId === null) {
@@ -1105,7 +1116,7 @@ function IdiotFlip({ state, setState, lang, aiSpeak }: {
     const usr = lang === 'zh'
       ? '用 JSON 输出:{"speech":"你的发言","target":1 翻牌 / 0 认命}'
       : 'Output JSON: {"speech":"your speech","target":1 flip / 0 die}';
-    aiSpeak(idiotId, sys, usr).then(() => {
+    aiSpeak(idiotId, sys, usr, true /* silent:白痴私下翻牌 */).then(() => {
       setBusy(false);
       setAiDecided(true);
     });
@@ -1231,7 +1242,7 @@ function DayAnnounce({ state, setState, lang }: { state: GameState; setState: (u
 function HunterShoot({ state, setState, lang, aiSpeak }: {
   state: GameState; setState: (u: (s: GameState) => GameState) => void;
   lang: 'zh' | 'en';
-  aiSpeak: (id: number, sys: string, usr: string) => Promise<{ speech: string; target: number | null }>;
+  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean) => Promise<{ speech: string; target: number | null }>;
 }) {
   const hunterId = state.lastVotedOut;
   const [target, setTarget] = useState<number | null>(null);
@@ -1260,7 +1271,7 @@ function HunterShoot({ state, setState, lang, aiSpeak }: {
     const usr = lang === 'zh'
       ? '请用 JSON 格式输出:{"speech":"你的遗言","target":目标座位号(1-based,不开枪填 0)}'
       : 'Output JSON: {"speech":"last words","target":target seat (1-based, 0 if skip)}';
-    aiSpeak(hid, sys, usr).then(({ target: aiT }) => {
+    aiSpeak(hid, sys, usr, true /* silent:猎人私下选目标 */).then(({ target: aiT }) => {
       if (aiT !== null && aiT >= 0 && aiT < state.players.length && state.players[aiT].alive && aiT !== hid) {
         setTarget(aiT);
       }
@@ -1349,7 +1360,7 @@ function HunterShoot({ state, setState, lang, aiSpeak }: {
 function DayDiscuss({ state, setState, lang, aiSpeak }: {
   state: GameState; setState: (u: (s: GameState) => GameState) => void;
   lang: 'zh' | 'en';
-  aiSpeak: (id: number, sys: string, usr: string) => Promise<{ speech: string; target: number | null }>;
+  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean) => Promise<{ speech: string; target: number | null }>;
 }) {
   const [discussIdx, setDiscussIdx] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -1446,7 +1457,7 @@ function DayDiscuss({ state, setState, lang, aiSpeak }: {
 function DayVote({ state, setState, lang, aiSpeak }: {
   state: GameState; setState: (u: (s: GameState) => GameState) => void;
   lang: 'zh' | 'en';
-  aiSpeak: (id: number, sys: string, usr: string) => Promise<{ speech: string; target: number | null }>;
+  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean) => Promise<{ speech: string; target: number | null }>;
 }) {
   const alivePlayers = state.players.filter(p => p.alive);
   const [userTarget, setUserTarget] = useState<number | null>(null);
@@ -1464,7 +1475,7 @@ function DayVote({ state, setState, lang, aiSpeak }: {
         ? '用 JSON 格式输出:{"target":投票给某人的座位号(1-based)}'
         : 'Output JSON: {"target":target seat (1-based)}';
       // 直接用 aiSpeak 返回的 target,不走 state.speeches 闭包
-      const { target } = await aiSpeak(p.id, sys, usr);
+      const { target } = await aiSpeak(p.id, sys, usr, true /* silent:投票是私下的 */);
       if (target !== null && target >= 0 && target < state.players.length && state.players[target].alive && target !== p.id) {
         votes[p.id] = target;
       } else {

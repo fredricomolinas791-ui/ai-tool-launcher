@@ -254,6 +254,24 @@ export function parseAIDecision(text: string): { decision?: number; speech?: str
   return out;
 }
 
+/* 容错抽取:AI 经常输出 {"speech":"...","target":N} 包装,
+   但 prompt 可能没要求 JSON。这里用 JSON.parse 试抽,
+   抽到 speech 字段就返回。 */
+export function tryJsonExtract(text: string): { speech?: string; target?: number | null } {
+  // 找第一个 { ... } 块(用贪婪匹配平衡括号不靠谱,简单找最大块)
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) return {};
+  try {
+    const obj = JSON.parse(match[0]);
+    return {
+      speech: typeof obj.speech === 'string' ? obj.speech : undefined,
+      target: typeof obj.target === 'number' ? obj.target : (typeof obj.target === 'string' ? parseInt(obj.target, 10) : undefined),
+    };
+  } catch {
+    return {};
+  }
+}
+
 /* ─────────────────────────────────────────────
    胜负判定
    ───────────────────────────────────────────── */
