@@ -76,6 +76,10 @@ export interface GameState {
   deadThisNight: number[];      // 本夜死亡的人
   deadThisDay: number | null;   // 本日被投票放逐的人
   lastVotedOut: number | null;  // 最近被放逐的人(白痴翻牌后变 null)
+  /** PK 阶段:被 PK 的玩家 id 列表(平票时) */
+  pkPlayers: number[] | null;
+  /** 上一轮投票是否已 PK 过(再次平票 = 平安日) */
+  pkUsed: boolean;
   winner: Faction | null;
   /** 公开事件日志(所有人都能看到的) */
   publicLog: { kind: 'speech' | 'death' | 'system'; text: string; day: number; playerId?: number }[];
@@ -126,7 +130,9 @@ export function initGame(boardId: BoardId, userName: string, lang: 'zh' | 'en' =
   });
   return {
     boardId, round: 0, phase: 'role-reveal', players, userId,
-    deadThisNight: [], deadThisDay: null, lastVotedOut: null, winner: null,
+    deadThisNight: [], deadThisDay: null, lastVotedOut: null,
+    pkPlayers: null, pkUsed: false,
+    winner: null,
     publicLog: [], speeches: [], lang,
   };
 }
@@ -260,7 +266,7 @@ export function parseAIDecision(text: string): { decision?: number; speech?: str
 /* 容错抽取:AI 经常输出 {"speech":"...","target":N} 包装,
    但 prompt 可能没要求 JSON。这里用 JSON.parse 试抽,
    抽到 speech 字段就返回。 */
-export function tryJsonExtract(text: string): { speech?: string; target?: number | null } {
+export function tryJsonExtract(text: string): { speech?: string; target?: number | null; useAntidote?: boolean } {
   // 找第一个 { ... } 块(用贪婪匹配平衡括号不靠谱,简单找最大块)
   const match = text.match(/\{[\s\S]*\}/);
   if (!match) return {};
@@ -269,6 +275,7 @@ export function tryJsonExtract(text: string): { speech?: string; target?: number
     return {
       speech: typeof obj.speech === 'string' ? obj.speech : undefined,
       target: typeof obj.target === 'number' ? obj.target : (typeof obj.target === 'string' ? parseInt(obj.target, 10) : undefined),
+      useAntidote: typeof obj.useAntidote === 'boolean' ? obj.useAntidote : undefined,
     };
   } catch {
     return {};

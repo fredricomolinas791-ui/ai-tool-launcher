@@ -25,7 +25,8 @@ export type Phase =
   | 'setup' | 'role-reveal'
   | 'night' | 'night-resolve'
   | 'day-announce' | 'sheriff-election' | 'knight-duel' | 'day-discuss' | 'day-vote'
-  | 'hunter-shoot' | 'idiot-flip'
+  | 'pk-speech' | 'pk-vote'
+  | 'hunter-shoot' | 'idiot-flip' | 'last-words'
   | 'judge' | 'gameover';
 export type Personality =
   | 'strategist' | 'aggressive' | 'mysterious'
@@ -49,21 +50,21 @@ export const ROLES: Record<RoleId, RoleDef> = {
     id: 'werewolf', faction: 'wolf', emoji: '🐺',
     name: { zh: '狼人', en: 'Werewolf' },
     shortDesc: { zh: '夜晚杀人,白天隐藏', en: 'Kill at night, hide by day' },
-    nightOrder: 30, hasNightAction: true,
+    nightOrder: 20, hasNightAction: true,
     skillHint: { zh: '每晚与狼队友协商杀一人', en: 'Each night coordinate with wolf pack to kill one player' },
   },
   wolfking: {
     id: 'wolfking', faction: 'wolf', emoji: '👑',
     name: { zh: '狼王', en: 'Wolf King' },
     shortDesc: { zh: '狼阵营主脑,被投时可带走一人', en: 'Wolf leader — when voted out, takes one victim with them' },
-    nightOrder: 30, hasNightAction: true,
+    nightOrder: 20, hasNightAction: true,
     skillHint: { zh: '夜晚可杀一人;白天被投票放逐时,可发动技能带走另一个人', en: 'Kills at night; when voted out, can take one player with them' },
   },
   wolfbeauty: {
     id: 'wolfbeauty', faction: 'wolf', emoji: '💋',
     name: { zh: '狼美人', en: 'Wolf Beauty' },
     shortDesc: { zh: '被投时带走最后投票的人', en: 'When voted out, takes the last voter with them' },
-    nightOrder: 30, hasNightAction: true,
+    nightOrder: 20, hasNightAction: true,
     skillHint: { zh: '夜晚可杀一人;白天被投票放逐时,带走最后一个给自己投票的人', en: 'Kills at night; when voted out, takes the last voter down with them' },
   },
   villager: {
@@ -77,22 +78,22 @@ export const ROLES: Record<RoleId, RoleDef> = {
     id: 'seer', faction: 'good', emoji: '🔮',
     name: { zh: '预言家', en: 'Seer' },
     shortDesc: { zh: '每晚验一人身份', en: 'Verify one identity each night' },
-    nightOrder: 20, hasNightAction: true,
+    nightOrder: 30, hasNightAction: true,
     skillHint: { zh: '每晚可查验一名玩家是「好人」还是「狼人」', en: 'Each night check whether one player is good or wolf' },
   },
   witch: {
     id: 'witch', faction: 'good', emoji: '💊',
     name: { zh: '女巫', en: 'Witch' },
-    shortDesc: { zh: '解药+毒药各一', en: 'One antidote, one poison' },
-    nightOrder: 25, hasNightAction: true,
-    skillHint: { zh: '拥有 1 瓶解药(救当晚被狼杀的人)和 1 瓶毒药(杀 1 人),整局各只能用一次', en: 'Has 1 antidote (saves wolf victim) and 1 poison (kills someone), each usable once per game' },
+    shortDesc: { zh: '解药+毒药各一(网杀首夜不能自救)', en: 'One antidote, one poison (online: no self-save night 1)' },
+    nightOrder: 40, hasNightAction: true,
+    skillHint: { zh: '拥有 1 瓶解药(救当晚被狼杀的人)和 1 瓶毒药(杀 1 人),整局各只能用一次;网杀规则:首夜被狼杀自己时不能自救', en: 'Has 1 antidote (saves wolf victim) and 1 poison (kills someone), each usable once per game. Online rule: cannot save self on night 1' },
   },
   hunter: {
     id: 'hunter', faction: 'good', emoji: '🏹',
     name: { zh: '猎人', en: 'Hunter' },
-    shortDesc: { zh: '死亡时可开枪', en: 'Shoots on death' },
+    shortDesc: { zh: '死亡时可开枪(被女巫毒杀不能)', en: 'Shoots on death (not when witch-poisoned)' },
     nightOrder: 99, hasNightAction: false,
-    skillHint: { zh: '被狼杀或被投票放逐时,可以选择开枪带走一名玩家', en: 'When killed or voted out, can shoot one player' },
+    skillHint: { zh: '被狼杀或被投票放逐时,可以选择开枪带走一名玩家;被女巫毒杀则不能发动', en: 'When killed by wolf or voted out, can shoot one player. Cannot shoot when poisoned by witch' },
   },
   guard: {
     id: 'guard', faction: 'good', emoji: '🛡️',

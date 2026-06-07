@@ -392,10 +392,13 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
           {/* 当前阶段 UI */}
           {state.phase === 'role-reveal' && <RoleRevealPanel state={state} lang={lang} onContinue={() => setState(s => ({ ...s, phase: 'night', round: s.round + 1 }))} />}
           {state.phase === 'night' && <NightPanel state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} onActingChange={setActingPlayerId} />}
+          {state.phase === 'last-words' && <LastWords state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
           {state.phase === 'day-announce' && <DayAnnounce state={state} setState={setState} lang={lang} />}
           {state.phase === 'sheriff-election' && <SheriffElection state={state} setState={setState} lang={lang} />}
           {state.phase === 'day-discuss' && <DayDiscuss state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
           {state.phase === 'day-vote' && <DayVote state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
+          {state.phase === 'pk-speech' && <PKSpeech state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
+          {state.phase === 'pk-vote' && <PKVote state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
           {state.phase === 'hunter-shoot' && <HunterShoot state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
           {state.phase === 'idiot-flip' && <IdiotFlip state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
         </div>
@@ -553,7 +556,14 @@ function RoleRevealPanel({ state, lang, onContinue }: { state: GameState; lang: 
 
 const NIGHT_INTRO_SEC = 2.5;
 const NIGHT_OUTRO_SEC = 1.5;
-const NIGHT_ACTION_TIMEOUT = 35;
+/* 角色专属夜晚行动时长(秒)—— 标准规则参考 */
+const NIGHT_TIMEOUTS: Partial<Record<RoleId, number>> = {
+  werewolf: 60, wolfking: 60, wolfbeauty: 60,  // 狼人 60s
+  seer: 35,                                     // 预言家 35s
+  witch: 40,                                    // 女巫 40s
+  guard: 30, gargoyle: 30, cupid: 30,          // 其他 30s
+};
+function getNightTimeout(role: RoleId): number { return NIGHT_TIMEOUTS[role] ?? 30; }
 
 function NightPanel({ state, setState, lang, aiSpeak, onActingChange }: {
   state: GameState; setState: (updater: (s: GameState) => GameState) => void;
@@ -648,30 +658,41 @@ function NightPanel({ state, setState, lang, aiSpeak, onActingChange }: {
       });
     } else if (scene === 'action') {
       setBusy(true);
+      const timeoutSec = getNightTimeout(cur.role);
       if (cur.playerId === state.userId) {
         // 用户行动:不调 AI,等用户点;超时强制 null
         setBusy(false);
-        startCountdown(NIGHT_ACTION_TIMEOUT, () => {
+        startCountdown(timeoutSec, () => {
           if (cancelled) return;
-          setState(s => applyNightAction(s, cur.role, cur.playerId, null, lang));
+          if (cur.role === 'witch') {
+            setState(s => applyWitchAction(s, cur.playerId, false, null, lang));
+          } else {
+            setState(s => applyNightAction(s, cur.role, cur.playerId, null, lang));
+          }
           setScene('outro');
         });
       } else {
         // AI 行动:异步跑 runAIAction + 同步倒计时(超时强制 null 兜底)
         const actor = state.players[cur.playerId];
-        startCountdown(NIGHT_ACTION_TIMEOUT, () => {
+        startCountdown(timeoutSec, () => {
           if (aiDoneRef.current) return;
           aiDoneRef.current = true;
           if (cancelled) return;
-          setState(s => applyNightAction(s, cur.role, cur.playerId, null, lang));
+          if (cur.role === 'witch') {
+            setState(s => applyWitchAction(s, cur.playerId, false, null, lang));
+          } else {
+            setState(s => applyNightAction(s, cur.role, cur.playerId, null, lang));
+          }
           setBusy(false);
           setScene('outro');
         });
-        runAIAction(actor, stateRef.current, lang, aiSpeakRef.current).then((target) => {
+        runAIAction(actor, stateRef.current, lang, aiSpeakRef.current).then((result) => {
           if (cancelled || aiDoneRef.current) return;
           aiDoneRef.current = true;
-          if (target !== null) {
-            setState(s => applyNightAction(s, cur.role, cur.playerId, target, lang));
+          if (cur.role === 'witch' && result.decision) {
+            setState(s => applyWitchAction(s, cur.playerId, result.decision!.useAntidote ?? false, result.decision!.poisonTarget ?? null, lang));
+          } else if (result.target !== null) {
+            setState(s => applyNightAction(s, cur.role, cur.playerId, result.target, lang));
           }
           setBusy(false);
           setScene('outro');
@@ -688,9 +709,15 @@ function NightPanel({ state, setState, lang, aiSpeak, onActingChange }: {
   }, [scene, actionIdx, actions.length]);
 
   // 用户手动确认行动
-  function onUserAction(target: number | null) {
+  function onUserAction(target: number | null, extra?: { useAntidote?: boolean; poisonTarget?: number | null }) {
     if (!cur) return;
-    setState(s => applyNightAction(s, cur.role, cur.playerId, target, lang));
+    if (cur.role === 'witch') {
+      const useAntidote = extra?.useAntidote ?? false;
+      const poisonTarget = extra?.poisonTarget ?? null;
+      setState(s => applyWitchAction(s, cur.playerId, useAntidote, poisonTarget, lang));
+    } else {
+      setState(s => applyNightAction(s, cur.role, cur.playerId, target, lang));
+    }
     setScene('outro');
   }
 
@@ -736,7 +763,7 @@ function NightSceneDisplay({ scene, cur, state, lang, timeLeft, onUserAction, bu
   cur: { role: RoleId; playerId: number };
   state: GameState; lang: 'zh' | 'en';
   timeLeft: number;
-  onUserAction: (t: number | null) => void;
+  onUserAction: (t: number | null, extra?: { useAntidote?: boolean; poisonTarget?: number | null }) => void;
   busy: boolean;
 }) {
   const role = ROLES[cur.role];
@@ -796,7 +823,7 @@ function NightSceneDisplay({ scene, cur, state, lang, timeLeft, onUserAction, bu
 /* ── 用户夜晚行动 UI ── */
 function UserNightActionUI({ role, state, lang, onConfirm }: {
   role: RoleId; state: GameState; lang: 'zh' | 'en';
-  onConfirm: (target: number | null) => void;
+  onConfirm: (target: number | null, extra?: { useAntidote?: boolean; poisonTarget?: number | null }) => void;
 }) {
   const userP = state.players[state.userId];
   const aliveOthers = state.players.filter(p => p.alive && p.id !== state.userId);
@@ -872,28 +899,38 @@ function UserNightActionUI({ role, state, lang, onConfirm }: {
     const mem = userP.privateMemory;
     const [useAntidote, setUseAntidote] = useState(false);
     const [poisonTarget, setPoisonTarget] = useState<number | null>(null);
-    // 简单化:系统告诉女巫"今晚狼人想杀的人是 X 号"
-    // (实际:从 state.deadThisNight 找,现在还没结算,假定为第一个非狼的随机)
+    // 系统告诉女巫"今晚狼人想杀的人是 X 号"
+    // deadThisNight[0] 是狼队决定的目标(在狼人行动后写入,女巫此时在狼之后行动)
+    const wolfTarget = state.deadThisNight[0] ?? null;
+    const isFirstNight = state.round === 1;
+    const selfTarget = wolfTarget === state.userId;
+    // 网杀规则:首夜不能自救
+    const canAntidote = !mem.witchAntidoteUsed && wolfTarget !== null && !(isFirstNight && selfTarget);
+    const canPoison = !mem.witchPoisonUsed;
     return (
       <div>
         <p className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>
-          {lang === 'zh' ? '今晚狼人想杀 1 个好人(系统已随机选好)。你可以:' : 'Wolves killed one player. You can:'}
+          {lang === 'zh'
+            ? `今晚狼人想杀的是:${wolfTarget !== null ? `${wolfTarget + 1}号 ${state.players[wolfTarget].name}` : '没人(守卫挡住了)'}${isFirstNight && selfTarget ? '(首夜你自己,网杀规则不能自救)' : ''}`
+            : `Wolves target: ${wolfTarget !== null ? `${state.players[wolfTarget].name}` : 'nobody'}${isFirstNight && selfTarget ? ' (night 1, online: no self-save)' : ''}`}
         </p>
         <div className="space-y-1.5">
-          <label className="flex items-center gap-2 text-xs">
-            <input type="checkbox" checked={useAntidote} disabled={mem.witchAntidoteUsed}
+          <label className={`flex items-center gap-2 text-xs ${canAntidote ? '' : 'opacity-50'}`}>
+            <input type="checkbox" checked={useAntidote} disabled={!canAntidote}
               onChange={e => setUseAntidote(e.target.checked)} />
-            💊 {lang === 'zh' ? '使用解药' : 'Use antidote'} {mem.witchAntidoteUsed ? '(已用)' : '(unused)'}
+            💊 {lang === 'zh' ? '使用解药救' : 'Use antidote on'} {wolfTarget !== null ? state.players[wolfTarget].name : '目标'}
+            {!canAntidote && (lang === 'zh' ? ' (不可用)' : ' (unavailable)')}
           </label>
           <div>
-            <label className="flex items-center gap-2 text-xs">
-              <input type="checkbox" checked={poisonTarget !== null} disabled={mem.witchPoisonUsed}
+            <label className={`flex items-center gap-2 text-xs ${canPoison ? '' : 'opacity-50'}`}>
+              <input type="checkbox" checked={poisonTarget !== null} disabled={!canPoison}
                 onChange={e => setPoisonTarget(e.target.checked ? (aliveOthers[0]?.id ?? null) : null)} />
-              ☠️ {lang === 'zh' ? '使用毒药(选一个人杀)' : 'Use poison (kill someone)'} {mem.witchPoisonUsed ? '(已用)' : '(unused)'}
+              ☠️ {lang === 'zh' ? '使用毒药(选一个人杀)' : 'Use poison (kill someone)'}
+              {!canPoison && (lang === 'zh' ? ' (已用)' : ' (used)')}
             </label>
-            {poisonTarget !== null && (
+            {poisonTarget !== null && canPoison && (
               <div className="flex flex-wrap gap-1 mt-1 ml-5">
-                {aliveOthers.map(p => (
+                {aliveOthers.filter(p => p.id !== state.userId).map(p => (
                   <button key={p.id} onClick={() => setPoisonTarget(p.id)}
                     className="px-1.5 py-0.5 rounded text-[10px]"
                     style={{
@@ -906,7 +943,7 @@ function UserNightActionUI({ role, state, lang, onConfirm }: {
           </div>
         </div>
         <div className="text-center mt-3">
-          <Button onClick={() => onConfirm(poisonTarget)}>
+          <Button onClick={() => onConfirm(null, { useAntidote, poisonTarget })}>
             {lang === 'zh' ? '确认行动' : 'Confirm'} <ChevronRight size={14} className="ml-1" />
           </Button>
         </div>
@@ -984,21 +1021,98 @@ function UserNightActionUI({ role, state, lang, onConfirm }: {
    ═══════════════════════════════════════════════════════════════════ */
 
 /* 跑一个 AI 玩家的夜晚行动(返回 target id 或 null)
-   —— 直接用 aiSpeak 返回的 target,不走 state.speeches 闭包(避免读旧 state) */
+   —— 直接用 aiSpeak 返回的 target,不走 state.speeches 闭包(避免读旧 state)
+   —— 女巫返回结构化决策 {useAntidote, poisonTarget},其他角色 target */
 async function runAIAction(
   actor: Player, state: GameState, lang: 'zh' | 'en',
-  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean) => Promise<{ speech: string; target: number | null }>,
-): Promise<number | null> {
+  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean) => Promise<{ speech: string; target: number | null; useAntidote?: boolean }>,
+): Promise<{ target: number | null; decision?: { useAntidote: boolean; poisonTarget: number | null } }> {
+  // 女巫: 走专用 prompt
+  if (actor.role === 'witch') {
+    const wolfTarget = state.deadThisNight[0] ?? null;
+    const isFirstNight = state.round === 1;
+    const selfTarget = wolfTarget === actor.id;
+    const mem = actor.privateMemory;
+    const canAntidote = !mem.witchAntidoteUsed && !(isFirstNight && selfTarget);
+    const canPoison = !mem.witchPoisonUsed;
+    const sys = lang === 'zh'
+      ? `你是"${actor.name}"(第${actor.id + 1}号),身份:女巫 💊
+今晚狼人想杀的是:${wolfTarget !== null ? `${wolfTarget + 1}号 ${state.players[wolfTarget].name}` : '没人(没狼/守卫挡了)'}
+${isFirstNight && selfTarget ? '⚠️ 但因为是首夜(网杀规则),你不能自救。' : ''}
+${!canAntidote ? '解药:已用' : '解药:可用'}
+${canPoison ? '毒药:可用' : '毒药:已用'}
+
+请决策:
+${canAntidote ? '- 是否使用解药救 ${wolfTarget !== null ? state.players[wolfTarget].name : "目标"}?' : ''}
+${canPoison ? '- 是否使用毒药毒一个人?' : ''}
+
+输出 JSON:{"speech":"你的理由(可选)","useAntidote":true/false,"poisonTarget":毒药目标座位号(1-based,不用填 0)}`
+      : `You are "${actor.name}" (#${actor.id + 1}), Witch 💊
+Wolves want to kill: ${wolfTarget !== null ? `${state.players[wolfTarget].name} (#${wolfTarget + 1})` : 'nobody'}
+${isFirstNight && selfTarget ? '⚠️ Night 1 (online rule): you cannot save yourself.' : ''}
+${!canAntidote ? 'Antidote: USED' : 'Antidote: available'}
+${canPoison ? 'Poison: available' : 'Poison: USED'}
+
+Output JSON: {"speech":"reasoning (optional)","useAntidote":true/false,"poisonTarget":target seat (1-based, 0 if none)}`;
+    const usr = lang === 'zh' ? '请用 JSON 输出决策' : 'Output JSON decision';
+    const { useAntidote, target } = await aiSpeak(actor.id, sys, usr, true);
+    return {
+      target: null,
+      decision: {
+        useAntidote: !!useAntidote && canAntidote,
+        poisonTarget: (target !== null && target >= 0 && target < state.players.length && state.players[target].alive && target !== actor.id && canPoison) ? target : null,
+      },
+    };
+  }
+  // 其他角色: 单 target
   const sys = buildNightPrompt(actor, state, lang);
   const usr = lang === 'zh'
     ? '请用 JSON 格式输出:{"speech":"你的发言(可选)","target":你的目标座位号(1-based,无目标填 0)}'
     : 'Output JSON: {"speech":"your speech (optional)","target":target seat (1-based, 0 if none)}';
   const { target } = await aiSpeak(actor.id, sys, usr, true /* silent:夜晚不暴露 */);
-  // target 已经是 0-based(null 表示无目标)
   if (target !== null && target >= 0 && target < state.players.length && state.players[target].alive) {
-    return target;
+    return { target };
   }
-  return null;
+  return { target: null };
+}
+
+/* 应用女巫夜晚行动(结构化决策)
+   ── 网杀规则:首夜被狼杀自己时不能自救(round===1 && target===self)
+   ── 解药救 deadThisNight[0],毒药额外杀 1 人
+   ── 标记 witchPoisonedId 方便 DayAnnounce 区分「被毒杀」(猎人不能开枪) */
+function applyWitchAction(s: GameState, witchId: number, useAntidote: boolean, poisonTarget: number | null, _lang: 'zh' | 'en'): GameState {
+  const witch = s.players[witchId];
+  if (!witch || witch.role !== 'witch') return s;
+  const mem = witch.privateMemory;
+  const wolfTarget = s.deadThisNight[0] ?? null;
+  let newDead = [...s.deadThisNight];
+  let newMem = { ...mem };
+
+  // 解药
+  if (useAntidote && !mem.witchAntidoteUsed && wolfTarget !== null) {
+    const isFirstNightSelf = s.round === 1 && wolfTarget === witchId;
+    if (!isFirstNightSelf) {
+      newMem.witchAntidoteUsed = true;
+      newMem.witchSavedId = wolfTarget;
+      newDead = newDead.filter(id => id !== wolfTarget);
+    }
+  }
+
+  // 毒药
+  if (poisonTarget !== null && !mem.witchPoisonUsed
+    && poisonTarget !== witchId
+    && s.players[poisonTarget]?.alive
+    && !newDead.includes(poisonTarget)) {
+    newMem.witchPoisonUsed = true;
+    newMem.witchPoisonedId = poisonTarget;
+    newDead.push(poisonTarget);
+  }
+
+  return {
+    ...s,
+    players: s.players.map(p => p.id === witchId ? { ...p, privateMemory: newMem } : p),
+    deadThisNight: newDead,
+  };
 }
 
 /* 应用一个夜晚行动到 GameState */
@@ -1110,16 +1224,20 @@ function resolveNight(s: GameState, _lang: 'zh' | 'en'): GameState {
   }
   // 应用死亡
   const newPlayers = s.players.map(p => dead.has(p.id) ? { ...p, alive: false } : p);
-  // 简化:这里不立即触发猎人,放到 day-announce 后再处理
-  const newState = {
+  const deadList = Array.from(dead);
+  // 标准规则:首夜死亡玩家有遗言(~1 分钟)
+  // 这里把"夜间死者"放到 last-words 阶段让他们说遗言,再进 day-announce
+  // 但如果 round > 1,按简化规则也可以直接 day-announce
+  const newState: GameState = {
     ...s,
     players: newPlayers,
-    deadThisNight: Array.from(dead),
-    publicLog: [...s.publicLog, ...Array.from(dead).map(id => ({
+    deadThisNight: deadList,
+    publicLog: [...s.publicLog, ...deadList.map(id => ({
       kind: 'death' as const, day: s.round, playerId: id,
       text: `${s.players[id].name} 在夜里倒下了`,
     }))],
-    phase: 'day-announce' as const,
+    // 首夜死过人 → 进 last-words;否则直接 day-announce
+    phase: deadList.length > 0 ? 'last-words' : 'day-announce',
   };
   return newState;
 }
@@ -1327,7 +1445,9 @@ function SheriffElection({ state, setState, lang }: {
 function DayAnnounce({ state, setState, lang }: { state: GameState; setState: (u: (s: GameState) => GameState) => void; lang: 'zh' | 'en' }) {
   const dead = state.deadThisNight;
   // 检测所有死亡者里是否有猎人(包括殉情带走的)
-  const hunterDead = dead.find(id => state.players[id].role === 'hunter');
+  // 标准规则:猎人被女巫毒杀不能开枪,只有被狼杀/殉情/自爆才能开枪
+  const witchPoisoned = state.players.find(p => p.role === 'witch')?.privateMemory.witchPoisonedId ?? null;
+  const hunterDead = dead.find(id => state.players[id].role === 'hunter' && id !== witchPoisoned);
   // 12 人局第一天(没有警长时)→ 警长竞选;否则 → 讨论
   const needSheriff = state.players.length >= 12 && !state.players.some(p => p.privateMemory.isSheriff);
   useEffect(() => {
@@ -1623,6 +1743,7 @@ function DayVote({ state, setState, lang, aiSpeak }: {
   //   狼美人 → 标记死亡,带最后投票人殉情,然后看是否触发猎人
   //   普通   → 触发情侣殉情链,然后看是否触发猎人
   //   任何链式死亡后,若新人里有猎人,触发 hunter-shoot
+  //   平票  → pk-speech(平票者发言)→ pk-vote(再投)→ 平安日
   const finalize = () => {
     // 收集所有投票(用于狼美人殉情)
     const allVotes: { voterId: number; targetId: number }[] = [];
@@ -1640,13 +1761,45 @@ function DayVote({ state, setState, lang, aiSpeak }: {
       const weight = state.players[v.voterId]?.privateMemory.isSheriff ? 2 : 1;
       tally[v.targetId] = (tally[v.targetId] || 0) + weight;
     });
-    let maxVotes = 0, exiled: number | null = null;
+
+    // 平票检测:找最大票数 + 拿到所有 maxVotes 的玩家
+    const tallyValues = Object.values(tally);
+    const maxVotes = tallyValues.length > 0 ? Math.max(...tallyValues) : 0;
+    const tied = Object.entries(tally)
+      .filter(([_, c]) => c === maxVotes)
+      .map(([id]) => parseInt(id, 10));
+
+    if (tied.length > 1) {
+      // 平票
+      if (state.pkUsed) {
+        // 已经 PK 过一次,再次平票 = 平安日
+        setState(s => ({
+          ...s,
+          publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: `🕊️ 再次平票,平安日。直接进入夜晚。` }],
+          phase: 'night',
+          round: s.round + 1,
+          pkPlayers: null,
+          pkUsed: false,
+        }));
+        return;
+      }
+      // 第一次平票 → PK
+      setState(s => ({
+        ...s,
+        publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: `⚖️ 投票平票(${tied.map(id => `${id+1}号`).join('、')})!进行 PK 发言` }],
+        phase: 'pk-speech',
+        pkPlayers: tied,
+        pkUsed: true,
+      }));
+      return;
+    }
+
+    let exiled: number | null = null;
     Object.entries(tally).forEach(([id, count]) => {
-      if (count > maxVotes) { maxVotes = count; exiled = parseInt(id, 10); }
+      if (count === maxVotes && maxVotes > 0) exiled = parseInt(id, 10);
     });
-    void maxVotes; // 用于调试,可保留
     if (exiled === null) {
-      setState(s => ({ ...s, phase: 'night', round: s.round + 1 }));
+      setState(s => ({ ...s, phase: 'night', round: s.round + 1, pkUsed: false, pkPlayers: null }));
       return;
     }
 
@@ -1658,6 +1811,8 @@ function DayVote({ state, setState, lang, aiSpeak }: {
         ...s,
         phase: 'idiot-flip',
         lastVotedOut: exiled,
+        pkUsed: false,
+        pkPlayers: null,
         // 暂时不清除 deadThisDay,白痴还没真死
       }));
       return;
@@ -1708,6 +1863,8 @@ function DayVote({ state, setState, lang, aiSpeak }: {
         deadThisDay: exiled,
         lastVotedOut: hunterDead,
         phase: 'hunter-shoot',
+        pkUsed: false,
+        pkPlayers: null,
       }));
       return;
     }
@@ -1721,6 +1878,8 @@ function DayVote({ state, setState, lang, aiSpeak }: {
       lastVotedOut: exiled,
       phase: 'night',
       round: state.round + 1,
+      pkUsed: false,
+      pkPlayers: null,
     }));
   };
 
@@ -1761,8 +1920,346 @@ function DayVote({ state, setState, lang, aiSpeak }: {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   胜负画面
+   遗言阶段 —— 夜间死亡的玩家在公布前先说遗言(首夜标准规则)
    ═══════════════════════════════════════════════════════════════════ */
+
+function LastWords({ state, setState, lang, aiSpeak }: {
+  state: GameState; setState: (u: (s: GameState) => GameState) => void;
+  lang: 'zh' | 'en';
+  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean) => Promise<{ speech: string; target: number | null }>;
+}) {
+  const deadIds = [...state.deadThisNight].filter(id => state.players[id]);
+  const [lwIdx, setLwIdx] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [userInput, setUserInput] = useState('');
+  const cur = deadIds[lwIdx];
+  const curPlayer = cur !== undefined ? state.players[cur] : null;
+  const isUserTurn = curPlayer && curPlayer.id === state.userId && !busy;
+
+  const next = () => {
+    setUserInput('');
+    if (lwIdx + 1 >= deadIds.length) {
+      setState(s => ({ ...s, phase: 'day-announce' }));
+      return;
+    }
+    setLwIdx(i => i + 1);
+  };
+
+  useEffect(() => {
+    if (!curPlayer) return;
+    if (curPlayer.id === state.userId) return;
+    if (busy) return;
+    setBusy(true);
+    const sys = lang === 'zh'
+      ? `你是"${curPlayer.name}"(第${curPlayer.id + 1}号),你今晚被杀了!请留遗言(30-80 字):\n- 可以留自己的身份线索(也可不)\n- 可以留怀疑对象\n- 可以感谢/指责某人\n\n只输出你的遗言。`
+      : `You are "${curPlayer.name}", you died tonight. Leave last words (30-80 words). Output speech only.`;
+    aiSpeak(curPlayer.id, sys, lang === 'zh' ? '请留遗言(30-80 字)' : 'Leave last words (30-80 words)').then(() => {
+      setBusy(false);
+      setTimeout(() => next(), 500);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lwIdx]);
+
+  const submitUser = () => {
+    if (!curPlayer) return;
+    const text = userInput.trim() || (lang === 'zh' ? '(我暂时没有想说的)' : '(I have nothing to say)');
+    setState(s => ({
+      ...s,
+      speeches: [...s.speeches, { playerId: state.userId, day: s.round, text }],
+      publicLog: [...s.publicLog, { kind: 'speech', day: s.round, playerId: state.userId, text }],
+    }));
+    next();
+  };
+
+  if (deadIds.length === 0) {
+    useEffect(() => { setState(s => ({ ...s, phase: 'day-announce' })); }, []);
+    return null;
+  }
+
+  return (
+    <div className="p-4 rounded-xl" style={{ background: 'var(--color-card-bg)', border: '1px solid #6b7280' }}>
+      <h3 className="font-semibold mb-2 flex items-center gap-1.5" style={{ color: '#9ca3af' }}>
+        <Skull size={16} />{lang === 'zh' ? `🕯️ 遗言阶段(${lwIdx + 1}/${deadIds.length})` : `Last Words (${lwIdx + 1}/${deadIds.length})`}
+      </h3>
+      <p className="text-xs text-center mb-3" style={{ color: 'var(--color-text-muted)' }}>
+        {lang === 'zh' ? '夜间死者留遗言(约 1 分钟):' : 'Dead players leave last words:'}
+      </p>
+      {curPlayer && busy ? (
+        <div className="text-center text-sm py-3" style={{ color: 'var(--color-text-muted)' }}>
+          {lang === 'zh' ? `AI ${curPlayer.name} 正在留遗言…` : `AI ${curPlayer.name} leaving last words…`}
+        </div>
+      ) : isUserTurn ? (
+        <div>
+          <p className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>
+            🕯️ {lang === 'zh' ? '你被杀了,留遗言:' : 'You died, leave last words:'}
+          </p>
+          <textarea
+            value={userInput}
+            onChange={e => setUserInput(e.target.value)}
+            placeholder={lang === 'zh' ? '留你的遗言、身份线索、怀疑对象…' : 'Last words, identity hint, suspects…'}
+            className="w-full p-2 rounded text-sm"
+            style={{ background: 'var(--color-bg-deep)', color: 'var(--color-text)', border: '1px solid var(--color-border-light)', minHeight: 60, resize: 'vertical' }}
+            maxLength={150}
+          />
+          <div className="text-center mt-3">
+            <Button onClick={submitUser}>
+              {lang === 'zh' ? '说完 / 下一位' : 'Done / Next'} <ChevronRight size={14} className="ml-1" />
+            </Button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function PKSpeech({ state, setState, lang, aiSpeak }: {
+  state: GameState; setState: (u: (s: GameState) => GameState) => void;
+  lang: 'zh' | 'en';
+  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean) => Promise<{ speech: string; target: number | null }>;
+}) {
+  const tiedIds = state.pkPlayers ?? [];
+  const [pkIdx, setPkIdx] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [userInput, setUserInput] = useState('');
+  const cur = tiedIds[pkIdx];
+  const curPlayer = cur !== undefined ? state.players[cur] : null;
+  const isUserTurn = curPlayer && curPlayer.id === state.userId && !busy;
+
+  const next = () => {
+    setUserInput('');
+    if (pkIdx + 1 >= tiedIds.length) {
+      // PK 发言完 → 进入 PK 投票
+      setState(s => ({ ...s, phase: 'pk-vote' }));
+      return;
+    }
+    setPkIdx(i => i + 1);
+  };
+
+  useEffect(() => {
+    if (!curPlayer) return;
+    if (curPlayer.id === state.userId) return;
+    if (busy) return;
+    setBusy(true);
+    const sys = lang === 'zh'
+      ? `你是"${curPlayer.name}"(第${curPlayer.id + 1}号),你和 ${tiedIds.filter(i => i !== curPlayer.id).map(i => `${i+1}号 ${state.players[i].name}`).join('、')} 票数一样,需要再发言一次说服大家投你。\n\n请发言(30-80 字,要更激烈、更具体地为自己辩护,指责其他平票者)。\n\n只输出发言内容。`
+      : `You are "${curPlayer.name}", tied with others. Give a 30-80 word speech to convince voters. Output speech only.`;
+    aiSpeak(curPlayer.id, sys, lang === 'zh' ? '请用口语发言(30-80 字)' : 'Speak 30-80 words').then(() => {
+      setBusy(false);
+      setTimeout(() => next(), 500);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pkIdx]);
+
+  const submitUser = () => {
+    if (!curPlayer) return;
+    const text = userInput.trim() || (lang === 'zh' ? '(我坚持立场,大家投我)' : '(I stand by my position)');
+    setState(s => ({
+      ...s,
+      speeches: [...s.speeches, { playerId: state.userId, day: s.round, text }],
+      publicLog: [...s.publicLog, { kind: 'speech', day: s.round, playerId: state.userId, text }],
+    }));
+    next();
+  };
+
+  return (
+    <div className="p-4 rounded-xl" style={{ background: 'var(--color-card-bg)', border: '1px solid #f97316' }}>
+      <h3 className="font-semibold mb-2 flex items-center gap-1.5" style={{ color: '#f97316' }}>
+        <Swords size={16} />{lang === 'zh' ? `⚔️ PK 发言(${pkIdx + 1}/${tiedIds.length})` : `PK Speech (${pkIdx + 1}/${tiedIds.length})`}
+      </h3>
+      <p className="text-xs text-center mb-3" style={{ color: 'var(--color-text-muted)' }}>
+        {lang === 'zh' ? '平票玩家轮流再发言一次:' : 'Tied players give another speech:'}
+      </p>
+      {curPlayer && busy ? (
+        <div className="text-center text-sm py-3" style={{ color: 'var(--color-text-muted)' }}>
+          {lang === 'zh' ? `AI ${curPlayer.name} 正在 PK 发言…` : `AI ${curPlayer.name} PK speaking…`}
+        </div>
+      ) : isUserTurn ? (
+        <div>
+          <p className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>
+            🎤 {lang === 'zh' ? 'PK 轮到你,再说服大家:' : 'PK: your turn to convince:'}
+          </p>
+          <textarea
+            value={userInput}
+            onChange={e => setUserInput(e.target.value)}
+            placeholder={lang === 'zh' ? '为自己辩护 / 指出对手可疑' : 'Defend yourself / accuse opponents'}
+            className="w-full p-2 rounded text-sm"
+            style={{ background: 'var(--color-bg-deep)', color: 'var(--color-text)', border: '1px solid var(--color-border-light)', minHeight: 60, resize: 'vertical' }}
+            maxLength={150}
+          />
+          <div className="text-center mt-3">
+            <Button onClick={submitUser}>
+              {lang === 'zh' ? '发言 / 下一位' : 'Speak / Next'} <ChevronRight size={14} className="ml-1" />
+            </Button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   PK 投票 —— PK 发言后,所有存活玩家再投一次(只能投平票玩家)
+   ═══════════════════════════════════════════════════════════════════ */
+
+function PKVote({ state, setState, lang, aiSpeak }: {
+  state: GameState; setState: (u: (s: GameState) => GameState) => void;
+  lang: 'zh' | 'en';
+  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean) => Promise<{ speech: string; target: number | null }>;
+}) {
+  const tiedIds = state.pkPlayers ?? [];
+  const alivePlayers = state.players.filter(p => p.alive);
+  const [userTarget, setUserTarget] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [aiVotes, setAiVotes] = useState<Record<number, number>>({});
+
+  const runVotes = async () => {
+    setBusy(true);
+    const votes: Record<number, number> = {};
+    for (const p of alivePlayers) {
+      if (p.id === state.userId) continue;
+      // 只能投平票玩家之一
+      const sys = lang === 'zh'
+        ? `你是"${p.name}",PK 后再投一次,只能投这几个人之一:${tiedIds.map(id => `${id+1}号 ${state.players[id].name}`).join('、')}\n请用 JSON 输出:{"target":投票给某人的座位号(1-based)}`
+        : `You are "${p.name}". Re-vote among: ${tiedIds.map(id => `${id+1} ${state.players[id].name}`).join(', ')}\nOutput JSON: {"target":target seat (1-based)}`;
+      const usr = lang === 'zh' ? '用 JSON 输出:{"target":目标座位号(1-based)}' : 'Output JSON: {"target":target seat (1-based)}';
+      const { target } = await aiSpeak(p.id, sys, usr, true);
+      if (target !== null && tiedIds.includes(target) && target !== p.id) {
+        votes[p.id] = target;
+      } else {
+        // fallback: 随机投一个
+        votes[p.id] = tiedIds[Math.floor(Math.random() * tiedIds.length)];
+      }
+    }
+    setAiVotes(votes);
+    setBusy(false);
+  };
+
+  useEffect(() => { if (Object.keys(aiVotes).length === 0) runVotes(); /* eslint-disable-next-line */ }, []);
+
+  const finalize = () => {
+    const allVotes: { voterId: number; targetId: number }[] = [];
+    Object.entries(aiVotes).forEach(([voterId, targetId]) => {
+      allVotes.push({ voterId: parseInt(voterId, 10), targetId: targetId as number });
+    });
+    if (userTarget !== null) allVotes.push({ voterId: state.userId, targetId: userTarget });
+    const tally: Record<number, number> = {};
+    allVotes.forEach(v => {
+      const weight = state.players[v.voterId]?.privateMemory.isSheriff ? 2 : 1;
+      tally[v.targetId] = (tally[v.targetId] || 0) + weight;
+    });
+    const tallyValues = Object.values(tally);
+    const maxVotes = tallyValues.length > 0 ? Math.max(...tallyValues) : 0;
+    const stillTied = Object.entries(tally).filter(([_, c]) => c === maxVotes).map(([id]) => parseInt(id, 10));
+
+    if (stillTied.length > 1) {
+      // 再次平票 = 平安日
+      setState(s => ({
+        ...s,
+        publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: `🕊️ PK 后仍平票,平安日。` }],
+        phase: 'night',
+        round: s.round + 1,
+        pkUsed: false,
+        pkPlayers: null,
+      }));
+      return;
+    }
+    // 有结果 → 走放逐
+    const exiled = stillTied[0];
+    const exiledRole = state.players[exiled].role;
+
+    if (exiledRole === 'idiot') {
+      setState(s => ({
+        ...s,
+        phase: 'idiot-flip',
+        lastVotedOut: exiled,
+        pkUsed: false,
+        pkPlayers: null,
+      }));
+      return;
+    }
+
+    let newlyDead: number[] = [exiled];
+    const logEntries: { kind: 'death'; day: number; playerId: number; text: string }[] = [
+      { kind: 'death', day: state.round, playerId: exiled, text: `🗳️ ${state.players[exiled].name} 被投票放逐` },
+    ];
+    if (exiledRole === 'wolfbeauty') {
+      const lastVoter = [...allVotes].reverse().find(v => v.targetId === exiled);
+      if (lastVoter) {
+        newlyDead.push(lastVoter.voterId);
+        logEntries.push({ kind: 'death', day: state.round, playerId: lastVoter.voterId, text: `💋 ${state.players[lastVoter.voterId].name} 跟着去了` });
+      }
+    }
+    if (exiledRole === 'wolfking') {
+      const aliveAfter = state.players.filter(p => p.alive && p.id !== exiled);
+      if (aliveAfter.length > 0) {
+        const victim = aliveAfter[Math.floor(Math.random() * aliveAfter.length)].id;
+        newlyDead.push(victim);
+        logEntries.push({ kind: 'death', day: state.round, playerId: victim, text: `👑 ${state.players[victim].name} 跟着去了` });
+      }
+    }
+    const deadSet = new Set(newlyDead);
+    let updatedPlayers = state.players.map(p => deadSet.has(p.id) ? { ...p, alive: false } : p);
+    const { state: afterLovers, chained } = applyLoversChain({ ...state, players: updatedPlayers }, newlyDead);
+    updatedPlayers = afterLovers.players;
+    newlyDead = chained.length > 0 ? [...newlyDead, ...chained] : newlyDead;
+    const hunterDead = newlyDead.find(id => state.players[id].role === 'hunter');
+
+    if (hunterDead !== undefined) {
+      setState(() => ({
+        ...state,
+        players: updatedPlayers,
+        publicLog: [...state.publicLog, ...logEntries],
+        deadThisDay: exiled,
+        lastVotedOut: hunterDead,
+        phase: 'hunter-shoot',
+        pkUsed: false,
+        pkPlayers: null,
+      }));
+      return;
+    }
+    setState(() => ({
+      ...state,
+      players: updatedPlayers,
+      publicLog: [...state.publicLog, ...logEntries],
+      deadThisDay: exiled,
+      lastVotedOut: exiled,
+      phase: 'night',
+      round: state.round + 1,
+      pkUsed: false,
+      pkPlayers: null,
+    }));
+  };
+
+  return (
+    <div className="p-4 rounded-xl" style={{ background: 'var(--color-card-bg)', border: '1px solid #f97316' }}>
+      <h3 className="font-semibold mb-3 flex items-center gap-1.5" style={{ color: '#f97316' }}>
+        <Swords size={16} />{lang === 'zh' ? '🗳️ PK 投票' : 'PK Vote'}
+      </h3>
+      {busy ? (
+        <p className="text-sm text-center py-3" style={{ color: 'var(--color-text-muted)' }}>{lang === 'zh' ? 'AI 玩家 PK 投票中…' : 'AI PK voting…'}</p>
+      ) : (
+        <>
+          <p className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>{lang === 'zh' ? `只能投平票玩家之一(${tiedIds.map(id => `${id+1}号`).join('、')}):` : `Vote among: ${tiedIds.map(id => `${id+1}`).join(', ')}`}</p>
+          <div className="flex flex-wrap gap-1.5 justify-center">
+            {tiedIds.map(id => (
+              <button key={id} onClick={() => setUserTarget(id)}
+                className="px-2 py-1 rounded text-xs"
+                style={{
+                  background: userTarget === id ? '#f97316' : 'var(--color-card-bg)',
+                  color: userTarget === id ? '#fff' : 'var(--color-text)',
+                }}>{id + 1}.{state.players[id].name}</button>
+            ))}
+          </div>
+          <div className="text-center mt-3">
+            <Button onClick={finalize} disabled={userTarget === null}>
+              {lang === 'zh' ? '确认 PK 投票' : 'Confirm PK Vote'} <ChevronRight size={14} className="ml-1" />
+            </Button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 function GameOver({ state, winner, lang, onExit }: {
   state: GameState; winner: 'wolf' | 'good' | 'third'; lang: 'zh' | 'en'; onExit: () => void;
