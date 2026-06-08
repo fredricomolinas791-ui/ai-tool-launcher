@@ -7,8 +7,8 @@
 
 import {
   ROLES, BOARDS, BOARD_LIST, type RoleId, type Faction, type Phase, type Personality,
-  type BoardId, type ClaimsByDay, type SeerClaim, type WitchClaim, type GuardClaim,
-  pickPersonality, canWitchSelfSave, emptyDayClaims,
+  type BoardId,
+  pickPersonality,
 } from './data';
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -485,27 +485,6 @@ export function killPlayers(state: GameState, ids: number[], reason: string, kil
   s = s2;
   // 殉情人有猎人(罕见的殉情链带猎人)→ 这里不处理(由调用方负责 hunter-shoot 流程)
   void killer; void chained;  // 保留参数兼容旧调用
-  return s;
-}
-
-/* ─────────────────────────────────────────────
-   通用"杀 N 个人" helper
-   ───────────────────────────────────────────── */
-export function killPlayers(state: GameState, ids: number[], reason: string, killer: string): GameState {
-  const dead = ids.filter(id => state.players[id].alive);
-  if (dead.length === 0) return state;
-  let s: GameState = {
-    ...state,
-    players: state.players.map(p => dead.includes(p.id) ? { ...p, alive: false } : p),
-    publicLog: [...state.publicLog, ...dead.map(id => ({
-      kind: 'death' as const, day: state.round, playerId: id,
-      text: `${reason} ${id + 1}号 ${state.players[id].name}`,
-    }))],
-  };
-  // 触发情侣殉情
-  const { state: s2, chained } = applyLoversChain(s, dead);
-  s = s2;
-  if (chained.length > 0) void killer; // 暂时 unused
   return s;
 }
 

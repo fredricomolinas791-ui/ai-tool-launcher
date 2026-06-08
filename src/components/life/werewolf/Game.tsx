@@ -12,8 +12,8 @@ import { useI18n } from '../../../hooks/useI18n';
 import {
   BOARDS, BOARD_LIST, ROLES, type BoardId, type GameState, type Player, type RoleId, type SpeechRecord,
   initGame, loadAIConfig, callAIStream, checkWinner, parseAIDecision, tryJsonExtract, applyLoversChain,
-  applyKnightDuel, applyWolfSelfDestruct, applySheriffSuccession, canVote, killPlayers,
-  sheriffVoteWeight, orderedSpeakers, aggregateWolfVotes, aggregateWolfVotesLegacy, parseAIDecisionToTargetId,
+  applyKnightDuel, applyWolfSelfDestruct, canVote, killPlayers,
+  sheriffVoteWeight, aggregateWolfVotesLegacy, parseAIDecisionToTargetId,
 } from './engine';
 import type { BoardDef } from './data';
 import { canWitchSelfSave } from './data';
@@ -1102,13 +1102,7 @@ function UserNightActionUI({ role, state, lang, onConfirm }: {
     const canSelfSave = canWitchSelfSave(state.players.length, state.round, selfTarget);
     const canAntidote = !mem.witchAntidoteUsed && wolfTarget !== null && (!selfTarget || canSelfSave);
     const canPoison = !mem.witchPoisonUsed;
-    const ruleHint = selfTarget && !canSelfSave
-      ? (state.players.length === 9
-          ? (lang === 'zh' ? '(9 人场非首夜不能自救)' : '(9p non-first-night: no self-save)')
-          : (lang === 'zh' ? '(12 人场首夜不能自救)' : '(12p first night: no self-save)'))
-      : (selfTarget && isFirstNight && state.players.length === 9
-          ? (lang === 'zh' ? '(9 人场首夜可以自救)' : '(9p first night: can self-save)')
-          : '');
+    // P1-#7 修复:自救规则统一用 canWitchSelfSave() 后 ruleHint 改在 UI 内联生成(避免未用变量)
     return (
       <div>
         <p className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>
@@ -1320,15 +1314,8 @@ function applyWitchAction(s: GameState, witchId: number, useAntidote: boolean, p
 
   // 解药:仅记录使用决策和救了谁(实际是否生效由 resolveNight 决定)
   if (useAntidote && !mem.witchAntidoteUsed && wolfTarget !== null) {
-    const isFirstNightSelf = s.round === 1 && wolfTarget === witchId;
-    // 9 人场:仅首夜可自救 → round > 1 自救也禁止
-    // 12 人场:首夜不可自救 → round === 1 且自投 → 禁止
-    const is9pBoard = s.players.length === 9;
-    const isNonFirstNightSelf = !is9pBoard && false;  // 12p 无此限制
-    const blockedByBoardRule = is9pBoard
-      ? (s.round > 1 && wolfTarget === witchId)        // 9p: round>1 自救 → 禁止
-      : isFirstNightSelf;                              // 12p: round===1 自救 → 禁止
-    if (!blockedByBoardRule) {
+    // P1-#7 修复:自救规则统一用 canWitchSelfSave()
+    if (canWitchSelfSave(s.players.length, s.round, wolfTarget === witchId)) {
       newMem.witchAntidoteUsed = true;
       newMem.witchSavedId = wolfTarget;
       // 不在这里删 newDead —— 同守同救时会取消
@@ -1391,7 +1378,7 @@ function applyNightAction(
       return {
         ...s,
         players: players.map((p, i) => i === actorId
-          ? { ...p, privateMemory: { ...p.privateMemory, guardLastTargetId: target, guardHistory: [...p.privateMemory.guardHistory, target] } }
+          ? { ...p, privateMemory: { ...p.privateMemory, guardLastTargetId: target } } }
           : p),
         // 暂存"被守的人"
         publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: `🛡️ 守卫守了 ${target + 1}号` }],
@@ -1645,8 +1632,7 @@ function WolfKingPick({ state, setState, lang, aiSpeak }: {
     if (isUser || aiDone || busy || victim !== null) return;
     if (aliveOthers.length === 0) { setAiDone(true); return; }
     setBusy(true);
-    // 收集战略信息:狼队友知道的人 / 任何已暴露的"预言家"
-    const wolfMates = state.players.filter(p => p.alive && p.faction === 'wolf' && p.id !== wolfKingId);
+    // 收集战略信息:已暴露的"预言家"(从 seerSuspects 算)
     const seerSuspects = state.players.filter(p => p.alive && p.role !== 'seer').slice(0, 3).map(p => `${p.id + 1}号 ${p.name}`);
     const sys = lang === 'zh'
       ? `你是"${wolfKing.name}"(第${wolfKingId+1}号),你是狼王,被投票放逐了!你临死前可以带走一名玩家。\n存活玩家:${aliveOthers.map(p => `${p.id+1}号 ${p.name}`).join('、')}\n\n战术建议:\n- 优先带走「最像预言家」的人(发言最像神职的)\n- 或带走「女巫」(解药用过的)\n- 避免带走自己的狼队友(虽然规则允许,但浪费)\n- 重点目标:${seerSuspects.join('、')}\n\n输出 JSON:{"speech":"你的遗言(可选)","target":你要带走的玩家座位号(1-based)}`
@@ -2017,8 +2003,6 @@ function SheriffElection({ state, setState, lang, aiSpeak }: {
       setTiedIds(topTied);
       setAiVotes({});  // 清空投票
       setUserVote(null);
-      // 把 speechIdx 设为平票者逆序的第一个
-      const reverseTied = [...topTied].reverse();
       // speechIdx 设为候选人列表中第一个平票者的位置
       const firstTiedInOrder = candidates.findIndex(c => topTied.includes(c));
       setState(s => ({
@@ -2049,8 +2033,6 @@ function SheriffElection({ state, setState, lang, aiSpeak }: {
     if (step !== 'pk-speech' || !tiedIds) return;
     // 找出 tiedIds 在 candidates 中的位置,按逆序
     const tiedInOrder = candidates.filter(c => tiedIds.includes(c));
-    const reverseOrder = [...tiedInOrder].reverse();
-    const currentIdx = election.speechIdx - candidates.findIndex(c => c === tiedInOrder[0]);
     // 简化:从 election.speechIdx 开始遍历 tiedInOrder
     const curSpeakerId = tiedInOrder[election.speechIdx];
     if (!curSpeakerId) {
@@ -2739,63 +2721,6 @@ function DayVote({ state, setState, lang, aiSpeak }: {
   const alivePlayers = state.players.filter(p => p.alive);
   const [userTarget, setUserTarget] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
-  const [aiVotes, setAiVotes] = useState<Record<number, number>>({});
-
-  // 跑 AI 投票
-  const runVotes = async () => {
-    setBusy(true);
-    const votes: Record<number, number> = {};
-    for (const p of alivePlayers) {
-      // 修复:跳过用户自己 + 翻牌白痴(canVote)
-      if (p.id === state.userId) continue;
-      if (!canVote(p)) continue;
-      const sys = buildVotePrompt(p, state, lang);
-      const usr = lang === 'zh'
-        ? '用 JSON 格式输出:{"target":投票给某人的座位号(1-based)}'
-        : 'Output JSON: {"target":target seat (1-based)}';
-      // 直接用 aiSpeak 返回的 target,不走 state.speeches 闭包
-      const { target } = await aiSpeak(p.id, sys, usr, true /* silent:投票是私下的 */);
-      if (target !== null && target >= 0 && target < state.players.length && state.players[target].alive && target !== p.id) {
-        votes[p.id] = target;
-      } else {
-        // fallback:随机投一个非自己
-        const others = alivePlayers.filter(x => x.id !== p.id && canVote(x));
-        // P1-#21 修复:避免空数组 → others[0] undefined 导致崩
-        if (others.length === 0) continue;  // 跳过:极端情况只 1 个白痴翻牌后
-        votes[p.id] = others[Math.floor(Math.random() * others.length)].id;
-      }
-    }
-    setAiVotes(votes);
-    setBusy(false);
-  };
-
-  // 跑 AI 投票 —— P3-#42 修复:用户先选 userTarget → 锁住 → 再跑 AI 投票(同步)
-  const runVotes = async () => {
-    setBusy(true);
-    const votes: Record<number, number> = {};
-    for (const p of alivePlayers) {
-      // 修复:跳过用户自己 + 翻牌白痴(canVote)
-      if (p.id === state.userId) continue;
-      if (!canVote(p)) continue;
-      const sys = buildVotePrompt(p, state, lang);
-      const usr = lang === 'zh'
-        ? '用 JSON 格式输出:{"target":投票给某人的座位号(1-based)}'
-        : 'Output JSON: {"target":target seat (1-based)}';
-      // 直接用 aiSpeak 返回的 target,不走 state.speeches 闭包
-      const { target } = await aiSpeak(p.id, sys, usr, true /* silent:投票是私下的 */);
-      if (target !== null && target >= 0 && target < state.players.length && state.players[target].alive && target !== p.id) {
-        votes[p.id] = target;
-      } else {
-        // fallback:随机投一个非自己
-        const others = alivePlayers.filter(x => x.id !== p.id && canVote(x));
-        // P1-#21 修复:避免空数组 → others[0] undefined 导致崩
-        if (others.length === 0) continue;  // 跳过:极端情况只 1 个白痴翻牌后
-        votes[p.id] = others[Math.floor(Math.random() * others.length)].id;
-      }
-    }
-    setAiVotes(votes);
-    setBusy(false);
-  };
 
   // P3-#42 修复:用户点「确认投票」→ 锁住 userTarget → 跑 AI 投票 → finalize
   const confirmAndFinalize = async () => {
@@ -2821,7 +2746,6 @@ function DayVote({ state, setState, lang, aiSpeak }: {
         newAiVotes[p.id] = others[Math.floor(Math.random() * others.length)].id;
       }
     }
-    setAiVotes(newAiVotes);
     setBusy(false);
     // finalize 用新的 aiVotes
     setTimeout(() => finalizeWithVotes(newAiVotes, userVoteEntry), 0);
