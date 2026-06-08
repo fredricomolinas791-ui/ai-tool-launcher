@@ -24,7 +24,7 @@ export type Faction = 'wolf' | 'good' | 'third';
 export type Phase =
   | 'setup' | 'role-reveal'
   | 'night' | 'night-resolve'
-  | 'day-announce' | 'sheriff-election' | 'knight-duel' | 'day-discuss' | 'day-vote'
+  | 'day-announce' | 'sheriff-election' | 'sheriff-pick-order' | 'knight-duel' | 'day-discuss' | 'day-vote'
   | 'vote-results' | 'pk-speech' | 'pk-vote'
   | 'hunter-shoot' | 'idiot-flip' | 'last-words'
   | 'judge' | 'gameover';
@@ -45,6 +45,18 @@ export interface RoleDef {
   skillHint: { zh: string; en: string };
 }
 
+/**
+ * 夜间行动顺序(标准规则):
+ *   1) 守卫 (10) —— 先守,后置狼杀
+ *   2) 狼人 (20) —— 选杀目标
+ *   3) 预言家 (30) —— 查验
+ *   4) 女巫 (40) —— 解药/毒药;若守卫+解药同救一人(同守同救)→ 抵消,该人仍死
+ *   5) 丘比特 (50,仅首夜) —— 连情侣
+ *   6) 石像鬼 (60) —— 查验是否神职
+ *
+ * 注:之前 nightOrder 把 cupid=1、gargoyle=40 与 witch 同优先级,
+ *     跟主流狼人杀规则不一致,已修正。
+ */
 export const ROLES: Record<RoleId, RoleDef> = {
   werewolf: {
     id: 'werewolf', faction: 'wolf', emoji: '🐺',
@@ -86,7 +98,7 @@ export const ROLES: Record<RoleId, RoleDef> = {
     name: { zh: '女巫', en: 'Witch' },
     shortDesc: { zh: '解药+毒药各一(网杀首夜不能自救)', en: 'One antidote, one poison (online: no self-save night 1)' },
     nightOrder: 40, hasNightAction: true,
-    skillHint: { zh: '拥有 1 瓶解药(救当晚被狼杀的人)和 1 瓶毒药(杀 1 人),整局各只能用一次;网杀规则:首夜被狼杀自己时不能自救', en: 'Has 1 antidote (saves wolf victim) and 1 poison (kills someone), each usable once per game. Online rule: cannot save self on night 1' },
+    skillHint: { zh: '拥有 1 瓶解药(救当晚被狼杀的人)和 1 瓶毒药(杀 1 人),整局各只能用一次;网杀规则:首夜被狼杀自己时不能自救;同守同救:守卫+女巫同救一人 → 该人仍死', en: 'Has 1 antidote (saves wolf victim) and 1 poison (kills someone), each usable once per game. Online rule: cannot save self on night 1. Same-target-guard-save: if guard AND antidote target the same person, that person still dies' },
   },
   hunter: {
     id: 'hunter', faction: 'good', emoji: '🏹',
@@ -100,14 +112,14 @@ export const ROLES: Record<RoleId, RoleDef> = {
     name: { zh: '守卫', en: 'Guard' },
     shortDesc: { zh: '每晚守一人(不可连守同一人)', en: 'Guard one player (cannot guard same target two nights in a row)' },
     nightOrder: 10, hasNightAction: true,
-    skillHint: { zh: '每晚守护一名玩家,被守护者当晚免疫狼杀;但不能连续两晚守同一个人', en: 'Each night guard one player — they are immune to wolf kill; cannot guard the same person two nights in a row' },
+    skillHint: { zh: '每晚守护一名玩家,被守护者当晚免疫狼杀;但不能连续两晚守同一个人;同守同救:守卫+女巫解药同救一人会抵消', en: 'Each night guard one player — they are immune to wolf kill; cannot guard the same person two nights in a row; same-target-guard-save cancels with witch antidote' },
   },
   idiot: {
     id: 'idiot', faction: 'good', emoji: '🤪',
     name: { zh: '白痴', en: 'Idiot' },
     shortDesc: { zh: '被投时翻牌免死(失去投票权)', en: 'When voted out, flip card to survive (loses voting right)' },
     nightOrder: 99, hasNightAction: false,
-    skillHint: { zh: '白天被投票放逐时可翻牌免死,继续存活但之后失去投票权', en: 'When voted out during day, can flip card to survive but loses voting right for the rest of the game' },
+    skillHint: { zh: '白天被投票放逐时可翻牌免死,继续存活但之后失去投票权(不能参与白天讨论/投票)', en: 'When voted out during day, can flip card to survive but loses voting right for the rest of the game (cannot speak in discussion or vote)' },
   },
   knight: {
     id: 'knight', faction: 'good', emoji: '⚔️',
@@ -120,15 +132,15 @@ export const ROLES: Record<RoleId, RoleDef> = {
     id: 'gargoyle', faction: 'third', emoji: '🗿',
     name: { zh: '石像鬼', en: 'Gargoyle' },
     shortDesc: { zh: '独立阵营,胜利条件特殊', en: 'Independent faction, special win condition' },
-    nightOrder: 40, hasNightAction: true,
+    nightOrder: 60, hasNightAction: true,
     skillHint: { zh: '每晚可查验一名玩家是「神职」还是「非神职」;胜利条件:活到最后(只剩石像鬼+1 玩家时石像鬼胜)', en: 'Each night check if a player is a "god role" (seer/witch/hunter/guard/knight) or not. Win: be the last one standing (gargoyle + 1 remaining player)' },
   },
   cupid: {
     id: 'cupid', faction: 'third', emoji: '💘',
     name: { zh: '丘比特', en: 'Cupid' },
     shortDesc: { zh: '首夜连两人做情侣', en: 'First night, link two players as lovers' },
-    nightOrder: 1, hasNightAction: true,
-    skillHint: { zh: '第一晚选择两名玩家成为情侣(可跨阵营);任一情侣死亡,另一人也殉情。丘比特胜利条件:任意情侣阵营胜利时,丘比特也胜利', en: 'First night choose two players as lovers (any faction). When one dies, the other dies too. Cupid wins if any lover\'s faction wins' },
+    nightOrder: 50, hasNightAction: true,
+    skillHint: { zh: '第一晚选择两名玩家成为情侣(可跨阵营,可在 UI 里选第 1、第 2 人);任一情侣死亡,另一人也殉情。丘比特胜利条件:任意情侣阵营胜利时,丘比特也胜利', en: 'First night choose two players as lovers (any faction; user picks both in UI). When one dies, the other dies too. Cupid wins if any lover\'s faction wins' },
   },
 };
 

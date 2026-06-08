@@ -29,8 +29,8 @@ export interface Player {
 export interface PrivateMemory {
   /** 狼人知道的队友 ID 列表 */
   wolfTeammates: number[];
-  /** 预言家验过的 [{target, isWolf}] */
-  seerChecks: { targetId: number; isWolf: boolean }[];
+  /** 预言家验过的 [{target, isWolf}],按时间顺序追加 */
+  seerChecks: { targetId: number; isWolf: boolean; night: number }[];
   /** 女巫是否用过解药/毒药 */
   witchAntidoteUsed: boolean;
   witchPoisonUsed: boolean;
@@ -44,7 +44,7 @@ export interface PrivateMemory {
   /** 丘比特连的情侣 */
   cupidLinkedIds: [number, number] | null;
   /** 石像鬼查过的人 */
-  gargoyleChecks: { targetId: number; isGod: boolean }[];
+  gargoyleChecks: { targetId: number; isGod: boolean; night: number }[];
   /** 骑士是否已用过决斗(整局限一次) */
   knightUsed: boolean;
   /** 骑士今晚的决斗目标(白天发动) */
@@ -53,6 +53,8 @@ export interface PrivateMemory {
   wolfbeautyLastVoter: number | null;
   /** 是否是警长(12 人局首日竞选产生) */
   isSheriff: boolean;
+  /** 白痴是否已翻牌免死(翻牌后失去投票权) */
+  idiotFlipped: boolean;
 }
 
 export interface SpeechRecord {
@@ -94,6 +96,50 @@ export interface GameState {
   speeches: SpeechRecord[];
   /** 用户语言偏好(zh / en) */
   lang: 'zh' | 'en';
+  /** 警长竞选状态(12 人局第一个白天) */
+  sheriffElection?: {
+    /** 已报名参与警长竞选的玩家 ID 列表(发言顺序) */
+    registeredIds: number[];
+    /** 已退水的玩家 ID 列表 */
+    withdrawnIds: number[];
+    /** PK 轮数(0 = 首次投票,1+ = 平票后再投) */
+    pkRound: number;
+    /** 发言序号(用于按顺序播报) */
+    speechIdx: number;
+  };
+  /**
+   * 警长上警后选的发言顺序(影响白天讨论顺序)
+   *  - direction: 'cw' = 顺时针,'ccw' = 逆时针
+   *  - startFromDeathId: 仅当「上一夜只死 1 人」时有效(从该死者左/右侧开始)
+   *    当 0 人或 2+ 人死亡时,该字段为 null,以警长本人为锚点
+   * 首日警长竞选结束后会进入「sheriff-pick-order」阶段让警长选;
+   * 之后每天都用这个顺序(若警长一直没变,顺序也一直有效)。
+   */
+  sheriffSpeechOrder?: {
+    direction: 'cw' | 'ccw';
+    startFromDeathId: number | null;
+  };
+  /**
+   * 警长归票目标(白天投票环节,警长公开归票 1 人 → 警长自己那票 = 1.5)
+   * null = 未归票,weight = 1
+   * 任意 number = 归票了该玩家(weight = 1.5 票)
+   * 注:每轮投票后清空(下一天可重新归票)
+   */
+  sheriffEndorsement: number | null;
+  /**
+   * 待发言的遗言队列(标准规则:仅首夜+白天死亡的玩家有遗言,按死亡顺序)
+   *  - 夜间:仅首夜(s.round === 1)有遗言
+   *  - 白天:被放逐/被技能致死的玩家有遗言(按死亡先后顺序)
+   *  - 数组顺序就是发言顺序,清空时表示这一批遗言都讲完了
+   */
+  pendingLastWords: number[];
+  /**
+   * 狼队本夜投票(每只狼的目标)。NightPanel 在狼队回合收集所有狼的 aiSpeak.target,
+   * 然后用 aggregateWolfVotes 决定最终击杀目标。
+   *  - number[] 每个狼投票的玩家 ID(1-based→0-based 已转换)
+   *  - 投票结束后由 resolveNight / applyNightAction 处理
+   */
+  wolfVotes: number[];
 }
 
 const defaultMemory = (): PrivateMemory => ({
@@ -101,7 +147,7 @@ const defaultMemory = (): PrivateMemory => ({
   witchSavedId: null, witchPoisonedId: null, guardLastTargetId: null, guardHistory: [],
   cupidLinkedIds: null, gargoyleChecks: [],
   knightUsed: false, knightDuelTargetId: null, wolfbeautyLastVoter: null,
-  isSheriff: false,
+  isSheriff: false, idiotFlipped: false,
 });
 
 /* ─────────────────────────────────────────────
@@ -141,6 +187,9 @@ export function initGame(boardId: BoardId, userName: string, lang: 'zh' | 'en' =
     pkPlayers: null, pkUsed: false, lastVoteData: null,
     winner: null,
     publicLog: [], speeches: [], lang,
+    sheriffEndorsement: null,
+    pendingLastWords: [],
+    wolfVotes: [],
   };
 }
 
@@ -367,6 +416,219 @@ export function killPlayers(state: GameState, ids: number[], reason: string, kil
   s = s2;
   if (chained.length > 0) void killer; // 暂时 unused
   return s;
+}
+
+/* ─────────────────────────────────────────────
+   是否能投票(标准规则)
+   ── 活着的玩家 + 没翻牌的白痴
+   ── 警长(被放逐)死前可指定继承;helper 留好
+   ───────────────────────────────────────────── */
+export function canVote(player: Player): boolean {
+  if (!player.alive) return false;
+  if (player.privateMemory.idiotFlipped) return false;
+  return true;
+}
+
+/* ─────────────────────────────────────────────
+   警长票权重
+   ── 警长公开「归票」1 名玩家 → 警长自己的那票 = 1.5
+   ── 警长未归票 / 归票超过 1 人 → 警长那票 = 1
+   ── (归票超过 1 人的实现:实际只取 endorsement 字段的 1 个值;
+   ──   这里是给"已归票"状态用 1.5,其他情况 1)
+   ───────────────────────────────────────────── */
+export function sheriffVoteWeight(state: GameState, voterId: number): number {
+  const voter = state.players[voterId];
+  if (!voter || !voter.privateMemory.isSheriff) return 1;
+  // 警长本人,且 endorsement 已设置(归票了 1 人) → 1.5
+  if (state.sheriffEndorsement !== null) return 1.5;
+  return 1;
+}
+
+/* ─────────────────────────────────────────────
+   按警长选的发言顺序,计算 alivePlayers 的发言序列
+   ── direction: 'cw' 顺时针,'ccw' 逆时针
+   ── startFromDeathId: 非空 = 从该死者左/右开始(基于其位置)
+   ─────────────────────────────────────────── */
+export function orderedSpeakers(
+  state: GameState,
+  alivePlayers: Player[],
+  direction: 'cw' | 'ccw',
+  startFromDeathId: number | null,
+): Player[] {
+  if (alivePlayers.length === 0) return [];
+  const totalSeats = state.players.length;
+  // 以 id 升序作为座位顺序
+  // 起点:若 startFromDeathId 有效,从该死亡位置 +1 (cw) 或 -1 (ccw) 开始
+  let startId: number;
+  if (startFromDeathId !== null && state.players[startFromDeathId]) {
+    startId = direction === 'cw'
+      ? (startFromDeathId + 1) % totalSeats
+      : (startFromDeathId - 1 + totalSeats) % totalSeats;
+  } else {
+    // 用警长本人为锚点
+    const sheriff = alivePlayers.find(p => p.privateMemory.isSheriff);
+    if (!sheriff) {
+      // 无警长 → 退回到座位顺序
+      return [...alivePlayers].sort((a, b) => a.id - b.id);
+    }
+    startId = direction === 'cw'
+      ? (sheriff.id + 1) % totalSeats
+      : (sheriff.id - 1 + totalSeats) % totalSeats;
+  }
+  // 沿着方向走,收集还活着的
+  const result: Player[] = [];
+  const aliveSet = new Set(alivePlayers.map(p => p.id));
+  let cur = startId;
+  for (let i = 0; i < totalSeats; i++) {
+    if (aliveSet.has(cur)) {
+      result.push(state.players[cur]);
+    }
+    cur = direction === 'cw' ? (cur + 1) % totalSeats : (cur - 1 + totalSeats) % totalSeats;
+  }
+  return result;
+}
+
+/* ─────────────────────────────────────────────
+   同守同救检测
+   ── 标准规则:守卫+女巫解药同时作用于同一人 → 抵消,该人仍死
+   ── 返回值:{ cancelled: true } 表示「抵消了」
+   ── 调用方:在 resolveNight 应用守卫前,先检测这个
+   ───────────────────────────────────────────── */
+export function sameGuardAntidote(state: GameState, wolfTarget: number): boolean {
+  const guard = state.players.find(p => p.alive && p.role === 'guard');
+  if (!guard) return false;
+  const witch = state.players.find(p => p.alive && p.role === 'witch');
+  if (!witch) return false;
+  return guard.privateMemory.guardLastTargetId === wolfTarget
+      && witch.privateMemory.witchAntidoteUsed
+      && witch.privateMemory.witchSavedId === wolfTarget;
+}
+
+/* ─────────────────────────────────────────────
+   警长继承 —— 警长被放逐/殉情/狼杀时,在死前指定一个存活玩家继承
+   ── 简化版:如果警长死亡,系统自动随机指定一个非警长玩家继承
+   ── 留作 helper,正式接入需在前端做「指定继承人 UI」
+   ───────────────────────────────────────────── */
+export function applySheriffSuccession(s: GameState, successorId: number): GameState {
+  return {
+    ...s,
+    players: s.players.map(p => p.id === successorId
+      ? { ...p, privateMemory: { ...p.privateMemory, isSheriff: true } }
+      : { ...p, privateMemory: { ...p.privateMemory, isSheriff: false } }),
+    publicLog: [...s.publicLog, {
+      kind: 'system' as const, day: s.round,
+      text: `⭐ ${s.players[successorId].name} 继承警长(1.5 票投票权)`,
+    }],
+  };
+}
+
+/* ─────────────────────────────────────────────
+   狼自爆(任何白天阶段都能发生)
+   ── 修复:之前直接进夜晚没检查猎人;现在会先触发情侣殉情,再检测猎人
+   ───────────────────────────────────────────── */
+export function applyWolfSelfDestruct(s: GameState, wolfId: number, _lang: 'zh' | 'en'): GameState {
+  if (s.players[wolfId].faction !== 'wolf') return s;
+  // 1) 标记狼死
+  let updated = s.players.map(p => p.id === wolfId ? { ...p, alive: false } : p);
+  // 2) 情侣殉情
+  const { state: afterLovers, chained } = applyLoversChain({ ...s, players: updated }, [wolfId]);
+  updated = afterLovers.players;
+  // 3) 检查是否有猎人(包括殉情带走的)
+  const newlyDead = [wolfId, ...chained];
+  const hunterDead = newlyDead.find(id => s.players[id].role === 'hunter');
+  return {
+    ...afterLovers,
+    players: updated,
+    publicLog: [...afterLovers.publicLog, {
+      kind: 'death' as const, day: s.round, playerId: wolfId,
+      text: `💥 ${s.players[wolfId].name} 狼人自爆!立即进入夜晚`,
+    }],
+    deadThisDay: wolfId,
+    lastVotedOut: hunterDead ?? null,
+    phase: hunterDead !== undefined ? 'hunter-shoot' : 'night',
+    round: hunterDead !== undefined ? s.round : s.round + 1,
+    pkUsed: false, pkPlayers: null,
+  };
+}
+
+/* ─────────────────────────────────────────────
+   骑士决斗 —— 白天发动
+   ── target 是狼 → target 死
+   ── target 是好人 → knight 死
+   ── 触发情侣殉情 + 猎人检测
+   ───────────────────────────────────────────── */
+export function applyKnightDuel(s: GameState, knightId: number, targetId: number, _lang: 'zh' | 'en'): GameState {
+  const knight = s.players[knightId];
+  const target = s.players[targetId];
+  if (knight.role !== 'knight' || knight.privateMemory.knightUsed) return s;
+  const markKnightUsed = (next: GameState): GameState => ({
+    ...next,
+    players: next.players.map(p => p.id === knightId
+      ? { ...p, privateMemory: { ...p.privateMemory, knightUsed: true } }
+      : p),
+  });
+  if (target.faction === 'wolf') {
+    // 目标死
+    let updated = s.players.map(p => p.id === targetId ? { ...p, alive: false } : p);
+    const { state: afterLovers, chained } = applyLoversChain({ ...s, players: updated }, [targetId]);
+    const newlyDead = [targetId, ...chained];
+    const hunterDead = newlyDead.find(id => s.players[id].role === 'hunter');
+    return markKnightUsed({
+      ...afterLovers,
+      players: afterLovers.players,
+      publicLog: [...afterLovers.publicLog, {
+        kind: 'death' as const, day: s.round, playerId: targetId,
+        text: `⚔️ ${target.name} 被骑士决斗击杀!`,
+      }],
+      lastVotedOut: hunterDead ?? null,
+      phase: hunterDead !== undefined ? 'hunter-shoot' : 'night',
+      round: hunterDead !== undefined ? s.round : s.round + 1,
+      pkUsed: false, pkPlayers: null,
+    });
+  } else {
+    // 骑士死
+    let updated = s.players.map(p => p.id === knightId ? { ...p, alive: false } : p);
+    const { state: afterLovers, chained } = applyLoversChain({ ...s, players: updated }, [knightId]);
+    const newlyDead = [knightId, ...chained];
+    const hunterDead = newlyDead.find(id => s.players[id].role === 'hunter');
+    return markKnightUsed({
+      ...afterLovers,
+      players: afterLovers.players,
+      publicLog: [...afterLovers.publicLog, {
+        kind: 'death' as const, day: s.round, playerId: knightId,
+        text: `⚔️ ${knight.name} 决斗失败!对方是好人,骑士自尽`,
+      }],
+      lastVotedOut: hunterDead ?? null,
+      phase: hunterDead !== undefined ? 'hunter-shoot' : 'night',
+      round: hunterDead !== undefined ? s.round : s.round + 1,
+      pkUsed: false, pkPlayers: null,
+    });
+  }
+}
+
+/* ─────────────────────────────────────────────
+   狼队投票聚合
+   ── 输入:每只狼的目标 ID 列表(可能为空)
+   ── 规则:
+   · 票数最多的玩家被选为击杀目标
+   · 平票 → 从平票者中随机选一个
+   · 全部为空(狼超时未选) → 返回 null(守卫/女巫等可挡)
+   ───────────────────────────────────────────── */
+export function aggregateWolfVotes(state: GameState, votes: number[]): number | null {
+  const alive = new Set(state.players.filter(p => p.alive).map(p => p.id));
+  // 只统计有效票(target 存活,且不是投票狼自己)
+  const validVotes = votes.filter(v => alive.has(v));
+  if (validVotes.length === 0) return null;
+  // 计票
+  const tally: Record<number, number> = {};
+  validVotes.forEach(v => { tally[v] = (tally[v] || 0) + 1; });
+  const maxVotes = Math.max(...Object.values(tally));
+  const topCandidates = Object.entries(tally)
+    .filter(([_, c]) => c === maxVotes)
+    .map(([id]) => parseInt(id, 10));
+  if (topCandidates.length === 1) return topCandidates[0];
+  // 平票 → 随机
+  return topCandidates[Math.floor(Math.random() * topCandidates.length)];
 }
 
 /* ─────────────────────────────────────────────

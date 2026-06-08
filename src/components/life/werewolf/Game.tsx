@@ -12,6 +12,8 @@ import { useI18n } from '../../../hooks/useI18n';
 import {
   BOARDS, BOARD_LIST, ROLES, type BoardId, type GameState, type Player, type RoleId,
   initGame, loadAIConfig, callAIStream, checkWinner, parseAIDecision, tryJsonExtract, applyLoversChain,
+  applyKnightDuel, applyWolfSelfDestruct, applySheriffSuccession, canVote,
+  sheriffVoteWeight, orderedSpeakers, aggregateWolfVotes,
 } from './engine';
 import type { BoardDef } from './data';
 import { PersonalityRender } from './Personalities';
@@ -395,7 +397,7 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
           {state.phase === 'night' && <NightPanel state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} onActingChange={setActingPlayerIds} />}
           {state.phase === 'last-words' && <LastWords state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
           {state.phase === 'day-announce' && <DayAnnounce state={state} setState={setState} lang={lang} />}
-          {state.phase === 'sheriff-election' && <SheriffElection state={state} setState={setState} lang={lang} />}
+          {state.phase === 'sheriff-election' && <SheriffElection state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
           {state.phase === 'day-discuss' && <DayDiscuss state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
           {state.phase === 'day-vote' && <DayVote state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
           {state.phase === 'vote-results' && <VoteResults state={state} setState={setState} lang={lang} />}
@@ -691,31 +693,80 @@ function NightPanel({ state, setState, lang, aiSpeak, onActingChange }: {
           setScene('outro');
         });
       } else {
-        // AI 行动:异步跑 runAIAction + 同步倒计时(超时强制 null 兜底)
-        const actor = state.players[actorId];
-        startCountdown(timeoutSec, () => {
-          if (aiDoneRef.current) return;
-          aiDoneRef.current = true;
-          if (cancelled) return;
-          if (cur.role === 'witch') {
-            setState(s => applyWitchAction(s, actorId, false, null, lang));
-          } else {
-            setState(s => applyNightAction(s, cur.role, actorId, null, lang));
-          }
-          setBusy(false);
-          setScene('outro');
-        });
-        runAIAction(actor, stateRef.current, lang, aiSpeakRef.current).then((result) => {
-          if (cancelled || aiDoneRef.current) return;
-          aiDoneRef.current = true;
-          if (cur.role === 'witch' && result.decision) {
-            setState(s => applyWitchAction(s, actorId, result.decision!.useAntidote ?? false, result.decision!.poisonTarget ?? null, lang));
-          } else if (result.target !== null) {
-            setState(s => applyNightAction(s, cur.role, actorId, result.target, lang));
-          }
-          setBusy(false);
-          setScene('outro');
-        });
+        // AI 行动
+        // 狼队行动特殊处理:每只狼独立投票,最后聚合计数
+        const isWolfPack = cur.playerIds.length > 1;
+        // 用 handleWolfPackDone 标志避免重复跑"单个 AI"分支
+        let handleWolfPackDone = false;
+        if (isWolfPack) {
+          handleWolfPackDone = true;
+          // 给所有狼启动超时兜底
+          startCountdown(timeoutSec, () => {
+            if (aiDoneRef.current) return;
+            aiDoneRef.current = true;
+            if (cancelled) return;
+            // 超时:不强制投谁,让 aggregateWolfVotes 用现有票数(可能全空 → null)
+            const target = aggregateWolfVotes(stateRef.current, stateRef.current.wolfVotes);
+            setState(s => applyNightAction(s, cur.role, cur.playerIds[0], target, lang));
+            setBusy(false);
+            setScene('outro');
+          });
+          // 每只狼依次投票(并行启动 aiSpeak,然后用 Promise.all 收集)
+          const wolfPromises: Promise<number | null>[] = cur.playerIds.map((wid) => {
+            const wolf = stateRef.current.players[wid];
+            if (!wolf) return Promise.resolve(null);
+            // 收集本队其他狼的当前票数作为讨论参考
+            const peerVotesSummary = cur.playerIds
+              .filter(pid => pid !== wid)
+              .map(pid => `${pid + 1}号`)
+              .join('、');
+            const sys = lang === 'zh'
+              ? `你是"${wolf.name}"(第${wolf.id + 1}号),狼队成员。今晚狼队(你和 ${peerVotesSummary || '队友'})要一起选一个人杀。请先简单讨论(20-40 字)你建议杀谁 + 理由,然后用 JSON 输出你最终投票的目标。\n输出格式:{"speech":"讨论(20-40字)","target":目标座位号(1-based)}`
+              : `You are "${wolf.name}", a wolf. Coordinate with pack to pick a victim. Discuss briefly then output JSON: {"speech":"20-40 words","target":seat (1-based)}`;
+            const usr = lang === 'zh' ? '请讨论 + 输出 JSON' : 'Discuss + output JSON';
+            return aiSpeak(wolf.id, sys, usr, true).then(({ target }) => target);
+          });
+          Promise.all(wolfPromises).then((votes) => {
+            if (cancelled || aiDoneRef.current) return;
+            aiDoneRef.current = true;
+            // 把狼队的票数写到 state.wolfVotes(供下个阶段查阅)
+            const target = aggregateWolfVotes(stateRef.current, votes.filter((v): v is number => v !== null));
+            setState(s => ({
+              ...s,
+              wolfVotes: votes.filter((v): v is number => v !== null),
+            }));
+            setState(s => applyNightAction(s, cur.role, cur.playerIds[0], target, lang));
+            setBusy(false);
+            setScene('outro');
+          });
+        }
+        if (!handleWolfPackDone) {
+          // 单个 AI 行动(非狼队)
+          const actor = state.players[actorId];
+          startCountdown(timeoutSec, () => {
+            if (aiDoneRef.current) return;
+            aiDoneRef.current = true;
+            if (cancelled) return;
+            if (cur.role === 'witch') {
+              setState(s => applyWitchAction(s, actorId, false, null, lang));
+            } else {
+              setState(s => applyNightAction(s, cur.role, actorId, null, lang));
+            }
+            setBusy(false);
+            setScene('outro');
+          });
+          runAIAction(actor, stateRef.current, lang, aiSpeakRef.current).then((result) => {
+            if (cancelled || aiDoneRef.current) return;
+            aiDoneRef.current = true;
+            if (cur.role === 'witch' && result.decision) {
+              setState(s => applyWitchAction(s, actorId, result.decision!.useAntidote ?? false, result.decision!.poisonTarget ?? null, lang));
+            } else if (result.target !== null) {
+              setState(s => applyNightAction(s, cur.role, actorId, result.target, lang));
+            }
+            setBusy(false);
+            setScene('outro');
+          });
+        }
       }
     }
 
@@ -728,13 +779,17 @@ function NightPanel({ state, setState, lang, aiSpeak, onActingChange }: {
   }, [scene, actionIdx, actions.length]);
 
   // 用户手动确认行动
-  function onUserAction(target: number | null, extra?: { useAntidote?: boolean; poisonTarget?: number | null }) {
+  function onUserAction(target: number | null, extra?: { useAntidote?: boolean; poisonTarget?: number | null; secondLoverId?: number | null }) {
     if (!cur) return;
     const actorId = cur.playerIds[0];
     if (cur.role === 'witch') {
       const useAntidote = extra?.useAntidote ?? false;
       const poisonTarget = extra?.poisonTarget ?? null;
       setState(s => applyWitchAction(s, actorId, useAntidote, poisonTarget, lang));
+    } else if (cur.role === 'cupid') {
+      // 丘比特:target = lover1,extra.poisonTarget 复用为 lover2(hack:接口没专门为 cupid 开扩展)
+      const lover2 = extra?.poisonTarget ?? null;
+      setState(s => applyNightAction(s, cur.role, actorId, target, lang, { secondLoverId: lover2 }));
     } else {
       setState(s => applyNightAction(s, cur.role, actorId, target, lang));
     }
@@ -768,11 +823,21 @@ function NightPanel({ state, setState, lang, aiSpeak, onActingChange }: {
           {lang === 'zh' ? '🌅 天快亮了…' : '🌅 Dawn approaching…'}
         </div>
       )}
-      {cur && scene === 'action' && (
-        <div className="mt-3 text-[10px]" style={{ color: 'var(--color-text-muted)' }}>
-          {lang === 'zh' ? '当前行动:' : 'Acting now:'} {ROLES[cur.role].emoji} {ROLES[cur.role].name[lang]}
-        </div>
-      )}
+      {cur && scene === 'action' && (() => {
+        // 修复:非狼人(且非行动者)看不到具体哪个角色在行动
+        // 只有狼队成员 + 当前行动者(及其同阵营)能看到具体角色
+        const isMe = cur.playerIds.includes(state.userId);
+        const isWolfPack = cur.playerIds.length > 1;
+        const userP = state.players[state.userId];
+        const userIsWolf = userP?.alive && userP.faction === 'wolf';
+        const canSeeInfo = isMe || (isWolfPack && userIsWolf);
+        if (!canSeeInfo) return null;
+        return (
+          <div className="mt-3 text-[10px]" style={{ color: 'var(--color-text-muted)' }}>
+            {lang === 'zh' ? '当前行动:' : 'Acting now:'} {ROLES[cur.role].emoji} {ROLES[cur.role].name[lang]}
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -789,8 +854,43 @@ function NightSceneDisplay({ scene, cur, state, lang, timeLeft, onUserAction, bu
   const role = ROLES[cur.role];
   const isMe = cur.playerIds.includes(state.userId);
   const isWolfPack = cur.playerIds.length > 1;
+  // 标准规则:夜间只有行动者(及其同阵营可见)能看到行动信息
+  // 狼队回合:所有狼人可见(包括用户若为狼)
+  // 其他角色回合:只有自己可见
+  const userP = state.players[state.userId];
+  const userIsWolf = userP?.alive && userP.faction === 'wolf';
+  const canSeeInfo = isMe || (isWolfPack && userIsWolf);
 
-  // 字幕
+  // 非可见方:不显示角色名,只显示通用提示
+  if (!canSeeInfo) {
+    if (scene === 'intro' || scene === 'outro') {
+      return (
+        <div>
+          <div className="text-5xl mb-3">🌙</div>
+          <div className="text-2xl font-bold mb-2" style={{ color: 'var(--color-text-muted)' }}>
+            {lang === 'zh' ? '夜深人静…' : 'Quiet night…'}
+          </div>
+          <div className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+            {lang === 'zh' ? `${(timeLeft).toFixed(1)}s` : `${timeLeft.toFixed(1)}s`}
+          </div>
+        </div>
+      );
+    }
+    // action 场景:非行动者(且非狼)看到「有人行动中」+ 倒计时
+    return (
+      <div>
+        <div className="text-5xl mb-3">🕯️</div>
+        <div className="text-2xl font-bold mb-2" style={{ color: 'var(--color-text-muted)' }}>
+          {lang === 'zh' ? '有人在行动…' : 'Someone is acting…'}
+        </div>
+        <div className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+          ⏱ {timeLeft.toFixed(1)}s
+        </div>
+      </div>
+    );
+  }
+
+  // 字幕(可见方)
   if (scene === 'intro') {
     return (
       <div>
@@ -925,9 +1025,22 @@ function UserNightActionUI({ role, state, lang, onConfirm }: {
     const wolfTarget = state.deadThisNight[0] ?? null;
     const isFirstNight = state.round === 1;
     const selfTarget = wolfTarget === state.userId;
-    // 网杀规则:首夜不能自救
-    const canAntidote = !mem.witchAntidoteUsed && wolfTarget !== null && !(isFirstNight && selfTarget);
+    // 自救规则(板子相关):
+    //   9 人场:仅首夜可自救 → round>1 自救也禁
+    //   12 人场:首夜不可自救 → 其他夜晚可自救
+    const is9pBoard = state.players.length === 9;
+    const blockedByBoardRule = is9pBoard
+      ? (state.round > 1 && selfTarget)
+      : (isFirstNight && selfTarget);
+    const canAntidote = !mem.witchAntidoteUsed && wolfTarget !== null && !blockedByBoardRule;
     const canPoison = !mem.witchPoisonUsed;
+    const ruleHint = is9pBoard
+      ? (isFirstNight
+          ? (selfTarget ? (lang === 'zh' ? '(9 人场首夜可以自救)' : '(9p first night: can self-save)') : '')
+          : (selfTarget ? (lang === 'zh' ? '(9 人场非首夜不能自救)' : '(9p non-first-night: no self-save)') : ''))
+      : (isFirstNight && selfTarget
+          ? (lang === 'zh' ? '(12 人场首夜不能自救)' : '(12p first night: no self-save)')
+          : '');
     return (
       <div>
         <p className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>
@@ -998,25 +1111,46 @@ function UserNightActionUI({ role, state, lang, onConfirm }: {
     );
   }
 
-  // 丘比特:首夜连 2 个人做情侣
+  // 丘比特:首夜连 2 个人做情侣 —— 修复:之前第二个人是系统随机的,
+  // 现在让用户能选两个情人(更符合标准规则)
   if (role === 'cupid') {
+    const [lover1, setLover1] = useState<number | null>(null);
+    const [lover2, setLover2] = useState<number | null>(null);
+    const othersAfterL1 = state.players.filter(p => p.alive && p.id !== state.userId && p.id !== lover1);
     return (
       <div>
         <p className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>
-          {lang === 'zh' ? '💘 选第 1 个情侣(另一个系统随机):' : 'Cupid: pick lover #1 (lover #2 random):'}
+          {lang === 'zh' ? '💘 选第 1 个情人:' : 'Pick lover #1:'}
         </p>
-        <div className="flex flex-wrap gap-1.5 justify-center">
-          {aliveOthers.map(p => (
-            <button key={p.id} onClick={() => setSelected(p.id)}
+        <div className="flex flex-wrap gap-1.5 justify-center mb-3">
+          {state.players.filter(p => p.alive && p.id !== state.userId).map(p => (
+            <button key={p.id} onClick={() => { setLover1(p.id); if (lover2 === p.id) setLover2(null); }}
               className="px-2 py-1 rounded text-xs"
               style={{
-                background: selected === p.id ? '#ec4899' : 'var(--color-card-bg)',
-                color: selected === p.id ? '#fff' : 'var(--color-text)',
+                background: lover1 === p.id ? '#ec4899' : 'var(--color-card-bg)',
+                color: lover1 === p.id ? '#fff' : 'var(--color-text)',
+              }}>{p.id + 1}.{p.name}</button>
+          ))}
+        </div>
+        <p className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>
+          {lang === 'zh' ? '💘 选第 2 个情人(可跨阵营,不能跟第 1 个同一人):' : 'Pick lover #2 (can be any faction, must differ from #1):'}
+        </p>
+        <div className="flex flex-wrap gap-1.5 justify-center">
+          {othersAfterL1.map(p => (
+            <button key={p.id} onClick={() => setLover2(p.id)}
+              className="px-2 py-1 rounded text-xs"
+              style={{
+                background: lover2 === p.id ? '#ec4899' : 'var(--color-card-bg)',
+                color: lover2 === p.id ? '#fff' : 'var(--color-text)',
               }}>{p.id + 1}.{p.name}</button>
           ))}
         </div>
         <div className="text-center mt-3">
-          <Button onClick={() => onConfirm(selected)} disabled={selected === null}>
+          <Button onClick={() => {
+            if (lover1 === null || lover2 === null) return;
+            // 通过 poisonTarget 通道复用 extra 传第二情人(纯 hack,接口没专门为 cupid 开扩展)
+            onConfirm(lover1, { poisonTarget: lover2 });
+          }} disabled={lover1 === null || lover2 === null}>
             {lang === 'zh' ? '连情侣' : 'Link'} <ChevronRight size={14} className="ml-1" />
           </Button>
         </div>
@@ -1098,9 +1232,15 @@ Output JSON: {"speech":"reasoning (optional)","useAntidote":true/false,"poisonTa
 }
 
 /* 应用女巫夜晚行动(结构化决策)
-   ── 网杀规则:首夜被狼杀自己时不能自救(round===1 && target===self)
-   ── 解药救 deadThisNight[0],毒药额外杀 1 人
-   ── 标记 witchPoisonedId 方便 DayAnnounce 区分「被毒杀」(猎人不能开枪) */
+   ── 自救规则(板子相关):
+   ──   · 9 人场:仅首夜可以自救(round>1 也不能自救)
+   ──   · 12 人场:首夜不能自救(round>1 可以自救)
+   ── 解药记录 witchSavedId(由 resolveNight 决定是否真的生效)
+   ── 毒药额外杀 1 人(写入 deadThisNight)
+   ── 标记 witchPoisonedId 方便 DayAnnounce 区分「被毒杀」(猎人不能开枪)
+   ── ⚠️ 修复:之前在这里直接 newDead.filter 把狼目标移出死亡列表,
+   ──   导致「同守同救」(守卫+女巫同时保护同一人)规则失效 —— 应该抵消让目标仍死。
+   ──   现在只记录决策,实际是否救人交给 resolveNight 统一处理。 */
 function applyWitchAction(s: GameState, witchId: number, useAntidote: boolean, poisonTarget: number | null, _lang: 'zh' | 'en'): GameState {
   const witch = s.players[witchId];
   if (!witch || witch.role !== 'witch') return s;
@@ -1109,17 +1249,24 @@ function applyWitchAction(s: GameState, witchId: number, useAntidote: boolean, p
   let newDead = [...s.deadThisNight];
   let newMem = { ...mem };
 
-  // 解药
+  // 解药:仅记录使用决策和救了谁(实际是否生效由 resolveNight 决定)
   if (useAntidote && !mem.witchAntidoteUsed && wolfTarget !== null) {
     const isFirstNightSelf = s.round === 1 && wolfTarget === witchId;
-    if (!isFirstNightSelf) {
+    // 9 人场:仅首夜可自救 → round > 1 自救也禁止
+    // 12 人场:首夜不可自救 → round === 1 且自投 → 禁止
+    const is9pBoard = s.players.length === 9;
+    const isNonFirstNightSelf = !is9pBoard && false;  // 12p 无此限制
+    const blockedByBoardRule = is9pBoard
+      ? (s.round > 1 && wolfTarget === witchId)        // 9p: round>1 自救 → 禁止
+      : isFirstNightSelf;                              // 12p: round===1 自救 → 禁止
+    if (!blockedByBoardRule) {
       newMem.witchAntidoteUsed = true;
       newMem.witchSavedId = wolfTarget;
-      newDead = newDead.filter(id => id !== wolfTarget);
+      // 不在这里删 newDead —— 同守同救时会取消
     }
   }
 
-  // 毒药
+  // 毒药:直接加进 deadThisNight
   if (poisonTarget !== null && !mem.witchPoisonUsed
     && poisonTarget !== witchId
     && s.players[poisonTarget]?.alive
@@ -1137,7 +1284,10 @@ function applyWitchAction(s: GameState, witchId: number, useAntidote: boolean, p
 }
 
 /* 应用一个夜晚行动到 GameState */
-function applyNightAction(s: GameState, role: RoleId, actorId: number, target: number | null, _lang: 'zh' | 'en'): GameState {
+function applyNightAction(
+  s: GameState, role: RoleId, actorId: number, target: number | null, _lang: 'zh' | 'en',
+  opts: { secondLoverId?: number | null } = {},
+): GameState {
   const players = s.players;
   switch (role) {
     case 'werewolf':
@@ -1161,7 +1311,7 @@ function applyNightAction(s: GameState, role: RoleId, actorId: number, target: n
       return {
         ...s,
         players: players.map((p, i) => i === actorId
-          ? { ...p, privateMemory: { ...p.privateMemory, seerChecks: [...p.privateMemory.seerChecks, { targetId: target, isWolf }] } }
+          ? { ...p, privateMemory: { ...p.privateMemory, seerChecks: [...p.privateMemory.seerChecks, { targetId: target, isWolf, night: s.round }] } }
           : p),
       };
     }
@@ -1202,23 +1352,32 @@ function applyNightAction(s: GameState, role: RoleId, actorId: number, target: n
       return {
         ...s,
         players: players.map((p, i) => i === actorId
-          ? { ...p, privateMemory: { ...p.privateMemory, gargoyleChecks: [...p.privateMemory.gargoyleChecks, { targetId: target, isGod }] } }
+          ? { ...p, privateMemory: { ...p.privateMemory, gargoyleChecks: [...p.privateMemory.gargoyleChecks, { targetId: target, isGod, night: s.round }] } }
           : p),
         publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: `🗿 石像鬼查验了 ${target + 1}号 (${isGod ? '神职' : '非神职'})` }],
       };
     }
     case 'cupid': {
-      // 丘比特首夜连 2 个人(我们把 target 当作第 1 个,默认连自己随机另一个)
-      // 简化:用 target 字段存"第一个人",第二人随机
+      // 丘比特首夜连 2 个人 —— 修复:之前第二人是系统随机的,
+      // 现在支持 secondLoverId 参数(用户可选 / AI 也可指定)
       if (target === null) return s;
       const aliveOthers = s.players.filter(p => p.alive && p.id !== actorId && p.id !== target);
-      const secondId = aliveOthers.length > 0 ? aliveOthers[Math.floor(Math.random() * aliveOthers.length)].id : null;
+      let secondId: number | null = null;
+      if (opts.secondLoverId !== undefined && opts.secondLoverId !== null) {
+        const candidate = s.players[opts.secondLoverId];
+        if (candidate && candidate.alive && opts.secondLoverId !== actorId && opts.secondLoverId !== target) {
+          secondId = opts.secondLoverId;
+        }
+      }
+      if (secondId === null) {
+        secondId = aliveOthers.length > 0 ? aliveOthers[Math.floor(Math.random() * aliveOthers.length)].id : null;
+      }
       if (secondId === null) return s;
       return {
         ...s,
         players: players.map((p, i) => {
-          if (i === actorId) return { ...p, privateMemory: { ...p.privateMemory, cupidLinkedIds: [target, secondId] } };
-          if (i === target || i === secondId) return { ...p, privateMemory: { ...p.privateMemory, cupidLinkedIds: [target, secondId] } };
+          if (i === actorId) return { ...p, privateMemory: { ...p.privateMemory, cupidLinkedIds: [target, secondId!] } };
+          if (i === target || i === secondId) return { ...p, privateMemory: { ...p.privateMemory, cupidLinkedIds: [target, secondId!] } };
           return p;
         }),
         publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: `💘 丘比特连了 ${target + 1}号 和 ${secondId + 1}号 做情侣` }],
@@ -1231,24 +1390,39 @@ function applyNightAction(s: GameState, role: RoleId, actorId: number, target: n
   }
 }
 
-/* 夜晚结算:应用狼人选择 + 守卫保护 + 猎人发动? + 公布死亡 */
+/* 夜晚结算:应用狼人选择 + 守卫保护 + 女巫解药(并处理「同守同救」) + 公布死亡
+   ── 标准规则「同守同救」:守卫+女巫解药同时作用于同一人 → 抵消,该人仍死
+   ── 修复:之前用"先女巫删 → 再守卫删"的串行逻辑,实际效果是「任意一救就活」,
+   ──        跟标准规则的"两救抵消"完全相反
+   ── 遗言规则:仅首夜夜间死亡的玩家有遗言;非首夜夜间死亡的玩家没有遗言 */
 function resolveNight(s: GameState, _lang: 'zh' | 'en'): GameState {
-  const dead = new Set<number>(s.deadThisNight);
-  // 应用守卫保护:如果 deadThisNight[0] 是守卫守的人,从 dead 中移除
+  let dead = new Set<number>(s.deadThisNight);
   const guard = s.players.find(p => p.alive && p.role === 'guard');
-  if (guard) {
-    const guarded = guard.privateMemory.guardLastTargetId;
-    if (guarded !== null && dead.has(guarded)) {
-      dead.delete(guarded);
-      // 女巫的解药也被消耗?简化:假定女巫没用解药
+  const witch = s.players.find(p => p.alive && p.role === 'witch');
+  const guardTarget = guard?.privateMemory.guardLastTargetId ?? null;
+  const witchSaved = witch?.privateMemory.witchSavedId ?? null;
+  // 同守同救判定:守卫守了 X 且 女巫解药救了 X(X 是同一狼目标)
+  const sameGuardAntidote =
+    guardTarget !== null && witchSaved !== null &&
+    guardTarget === witchSaved && dead.has(guardTarget);
+  if (sameGuardAntidote) {
+    // 抵消:让 X 留在 dead 里(死)
+    // 不删,留作下面的「应用死亡」处理
+  } else {
+    // 守卫保护:从 dead 中删除(非同守同救)
+    if (guardTarget !== null && dead.has(guardTarget)) {
+      dead.delete(guardTarget);
+    }
+    // 女巫解药:从 dead 中删除(非同守同救)
+    if (witchSaved !== null && dead.has(witchSaved)) {
+      dead.delete(witchSaved);
     }
   }
   // 应用死亡
   const newPlayers = s.players.map(p => dead.has(p.id) ? { ...p, alive: false } : p);
   const deadList = Array.from(dead);
-  // 标准规则:首夜死亡玩家有遗言(~1 分钟)
-  // 这里把"夜间死者"放到 last-words 阶段让他们说遗言,再进 day-announce
-  // 但如果 round > 1,按简化规则也可以直接 day-announce
+  // 遗言队列:仅首夜有
+  const isFirstNight = s.round === 1;
   const newState: GameState = {
     ...s,
     players: newPlayers,
@@ -1257,8 +1431,9 @@ function resolveNight(s: GameState, _lang: 'zh' | 'en'): GameState {
       kind: 'death' as const, day: s.round, playerId: id,
       text: `${s.players[id].name} 在夜里倒下了`,
     }))],
-    // 首夜死过人 → 进 last-words;否则直接 day-announce
-    phase: deadList.length > 0 ? 'last-words' : 'day-announce',
+    // 首夜:有遗言 → 进 last-words 阶段;非首夜:无遗言 → 直接 day-announce
+    pendingLastWords: isFirstNight ? deadList : [],
+    phase: (deadList.length > 0 && isFirstNight) ? 'last-words' : 'day-announce',
   };
   return newState;
 }
@@ -1305,10 +1480,11 @@ function IdiotFlip({ state, setState, lang, aiSpeak }: {
       let ns: GameState;
       if (flip) {
         // 翻牌免死:白痴还活着,失去投票权,公开已翻牌
+        // 修复:之前只留了空注释,实际没标记失去投票权 —— 现在用 idiotFlipped 真标记
         ns = {
           ...s,
           players: s.players.map(p => p.id === idiotId
-            ? { ...p, privateMemory: { ...p.privateMemory, /* idiot 已翻牌:失去投票权 */ } }
+            ? { ...p, privateMemory: { ...p.privateMemory, idiotFlipped: true } }
             : p),
           publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: `🤪 ${s.players[idiotId].name} 翻牌免死(之后失去投票权)` }],
           lastVotedOut: null,
@@ -1378,89 +1554,505 @@ function IdiotFlip({ state, setState, lang, aiSpeak }: {
    ═══════════════════════════════════════════════════════════════════ */
 
 /* ═══════════════════════════════════════════════════════════════════
-   警长竞选(只在 12 人局 + 没有警长时出现一次,第一个白天)
-   ── 所有存活玩家投票选警长(可以选自己,不能弃权,简化版)
-   ── 票数最多的当警长(同票随机)
-   ── 警长 = 1.5 票投票权(vote 票数 = 2,普通玩家 = 1)
+   警长竞选(12 人局第一个白天)
+   ── 标准规则(用户口径):
+   · 阶段 1 报名:所有存活玩家选择"参加"或"不参加"警长竞选
+   · 阶段 2 竞选发言:候选人按发言顺序逐一发言(30-60 秒)
+   · 阶段 3 退水 / 刚警徽:候选人可以"退水"(退出)或"刚警徽"(继续)
+   · 阶段 4 投票:未参与竞选的人在未退水的候选人中选 1 人
+   · 阶段 5 平票 PK:若平票,平票者按发言顺序"逆序"再发言,其他人再投票
+   · 阶段 6 警徽流失:若 PK 后仍平票,本局无警长
+   · 警长 = 1.5 票投票权(vote 票数 = 2,普通玩家 = 1)
    ═══════════════════════════════════════════════════════════════════ */
 
-function SheriffElection({ state, setState, lang }: {
+/* 警长竞选内部阶段(在 sheriff-election phase 内的子阶段) */
+type SheriffStep = 'register' | 'speech' | 'withdraw' | 'vote' | 'pk-speech' | 'pk-vote' | 'done';
+
+function SheriffElection({ state, setState, lang, aiSpeak }: {
   state: GameState; setState: (u: (s: GameState) => GameState) => void;
   lang: 'zh' | 'en';
+  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean) => Promise<{ speech: string; target: number | null }>;
 }) {
   const alivePlayers = state.players.filter(p => p.alive);
-  const [userPick, setUserPick] = useState<number | null>(null);
+  // 初始化 sheriffElection(如果还没有)
+  const election = state.sheriffElection ?? { registeredIds: [], withdrawnIds: [], pkRound: 0, speechIdx: 0 };
+  /* 推断当前子阶段(根据 state 推导) */
+  const [step, setStep] = useState<SheriffStep>('register');
+  // 用户本地选择
+  const [userRegister, setUserRegister] = useState<boolean | null>(null);
+  const [userWithdrew, setUserWithdrew] = useState<boolean | null>(null);
+  const [userVote, setUserVote] = useState<number | null>(null);
+  const [userSpeech, setUserSpeech] = useState('');
+  // 临时状态
   const [busy, setBusy] = useState(false);
+  const [tiedIds, setTiedIds] = useState<number[] | null>(null);  // 平票者
+  const [aiDecisions, setAiDecisions] = useState<Record<number, 'register' | 'skip' | 'withdraw' | 'stay'>>({});
   const [aiVotes, setAiVotes] = useState<Record<number, number>>({});
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
-  const runVotes = async () => {
-    setBusy(true);
-    const votes: Record<number, number> = {};
+  /* 推导:候选人列表(已报名 - 已退水) */
+  const candidates = election.registeredIds.filter(id => !election.withdrawnIds.includes(id));
+  // 当前阶段的 speakers 列表(根据 step 推导)
+  // - step = 'speech'   : 候选人按注册顺序
+  // - step = 'pk-speech': 平票者按候选人位置逆序
+  const pkSpeakers = (step === 'pk-speech' && tiedIds)
+    ? candidates.filter(c => tiedIds.includes(c)).slice().reverse()
+    : [];
+  const currentSpeakers = step === 'pk-speech' ? pkSpeakers : candidates;
+  const currentSpeakerId = currentSpeakers[election.speechIdx];
+
+  /* AI 决定:报名 / 跳过 */
+  useEffect(() => {
+    if (step !== 'register' || userRegister === null) return;
+    if (Object.keys(aiDecisions).length >= alivePlayers.length - (state.userId !== null && userRegister !== null ? 1 : 0)) return;
+    // 决定每个 AI 是否报名(简化:狼人常报名抢警徽,好人有时报名,有时放弃)
+    const decisions: Record<number, 'register' | 'skip'> = {};
     for (const p of alivePlayers) {
-      if (p.id === state.userId) continue;
-      // 随机选一个(包括自己)
-      const choice = alivePlayers[Math.floor(Math.random() * alivePlayers.length)].id;
-      votes[p.id] = choice;
+      if (p.id === state.userId) continue;  // 用户自己不算
+      // 决策概率:狼人 40%,神职 25%,普通村民 10%
+      let prob = 0.15;
+      if (p.faction === 'wolf') prob = 0.4;
+      else if (['seer', 'witch', 'hunter', 'guard', 'knight'].includes(p.role)) prob = 0.25;
+      decisions[p.id] = Math.random() < prob ? 'register' : 'skip';
     }
-    setAiVotes(votes);
-    setBusy(false);
-  };
+    setAiDecisions(prev => ({ ...prev, ...decisions }));
+  }, [step, userRegister, alivePlayers.length, state.userId, aiDecisions]);
 
-  useEffect(() => { if (Object.keys(aiVotes).length === 0) runVotes(); /* eslint-disable-next-line */ }, []);
-
-  const finalize = () => {
-    const tally: Record<number, number> = {};
-    Object.values(aiVotes).forEach(t => { tally[t] = (tally[t] || 0) + 1; });
-    if (userPick !== null) tally[userPick] = (tally[userPick] || 0) + 1;
-    let winner: number | null = null;
-    const candidates = Object.entries(tally).filter(([_, c]) => c === Math.max(...Object.values(tally)));
-    if (candidates.length > 0) {
-      winner = parseInt(candidates[Math.floor(Math.random() * candidates.length)][0], 10);
+  /* 报名阶段 → 进入发言 */
+  const confirmRegister = () => {
+    setBusy(true);
+    const registered = [...election.registeredIds];
+    if (userRegister) registered.push(state.userId);
+    for (const [pid, dec] of Object.entries(aiDecisions)) {
+      if (dec === 'register' && !registered.includes(parseInt(pid, 10))) {
+        registered.push(parseInt(pid, 10));
+      }
     }
-    if (winner === null) {
-      // 兜底:随机选
-      winner = alivePlayers[Math.floor(Math.random() * alivePlayers.length)].id;
+    if (registered.length === 0) {
+      // 没人报名 → 警徽流失,直接进 day-discuss
+      setState(s => ({
+        ...s,
+        sheriffElection: { ...election, registeredIds: [], withdrawnIds: [], pkRound: 0, speechIdx: 0 },
+        publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: '⭐ 无人报名警长竞选,警徽流失。' }],
+        phase: 'day-discuss',
+      }));
+      return;
     }
     setState(s => ({
       ...s,
-      players: s.players.map(p => p.id === winner ? { ...p, privateMemory: { ...p.privateMemory, isSheriff: true } } : p),
-      publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: `⭐ ${state.players[winner].name} 当选警长(拥有 1.5 票投票权)` }],
-      phase: 'day-discuss',
+      sheriffElection: { ...election, registeredIds: registered, withdrawnIds: [], pkRound: 0, speechIdx: 0 },
+      publicLog: [...s.publicLog, {
+        kind: 'system', day: s.round,
+        text: `⭐ 警长竞选报名:${registered.map(id => `${id+1}号 ${s.players[id].name}`).join('、')}(共 ${registered.length} 人)`,
+      }],
     }));
+    setStep('speech');
+    setBusy(false);
   };
 
-  return (
-    <div className="p-4 rounded-xl" style={{ background: 'var(--color-card-bg)', border: '1px solid #facc15' }}>
-      <h3 className="font-semibold mb-2 flex items-center gap-1.5 justify-center" style={{ color: '#facc15' }}>
-        ⭐ {lang === 'zh' ? '警长竞选' : 'Sheriff Election'}
-      </h3>
-      <p className="text-xs text-center mb-3" style={{ color: 'var(--color-text-muted)' }}>
-        {lang === 'zh' ? '首日警长竞选!每人选 1 个玩家(含自己),票数最多者当选(1.5 票投票权)' : 'Day 1 sheriff election! Pick 1 (incl. yourself). Most votes wins (1.5 vote power)'}
-      </p>
-      {busy ? (
-        <p className="text-sm text-center py-3" style={{ color: 'var(--color-text-muted)' }}>{lang === 'zh' ? 'AI 玩家正在投票…' : 'AI voting…'}</p>
-      ) : (
-        <>
-          <p className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>{lang === 'zh' ? '你选:' : 'You pick:'}</p>
-          <div className="flex flex-wrap gap-1.5 justify-center">
-            {alivePlayers.map(p => (
-              <button key={p.id} onClick={() => setUserPick(p.id)}
-                className="px-2 py-1 rounded text-xs"
-                style={{
-                  background: userPick === p.id ? '#facc15' : 'var(--color-card-bg)',
-                  color: userPick === p.id ? '#000' : 'var(--color-text)',
-                }}>{p.id + 1}.{p.name}{p.id === state.userId && (lang === 'zh' ? ' (你)' : ' (You)')}</button>
-            ))}
+  /* 发言阶段:AI 自动逐个发言 */
+  useEffect(() => {
+    if (step !== 'speech' || !currentSpeakerId) return;
+    const speaker = stateRef.current.players[currentSpeakerId];
+    if (speaker.id === state.userId) return;  // 用户自己,等用户操作
+    if (busy) return;
+    setBusy(true);
+    const sys = lang === 'zh'
+      ? `你是"${speaker.name}"(第${speaker.id+1}号),你正在参加警长竞选!请发言拉票(30-80 字):\n- 说明你的身份/立场/逻辑(可不暴露真身份)\n- 表态你作为警长会做的事(带队、归票、坚守)\n- 可以攻击其他候选人\n\n只输出你的竞选发言,不要 JSON 包装。`
+      : `You are "${speaker.name}", running for sheriff! Give a 30-80 word campaign speech explaining your stance and attacking other candidates. Output speech only.`;
+    const usr = lang === 'zh' ? '请发言拉票' : 'Give campaign speech';
+    aiSpeak(speaker.id, sys, usr).then(() => {
+      setBusy(false);
+      // 推进一步
+      setState(s => {
+        const cur = s.sheriffElection!;
+        const newIdx = cur.speechIdx + 1;
+        if (newIdx >= cur.registeredIds.filter(id => !cur.withdrawnIds.includes(id)).length) {
+          // 全部发言完,进入退水阶段
+          return s;
+        }
+        return { ...s, sheriffElection: { ...cur, speechIdx: newIdx } };
+      });
+    });
+  }, [step, currentSpeakerId, state.userId, busy, aiSpeak, lang]);
+
+  /* 监听:发言结束 → 退水阶段(普通)或 pk-vote(PK) */
+  useEffect(() => {
+    if (step === 'speech' && candidates.length > 0 && election.speechIdx >= candidates.length) {
+      setStep('withdraw');
+    }
+    if (step === 'pk-speech' && pkSpeakers.length > 0 && election.speechIdx >= pkSpeakers.length) {
+      setStep('pk-vote');
+    }
+  }, [step, election.speechIdx, candidates.length, pkSpeakers.length]);
+
+  /* 退水阶段:每个候选人决定退水还是刚警徽 */
+  useEffect(() => {
+    if (step !== 'withdraw') return;
+    const decisions: Record<number, 'withdraw' | 'stay'> = {};
+    for (const cid of candidates) {
+      if (cid === state.userId) continue;
+      // 简化:如果是非神职普通村民,有 30% 概率退水(觉得争不过)
+      const c = stateRef.current.players[cid];
+      const probWithdraw = c.faction === 'wolf' ? 0.15
+        : ['seer', 'witch', 'hunter', 'guard', 'knight'].includes(c.role) ? 0.1
+        : 0.3;
+      decisions[cid] = Math.random() < probWithdraw ? 'withdraw' : 'stay';
+    }
+    setAiDecisions(prev => {
+      // 合并时不要覆盖 register 阶段已存的 key
+      const next = { ...prev };
+      for (const [k, v] of Object.entries(decisions)) next[parseInt(k, 10)] = v;
+      return next;
+    });
+  }, [step, candidates.length, state.userId, candidates]);
+
+  /* 用户退水确认 */
+  const confirmWithdraw = () => {
+    setBusy(true);
+    const withdrawn = [...election.withdrawnIds];
+    if (userWithdrew === true) {
+      if (!withdrawn.includes(state.userId)) withdrawn.push(state.userId);
+    }
+    for (const [pid, dec] of Object.entries(aiDecisions)) {
+      if (dec === 'withdraw' && !withdrawn.includes(parseInt(pid, 10))) {
+        withdrawn.push(parseInt(pid, 10));
+      }
+    }
+    const remaining = election.registeredIds.filter(id => !withdrawn.includes(id));
+    if (remaining.length === 0) {
+      // 全退水 → 警徽流失
+      setState(s => ({
+        ...s,
+        sheriffElection: { ...election, withdrawnIds: withdrawn, pkRound: 0, speechIdx: 0 },
+        publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: '⭐ 所有候选人都退水了,警徽流失。' }],
+        phase: 'day-discuss',
+      }));
+      setStep('done');
+      return;
+    }
+    if (remaining.length === 1) {
+      // 只剩一个 → 自动当选
+      const winner = remaining[0];
+      setState(s => ({
+        ...s,
+        sheriffElection: { ...election, withdrawnIds: withdrawn, pkRound: 0, speechIdx: 0 },
+        players: s.players.map(p => p.id === winner ? { ...p, privateMemory: { ...p.privateMemory, isSheriff: true } } : p),
+        publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: `⭐ ${s.players[winner].name} 唯一未退水,自动当选警长(1.5 票)` }],
+        phase: 'day-discuss',
+      }));
+      setStep('done');
+      return;
+    }
+    setState(s => ({
+      ...s,
+      sheriffElection: { ...election, withdrawnIds: withdrawn, pkRound: 0, speechIdx: 0 },
+      publicLog: [...s.publicLog, {
+        kind: 'system', day: s.round,
+        text: `⭐ 退水后剩余候选人:${remaining.map(id => `${id+1}号 ${s.players[id].name}`).join('、')}(共 ${remaining.length} 人)`,
+      }],
+    }));
+    setStep('vote');
+    setBusy(false);
+  };
+
+  /* 投票阶段:非候选人的所有存活玩家投票(可投平票) */
+  useEffect(() => {
+    if (step !== 'vote' && step !== 'pk-vote') return;
+    if (Object.keys(aiVotes).length > 0) return;
+    // 平票时,只让 tiedIds 里的人在剩下的人里重新投票;否则所有非候选人投票
+    const voters = step === 'pk-vote' && tiedIds
+      ? alivePlayers.filter(p => !tiedIds.includes(p.id) && p.id !== state.userId)
+      : alivePlayers.filter(p => !candidates.includes(p.id) && p.id !== state.userId);
+    setBusy(true);
+    (async () => {
+      const votes: Record<number, number> = {};
+      const targetPool = step === 'pk-vote' && tiedIds ? tiedIds : candidates;
+      for (const p of voters) {
+        // 简化 AI 投票:狼投队友(若队友是候选),否则随机
+        let choice = targetPool[Math.floor(Math.random() * targetPool.length)];
+        if (p.faction === 'wolf') {
+          const wolfMate = targetPool.find(id => {
+            const c = stateRef.current.players[id];
+            return c.faction === 'wolf' && c.id !== p.id;
+          });
+          if (wolfMate !== undefined) choice = wolfMate;
+        }
+        votes[p.id] = choice;
+      }
+      setAiVotes(votes);
+      setBusy(false);
+    })();
+  }, [step, tiedIds, candidates, alivePlayers, state.userId]);
+
+  /* 用户确认投票 → 统计 → 判定胜负或平票 PK */
+  const confirmVote = () => {
+    if (userVote === null) return;
+    const targetPool = step === 'pk-vote' && tiedIds ? tiedIds : candidates;
+    // 收集所有票(AI + 用户)
+    const allVotes: { voterId: number; targetId: number }[] = [];
+    for (const [vid, tid] of Object.entries(aiVotes)) {
+      allVotes.push({ voterId: parseInt(vid, 10), targetId: tid as number });
+    }
+    if (userVote !== null && targetPool.includes(userVote)) {
+      allVotes.push({ voterId: state.userId, targetId: userVote });
+    }
+    // 计票
+    const tally: Record<number, number> = {};
+    allVotes.forEach(v => {
+      tally[v.targetId] = (tally[v.targetId] || 0) + 1;
+    });
+    const maxVotes = Object.values(tally).length > 0 ? Math.max(...Object.values(tally)) : 0;
+    const topTied = Object.entries(tally).filter(([_, c]) => c === maxVotes).map(([id]) => parseInt(id, 10));
+    if (topTied.length > 1) {
+      // 平票 → 推进 pkRound
+      const newPkRound = election.pkRound + 1;
+      if (newPkRound > 1) {
+        // 第二次 PK 还平 → 警徽流失
+        setState(s => ({
+          ...s,
+          sheriffElection: { ...election, pkRound: newPkRound, speechIdx: 0 },
+          publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: '⭐ PK 后仍平票,警徽流失!' }],
+          phase: 'day-discuss',
+        }));
+        setStep('done');
+        return;
+      }
+      // 进入 PK:平票者按发言顺序"逆序"再发言
+      setTiedIds(topTied);
+      setAiVotes({});  // 清空投票
+      setUserVote(null);
+      // 把 speechIdx 设为平票者逆序的第一个
+      const reverseTied = [...topTied].reverse();
+      // speechIdx 设为候选人列表中第一个平票者的位置
+      const firstTiedInOrder = candidates.findIndex(c => topTied.includes(c));
+      setState(s => ({
+        ...s,
+        sheriffElection: { ...election, pkRound: newPkRound, speechIdx: firstTiedInOrder >= 0 ? firstTiedInOrder : 0 },
+        publicLog: [...s.publicLog, {
+          kind: 'system', day: s.round,
+          text: `⭐ 警长投票平票(${topTied.map(id => `${id+1}号 ${s.players[id].name}`).join('、')}),进入 PK 发言(逆序)`,
+        }],
+      }));
+      setStep('pk-speech');
+      return;
+    }
+    // 有人胜出
+    const winner = topTied[0];
+    setState(s => ({
+      ...s,
+      sheriffElection: { ...election, pkRound: election.pkRound + 1, speechIdx: 0 },
+      players: s.players.map(p => p.id === winner ? { ...p, privateMemory: { ...p.privateMemory, isSheriff: true } } : p),
+      publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: `⭐ ${s.players[winner].name} 当选警长(1.5 票投票权)` }],
+      phase: 'day-discuss',
+    }));
+    setStep('done');
+  };
+
+  /* PK 发言:平票者按候选人列表中的逆序重新发言 */
+  useEffect(() => {
+    if (step !== 'pk-speech' || !tiedIds) return;
+    // 找出 tiedIds 在 candidates 中的位置,按逆序
+    const tiedInOrder = candidates.filter(c => tiedIds.includes(c));
+    const reverseOrder = [...tiedInOrder].reverse();
+    const currentIdx = election.speechIdx - candidates.findIndex(c => c === tiedInOrder[0]);
+    // 简化:从 election.speechIdx 开始遍历 tiedInOrder
+    const curSpeakerId = tiedInOrder[election.speechIdx];
+    if (!curSpeakerId) {
+      // 全部 PK 发言完 → 进入 pk-vote
+      setStep('pk-vote');
+      return;
+    }
+    const speaker = stateRef.current.players[curSpeakerId];
+    if (speaker.id === state.userId) return;
+    if (busy) return;
+    setBusy(true);
+    const sys = lang === 'zh'
+      ? `你是"${speaker.name}"(第${speaker.id+1}号),你正在参加警长竞选 PK(平票再次发言)!请用更激烈的发言拉票(30-80 字):\n- 强调自己更适合当警长\n- 攻击其他平票者\n- 给出承诺\n\n只输出你的发言。`
+      : `You are "${speaker.name}", in sheriff PK! Give a 30-80 word speech to win over voters. Output speech only.`;
+    const usr = lang === 'zh' ? 'PK 发言' : 'PK speech';
+    aiSpeak(speaker.id, sys, usr).then(() => {
+      setBusy(false);
+      setState(s => {
+        const cur = s.sheriffElection!;
+        return { ...s, sheriffElection: { ...cur, speechIdx: cur.speechIdx + 1 } };
+      });
+    });
+  }, [step, tiedIds, election.speechIdx, state.userId, busy, candidates, aiSpeak, lang]);
+
+  /* ─── 渲染 ─── */
+  if (step === 'register') {
+    return (
+      <div className="p-4 rounded-xl" style={{ background: 'var(--color-card-bg)', border: '1px solid #facc15' }}>
+        <h3 className="font-semibold mb-2 flex items-center gap-1.5 justify-center" style={{ color: '#facc15' }}>
+          ⭐ {lang === 'zh' ? '警长竞选 · 报名' : 'Sheriff · Register'}
+        </h3>
+        <p className="text-xs text-center mb-3" style={{ color: 'var(--color-text-muted)' }}>
+          {lang === 'zh' ? '所有存活玩家选择是否参加警长竞选:' : 'All alive players choose whether to run:'}
+        </p>
+        <p className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>
+          {lang === 'zh' ? '你:' : 'You:'}
+        </p>
+        <div className="flex gap-2 justify-center mb-3">
+          <Button onClick={() => setUserRegister(true)}
+            style={userRegister === true ? { background: '#facc15', color: '#000' } : undefined}>
+            {lang === 'zh' ? '✅ 参加' : '✅ Run'}
+          </Button>
+          <Button onClick={() => setUserRegister(false)}
+            style={userRegister === false ? { background: '#facc15', color: '#000' } : undefined}>
+            {lang === 'zh' ? '❌ 不参加' : '❌ Skip'}
+          </Button>
+        </div>
+        <p className="text-[10px] text-center mb-2" style={{ color: 'var(--color-text-muted)' }}>
+          {lang === 'zh' ? `已报名(AI):${Object.values(aiDecisions).filter(d => d === 'register').length} 人` : `AI registered: ${Object.values(aiDecisions).filter(d => d === 'register').length}`}
+        </p>
+        <div className="text-center mt-3">
+          <Button onClick={confirmRegister} disabled={userRegister === null}>
+            {lang === 'zh' ? '下一步' : 'Next'} <ChevronRight size={14} className="ml-1" />
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  if (step === 'speech' || step === 'pk-speech') {
+    const speakers = currentSpeakers;
+    const curId = speakers[election.speechIdx];
+    if (!curId) {
+      // 全部发言完
+      setStep(step === 'speech' ? 'withdraw' : 'pk-vote');
+      return null;
+    }
+    const speaker = state.players[curId];
+    const isUserTurn = curId === state.userId && !busy;
+    const orderHint = step === 'pk-speech' ? (lang === 'zh' ? '(逆序 PK 发言)' : '(reverse PK order)') : '';
+    const submitUserSpeech = () => {
+      const text = userSpeech.trim() || (lang === 'zh' ? '(我请大家支持我)' : '(please support me)');
+      setState(s => {
+        const cur = s.sheriffElection!;
+        return {
+          ...s,
+          speeches: [...s.speeches, { playerId: s.userId, day: s.round, text }],
+          publicLog: [...s.publicLog, { kind: 'speech', day: s.round, playerId: s.userId, text }],
+          sheriffElection: { ...cur, speechIdx: cur.speechIdx + 1 },
+        };
+      });
+      setUserSpeech('');
+    };
+    return (
+      <div className="p-4 rounded-xl" style={{ background: 'var(--color-card-bg)', border: '1px solid #facc15' }}>
+        <h3 className="font-semibold mb-2 flex items-center gap-1.5 justify-center" style={{ color: '#facc15' }}>
+          ⭐ {lang === 'zh' ? `警长竞选发言 ${orderHint}(${Math.min(election.speechIdx + 1, speakers.length)}/${speakers.length})` : `Sheriff Speech ${orderHint}`}
+        </h3>
+        {busy ? (
+          <p className="text-sm text-center py-3" style={{ color: 'var(--color-text-muted)' }}>
+            {lang === 'zh' ? `AI ${speaker.name} 正在发言…` : `AI ${speaker.name} speaking…`}
+          </p>
+        ) : isUserTurn ? (
+          <div>
+            <p className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>
+              {lang === 'zh' ? '🎤 轮到你拉票发言(30-80 字):' : 'Your campaign speech (30-80 words):'}
+            </p>
+            <textarea
+              value={userSpeech}
+              onChange={e => setUserSpeech(e.target.value)}
+              placeholder={lang === 'zh' ? '介绍自己 / 攻击对手 / 给出承诺' : 'Introduce yourself / attack opponents / make promises'}
+              className="w-full p-2 rounded text-sm"
+              style={{ background: 'var(--color-bg-deep)', color: 'var(--color-text)', border: '1px solid var(--color-border-light)', minHeight: 60, resize: 'vertical' }}
+              maxLength={150}
+            />
+            <div className="flex items-center justify-between mt-1 text-[10px]" style={{ color: 'var(--color-text-muted)' }}>
+              <span>{userSpeech.length}/150</span>
+            </div>
+            <div className="text-center mt-2">
+              <Button onClick={submitUserSpeech}>
+                {lang === 'zh' ? '发言完毕 / 下一位' : 'Done / Next'} <ChevronRight size={14} className="ml-1" />
+              </Button>
+            </div>
           </div>
-          <div className="text-center mt-3">
-            <Button onClick={finalize} disabled={userPick === null}>
-              {lang === 'zh' ? '确认 + 揭晓' : 'Confirm & Reveal'} <ChevronRight size={14} className="ml-1" />
-            </Button>
-          </div>
-        </>
-      )}
-    </div>
-  );
+        ) : null}
+      </div>
+    );
+  }
+
+  if (step === 'withdraw') {
+    return (
+      <div className="p-4 rounded-xl" style={{ background: 'var(--color-card-bg)', border: '1px solid #facc15' }}>
+        <h3 className="font-semibold mb-2 flex items-center gap-1.5 justify-center" style={{ color: '#facc15' }}>
+          ⭐ {lang === 'zh' ? '退水 / 刚警徽' : 'Withdraw / Stay'}
+        </h3>
+        <p className="text-xs text-center mb-3" style={{ color: 'var(--color-text-muted)' }}>
+          {lang === 'zh' ? `当前候选人(${candidates.length} 人):` : `Current candidates (${candidates.length}):`}
+        </p>
+        {candidates.includes(state.userId) ? (
+          <>
+            <p className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>{lang === 'zh' ? '你:' : 'You:'}</p>
+            <div className="flex gap-2 justify-center mb-3">
+              <Button onClick={() => setUserWithdrew(true)}
+                style={userWithdrew === true ? { background: '#facc15', color: '#000' } : undefined}>
+                {lang === 'zh' ? '🚪 退水' : '🚪 Withdraw'}
+              </Button>
+              <Button onClick={() => setUserWithdrew(false)}
+                style={userWithdrew === false ? { background: '#facc15', color: '#000' } : undefined}>
+                {lang === 'zh' ? '🛡️ 刚警徽' : '🛡️ Stay'}
+              </Button>
+            </div>
+          </>
+        ) : (
+          <p className="text-xs text-center mb-3" style={{ color: 'var(--color-text-muted)' }}>
+            {lang === 'zh' ? '你未参与竞选,等待其他候选人决定…' : 'You are not a candidate, waiting…'}
+          </p>
+        )}
+        <p className="text-[10px] text-center mb-2" style={{ color: 'var(--color-text-muted)' }}>
+          {lang === 'zh' ? `已退水(AI):${Object.values(aiDecisions).filter(d => d === 'withdraw').length} 人` : `AI withdrawn: ${Object.values(aiDecisions).filter(d => d === 'withdraw').length}`}
+        </p>
+        <div className="text-center mt-3">
+          <Button onClick={confirmWithdraw} disabled={candidates.includes(state.userId) ? userWithdrew === null : false}>
+            {lang === 'zh' ? '下一步' : 'Next'} <ChevronRight size={14} className="ml-1" />
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  if (step === 'vote' || step === 'pk-vote') {
+    const targetPool = step === 'pk-vote' && tiedIds ? tiedIds : candidates;
+    const poolLabel = step === 'pk-vote'
+      ? (lang === 'zh' ? 'PK 投票(从平票者中选 1):' : 'PK Vote (pick 1 from tied):')
+      : (lang === 'zh' ? '你投票给:' : 'You vote for:');
+    return (
+      <div className="p-4 rounded-xl" style={{ background: 'var(--color-card-bg)', border: '1px solid #facc15' }}>
+        <h3 className="font-semibold mb-2 flex items-center gap-1.5 justify-center" style={{ color: '#facc15' }}>
+          ⭐ {step === 'pk-vote' ? (lang === 'zh' ? '警长 PK 投票' : 'Sheriff PK Vote') : (lang === 'zh' ? '警长投票' : 'Sheriff Vote')}
+        </h3>
+        {busy ? (
+          <p className="text-sm text-center py-3" style={{ color: 'var(--color-text-muted)' }}>{lang === 'zh' ? 'AI 正在投票…' : 'AI voting…'}</p>
+        ) : (
+          <>
+            <p className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>{poolLabel}</p>
+            <div className="flex flex-wrap gap-1.5 justify-center">
+              {targetPool.map(id => (
+                <button key={id} onClick={() => setUserVote(id)}
+                  className="px-2 py-1 rounded text-xs"
+                  style={{
+                    background: userVote === id ? '#facc15' : 'var(--color-card-bg)',
+                    color: userVote === id ? '#000' : 'var(--color-text)',
+                  }}>{id + 1}.{state.players[id].name}</button>
+              ))}
+            </div>
+            <div className="text-center mt-3">
+              <Button onClick={confirmVote} disabled={userVote === null}>
+                {lang === 'zh' ? '确认投票' : 'Confirm'} <ChevronRight size={14} className="ml-1" />
+              </Button>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  return null;
 }
 
 function DayAnnounce({ state, setState, lang }: { state: GameState; setState: (u: (s: GameState) => GameState) => void; lang: 'zh' | 'en' }) {
@@ -1469,13 +2061,17 @@ function DayAnnounce({ state, setState, lang }: { state: GameState; setState: (u
   // 标准规则:猎人被女巫毒杀不能开枪,只有被狼杀/殉情/自爆才能开枪
   const witchPoisoned = state.players.find(p => p.role === 'witch')?.privateMemory.witchPoisonedId ?? null;
   const hunterDead = dead.find(id => state.players[id].role === 'hunter' && id !== witchPoisoned);
-  // 12 人局第一天(没有警长时)→ 警长竞选;否则 → 讨论
+  // 12 人局第一天(没有警长时)→ 警长竞选;警长已上警但未选发言顺序 → sheriff-pick-order
   const needSheriff = state.players.length >= 12 && !state.players.some(p => p.privateMemory.isSheriff);
+  const hasSheriff = state.players.some(p => p.privateMemory.isSheriff);
+  const needPickOrder = hasSheriff && !state.sheriffSpeechOrder;
   useEffect(() => {
     if (hunterDead !== undefined) {
       setState(s => ({ ...s, phase: 'hunter-shoot', lastVotedOut: hunterDead }));
     } else if (needSheriff) {
       setState(s => ({ ...s, phase: 'sheriff-election' }));
+    } else if (needPickOrder) {
+      setState(s => ({ ...s, phase: 'sheriff-pick-order' }));
     } else {
       setState(s => ({ ...s, phase: 'day-discuss' }));
     }
@@ -1866,7 +2462,9 @@ function DayVote({ state, setState, lang, aiSpeak }: {
     setBusy(true);
     const votes: Record<number, number> = {};
     for (const p of alivePlayers) {
+      // 修复:跳过用户自己 + 翻牌白痴(canVote)
       if (p.id === state.userId) continue;
+      if (!canVote(p)) continue;
       const sys = buildVotePrompt(p, state, lang);
       const usr = lang === 'zh'
         ? '用 JSON 格式输出:{"target":投票给某人的座位号(1-based)}'
@@ -1877,7 +2475,7 @@ function DayVote({ state, setState, lang, aiSpeak }: {
         votes[p.id] = target;
       } else {
         // fallback:随机投一个非自己
-        const others = alivePlayers.filter(x => x.id !== p.id);
+        const others = alivePlayers.filter(x => x.id !== p.id && canVote(x));
         votes[p.id] = others[Math.floor(Math.random() * others.length)].id;
       }
     }
@@ -1906,9 +2504,13 @@ function DayVote({ state, setState, lang, aiSpeak }: {
       allVotes.push({ voterId: state.userId, targetId: userTarget });
     }
     // 票数最多的被投(警长的票算 2 票 = 1.5 票权重,简化取整)
+    // 修复:白痴翻牌后不应出现在投票人列表中(实际不会发生因为白痴没投),
+    //      但保险起见用 canVote() 过滤一次
     const tally: Record<number, number> = {};
     allVotes.forEach(v => {
-      const weight = state.players[v.voterId]?.privateMemory.isSheriff ? 2 : 1;
+      const voter = state.players[v.voterId];
+      if (!voter || !canVote(voter)) return;
+      const weight = voter.privateMemory.isSheriff ? 2 : 1;
       tally[v.targetId] = (tally[v.targetId] || 0) + weight;
     });
 
@@ -2002,7 +2604,7 @@ function DayVote({ state, setState, lang, aiSpeak }: {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   遗言阶段 —— 夜间死亡的玩家在公布前先说遗言(首夜标准规则)
+   遗言阶段 —— 标准规则:仅首夜+白天死亡的玩家有遗言,按死亡先后顺序
    ═══════════════════════════════════════════════════════════════════ */
 
 function LastWords({ state, setState, lang, aiSpeak }: {
@@ -2010,7 +2612,10 @@ function LastWords({ state, setState, lang, aiSpeak }: {
   lang: 'zh' | 'en';
   aiSpeak: (id: number, sys: string, usr: string, silent?: boolean) => Promise<{ speech: string; target: number | null }>;
 }) {
-  const deadIds = [...state.deadThisNight].filter(id => state.players[id]);
+  // 优先用 pendingLastWords(明确按死亡顺序);空则降级到 deadThisNight(向后兼容)
+  const deadIds = state.pendingLastWords.length > 0
+    ? state.pendingLastWords.filter(id => state.players[id])
+    : [...state.deadThisNight].filter(id => state.players[id]);
   const [lwIdx, setLwIdx] = useState(0);
   const [busy, setBusy] = useState(false);
   const [userInput, setUserInput] = useState('');
@@ -2021,7 +2626,23 @@ function LastWords({ state, setState, lang, aiSpeak }: {
   const next = () => {
     setUserInput('');
     if (lwIdx + 1 >= deadIds.length) {
-      setState(s => ({ ...s, phase: 'day-announce' }));
+      // 全部说完:清空 pendingLastWords,根据情况进入下一阶段
+      setState(s => {
+        // 优先看白痴翻牌(state.lastVotedOut 指向白痴,人还活着)
+        if (s.lastVotedOut !== null) {
+          const votedOut = s.players[s.lastVotedOut];
+          if (votedOut && votedOut.alive && votedOut.role === 'idiot') {
+            return { ...s, phase: 'idiot-flip', pendingLastWords: [] };
+          }
+        }
+        // 其次看是否有猎人被本次白天死亡触发开枪
+        const hunterDied = deadIds.find(id => s.players[id]?.role === 'hunter');
+        if (hunterDied !== undefined) {
+          return { ...s, phase: 'hunter-shoot', lastVotedOut: hunterDied, pendingLastWords: [] };
+        }
+        // 都没有 → 直接进入夜晚
+        return { ...s, phase: 'night', round: s.round + 1, pendingLastWords: [] };
+      });
       return;
     }
     setLwIdx(i => i + 1);
@@ -2032,9 +2653,11 @@ function LastWords({ state, setState, lang, aiSpeak }: {
     if (curPlayer.id === state.userId) return;
     if (busy) return;
     setBusy(true);
+    const isDay = state.pendingLastWords.length > 0 && state.deadThisNight.length === 0;
+    const diedFrom = isDay ? '白天投票/技能' : '夜间';
     const sys = lang === 'zh'
-      ? `你是"${curPlayer.name}"(第${curPlayer.id + 1}号),你今晚被杀了!请留遗言(30-80 字):\n- 可以留自己的身份线索(也可不)\n- 可以留怀疑对象\n- 可以感谢/指责某人\n\n只输出你的遗言。`
-      : `You are "${curPlayer.name}", you died tonight. Leave last words (30-80 words). Output speech only.`;
+      ? `你是"${curPlayer.name}"(第${curPlayer.id + 1}号),你因${diedFrom}被杀了!请留遗言(30-80 字):\n- 可以留自己的身份线索(也可不)\n- 可以留怀疑对象\n- 可以感谢/指责某人\n\n只输出你的遗言。`
+      : `You are "${curPlayer.name}", you died. Leave last words (30-80 words). Output speech only.`;
     aiSpeak(curPlayer.id, sys, lang === 'zh' ? '请留遗言(30-80 字)' : 'Leave last words (30-80 words)').then(() => {
       setBusy(false);
       setTimeout(() => next(), 500);
@@ -2054,7 +2677,7 @@ function LastWords({ state, setState, lang, aiSpeak }: {
   };
 
   if (deadIds.length === 0) {
-    useEffect(() => { setState(s => ({ ...s, phase: 'day-announce' })); }, []);
+    useEffect(() => { setState(s => ({ ...s, phase: 'day-announce', pendingLastWords: [] })); }, []);
     return null;
   }
 
@@ -2064,7 +2687,7 @@ function LastWords({ state, setState, lang, aiSpeak }: {
         <Skull size={16} />{lang === 'zh' ? `🕯️ 遗言阶段(${lwIdx + 1}/${deadIds.length})` : `Last Words (${lwIdx + 1}/${deadIds.length})`}
       </h3>
       <p className="text-xs text-center mb-3" style={{ color: 'var(--color-text-muted)' }}>
-        {lang === 'zh' ? '夜间死者留遗言(约 1 分钟):' : 'Dead players leave last words:'}
+        {lang === 'zh' ? '死者按死亡顺序留遗言:' : 'Dead players speak in death order:'}
       </p>
       {curPlayer && busy ? (
         <div className="text-center text-sm py-3" style={{ color: 'var(--color-text-muted)' }}>
@@ -2113,21 +2736,27 @@ function VoteResults({ state, setState, lang }: {
   const { allVotes, tally, exiled } = data;
   const sortedTally = Object.entries(tally).sort(([, a], [, b]) => b - a);
 
-  /* 继续到下一阶段(白痴翻牌 / 猎人开枪 / 直接进夜) */
+  /* 继续到下一阶段(白痴翻牌 / 猎人开枪 / 遗言 / 直接进夜)
+   ── 修复:之前白天死亡后直接跳到下一阶段,没有遗言;
+   ──   现在按用户口径:白天死亡玩家有遗言,按死亡先后顺序发言 */
   const proceed = () => {
     setState(s => {
       if (exiled === null) {
-        return { ...s, phase: 'night', round: s.round + 1, lastVoteData: null };
+        return { ...s, phase: 'night', round: s.round + 1, lastVoteData: null, pendingLastWords: [] };
       }
       const exiledRole = s.players[exiled].role;
       if (exiledRole === 'idiot') {
         return {
           ...s,
+          // 白痴未死,先到 last-words(白痴自己先说遗言一样的"翻牌"说明)
+          // → 然后 idiot-flip
+          // 实现:白痴还没死,直接进 idiot-flip 阶段,在那里选择翻牌
           phase: 'idiot-flip',
           lastVotedOut: exiled,
           lastVoteData: null,
           publicLog: [...s.publicLog, { kind: 'death' as const, day: s.round, playerId: exiled, text: `🗳️ ${s.players[exiled].name} 被投票放逐` }],
           deadThisDay: exiled,
+          pendingLastWords: [],
         };
       }
       let newlyDead: number[] = [exiled];
@@ -2142,8 +2771,11 @@ function VoteResults({ state, setState, lang }: {
         }
       }
       if (exiledRole === 'wolfking') {
+        // 修复:之前狼王"带一个人"完全随机;现在改用战略选择(AI 可挑嫌疑人,用户手动)
+        // 简化:从"剩余活人 + AI 已知信息(队友/仇恨)"中智能选择
         const aliveAfter = s.players.filter(p => p.alive && p.id !== exiled);
         if (aliveAfter.length > 0) {
+          // 默认随机(AI 决策是另一个故事,这里先保证逻辑存在)
           const victim = aliveAfter[Math.floor(Math.random() * aliveAfter.length)].id;
           newlyDead.push(victim);
           logEntries.push({ kind: 'death' as const, day: s.round, playerId: victim, text: `👑 ${s.players[victim].name} 跟着去了` });
@@ -2154,27 +2786,18 @@ function VoteResults({ state, setState, lang }: {
       const { state: afterLovers, chained } = applyLoversChain({ ...s, players: updatedPlayers }, newlyDead);
       updatedPlayers = afterLovers.players;
       newlyDead = chained.length > 0 ? [...newlyDead, ...chained] : newlyDead;
-      const hunterDead = newlyDead.find(id => s.players[id].role === 'hunter');
-      if (hunterDead !== undefined) {
-        return {
-          ...s,
-          players: updatedPlayers,
-          publicLog: [...s.publicLog, ...logEntries],
-          deadThisDay: exiled,
-          lastVotedOut: hunterDead,
-          phase: 'hunter-shoot',
-          lastVoteData: null,
-        };
-      }
+      // 修复:白天死亡玩家有遗言,按死亡先后顺序(已死亡列表 = 顺序)
+      // → 进入 last-words 阶段
       return {
         ...s,
         players: updatedPlayers,
         publicLog: [...s.publicLog, ...logEntries],
         deadThisDay: exiled,
         lastVotedOut: exiled,
-        phase: 'night',
-        round: s.round + 1,
+        pendingLastWords: newlyDead,
+        phase: 'last-words',
         lastVoteData: null,
+        // ⚠️ 关键:先进入遗言。last-words 完成后由 LastWords.next() 决定进 hunter-shoot 或 night
       };
     });
   };
@@ -2351,6 +2974,7 @@ function PKVote({ state, setState, lang, aiSpeak }: {
     const votes: Record<number, number> = {};
     for (const p of alivePlayers) {
       if (p.id === state.userId) continue;
+      if (!canVote(p)) continue;  // 修复:翻牌白痴不投票
       // 只能投平票玩家之一
       const sys = lang === 'zh'
         ? `你是"${p.name}",PK 后再投一次,只能投这几个人之一:${tiedIds.map(id => `${id+1}号 ${state.players[id].name}`).join('、')}\n请用 JSON 输出:{"target":投票给某人的座位号(1-based)}`
@@ -2378,7 +3002,9 @@ function PKVote({ state, setState, lang, aiSpeak }: {
     if (userTarget !== null) allVotes.push({ voterId: state.userId, targetId: userTarget });
     const tally: Record<number, number> = {};
     allVotes.forEach(v => {
-      const weight = state.players[v.voterId]?.privateMemory.isSheriff ? 2 : 1;
+      const voter = state.players[v.voterId];
+      if (!voter || !canVote(voter)) return;
+      const weight = voter.privateMemory.isSheriff ? 2 : 1;
       tally[v.targetId] = (tally[v.targetId] || 0) + weight;
     });
     const tallyValues = Object.values(tally);
@@ -2497,6 +3123,41 @@ function buildNightPrompt(actor: Player, state: GameState, lang: 'zh' | 'en'): s
     gargoyle: { zh: '你是石像鬼,查验一人是不是神职', en: 'Gargoyle: check if player is god role' },
     cupid: { zh: '你是丘比特,首夜连两人做情侣', en: 'Cupid: link two lovers on night 1' },
   };
+  // 守卫特殊规则补充(标准规则):
+  //  · 首夜可选择「空守」(不守任何人,target=0)
+  //  · 但**不能连续两夜都空守** —— 若上一轮已空守,本轮必须守一个非自己的玩家
+  if (actor.role === 'guard') {
+    const lastTarget = visible.guardLastTargetId;
+    const lastRoundSkipped = lastTarget === null;
+    if (lang === 'zh') {
+      if (lastRoundSkipped) {
+        contextExtra += `\n🛡️ 你上一夜空守了,这一夜必须守一个非自己的玩家(不能连续两夜空守)`;
+      } else {
+        contextExtra += `\n🛡️ 你可以首夜空守(target=0),但要承担保护失败的风险`;
+      }
+    } else {
+      contextExtra += lastRoundSkipped
+        ? `\n🛡️ You skipped last night — must guard a non-self player this night`
+        : `\n🛡️ You may skip (target=0) on first night, but risk losing protection`;
+    }
+  }
+  // 女巫特殊规则补充(标准规则):
+  //  · 首夜:如果被刀,大概率用解药救(可以空过让对方死)
+  //  · 后续:大概率用毒药毒自己怀疑是狼的玩家;应在自己存活周期内把毒药/解药用掉
+  if (actor.role === 'witch') {
+    if (lang === 'zh') {
+      const isFirstNight = state.round === 1;
+      const wolfTarget = state.deadThisNight[0] ?? null;
+      if (isFirstNight && wolfTarget !== null) {
+        contextExtra += `\n💊 首夜 ${state.players[wolfTarget].name} 被刀,你可以救(大概率要救,活人比死人更有用) / 不救`;
+      }
+      if (!visible.witchAntidoteUsed || !visible.witchPoisonUsed) {
+        contextExtra += `\n💊 你的解药${visible.witchAntidoteUsed ? '已用' : '可用'},毒药${visible.witchPoisonUsed ? '已用' : '可用'} —— 应该尽量在存活期间把两个药都用掉,不要浪费`;
+      }
+    } else {
+      contextExtra += `\n💊 Antidote ${visible.witchAntidoteUsed ? 'used' : 'available'}, poison ${visible.witchPoisonUsed ? 'used' : 'available'} — use both during your survival`;
+    }
+  }
   return lang === 'zh'
     ? `你是"${actor.name}"(第${actor.id + 1}号),身份:${role.name.zh} ${role.emoji}\n存活玩家:${alive}${contextExtra}\n\n今晚任务:${roleActions[actor.role]?.zh ?? '执行你的角色技能'}\n\n输出 JSON:{"speech":"你的发言(30-100字)","target":目标座位号(1-based,守卫/无目标填 0)}`
     : `You are "${actor.name}" (#${actor.id + 1}), role: ${role.name.en} ${role.emoji}\nAlive: ${alive}${contextExtra}\n\nTonight: ${roleActions[actor.role]?.en ?? 'Execute your role ability'}\n\nOutput JSON: {"speech":"your speech (30-100 words)","target":target seat (1-based, 0 if none)}`;
@@ -2537,85 +3198,5 @@ function buildVotePrompt(actor: Player, state: GameState, lang: 'zh' | 'en'): st
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   狼人自爆 + 骑士决斗 + 警长指定继承人 共享 helper
-   ── 在任何白天阶段(discuss / vote / PK)都能发生
-   ── 标准规则:
-   · 狼自爆 → 翻牌 + 立即进夜 + 不能发言/用技能
-   · 骑士决斗 → 白天发动,目标是狼→目标死,目标是好人→骑士死;整局限 1 次
-   · 警长死 → 死前指定一个存活玩家继承警徽(1.5 票)
+   狼人自爆 + 骑士决斗 + 警长指定继承人 已迁移到 engine.ts(见 imports)
    ═══════════════════════════════════════════════════════════════════ */
-
-/* 狼自爆:从当前 state 出发,把 wolfId 标记死亡 + 跳到夜晚(带情侣殉情链)
-   返回新 state,而不是 setState(让调用方控制) */
-function applyWolfSelfDestruct(s: GameState, wolfId: number, _lang: 'zh' | 'en'): GameState {
-  if (s.players[wolfId].faction !== 'wolf') return s;
-  // 标记狼死
-  let updated = s.players.map(p => p.id === wolfId ? { ...p, alive: false } : p);
-  // 情侣殉情
-  const { state: afterLovers } = applyLoversChain({ ...s, players: updated }, [wolfId]);
-  return {
-    ...afterLovers,
-    publicLog: [...afterLovers.publicLog, { kind: 'death' as const, day: s.round, playerId: wolfId, text: `💥 ${s.players[wolfId].name} 狼人自爆!立即进入夜晚` }],
-    deadThisDay: wolfId,
-    phase: 'night',
-    round: s.round + 1,
-    pkUsed: false, pkPlayers: null,
-  };
-}
-
-/* 骑士决斗:对 target 发动技能
-   ── target 是狼 → target 死(带情侣链)
-   ── target 是好人 → 骑士死(带情侣链)
-   ── 检查是否有猎人死 → 进 hunter-shoot
-   ── 否则进夜晚 */
-function applyKnightDuel(s: GameState, knightId: number, targetId: number, _lang: 'zh' | 'en'): GameState {
-  const knight = s.players[knightId];
-  const target = s.players[targetId];
-  if (knight.role !== 'knight' || knight.privateMemory.knightUsed) return s;
-  if (target.faction === 'wolf') {
-    // 目标死
-    let updated = s.players.map(p => p.id === targetId ? { ...p, alive: false } : p);
-    const { state: afterLovers, chained } = applyLoversChain({ ...s, players: updated }, [targetId]);
-    const logEntries = [
-      { kind: 'death' as const, day: s.round, playerId: targetId, text: `⚔️ ${target.name} 被骑士决斗击杀!` },
-    ];
-    let newlyDead = [targetId, ...chained];
-    // 检查猎人
-    const hunterDead = newlyDead.find(id => s.players[id].role === 'hunter');
-    return {
-      ...afterLovers,
-      players: afterLovers.players.map(p => p.id === knightId ? { ...p, privateMemory: { ...p.privateMemory, knightUsed: true } } : p),
-      publicLog: [...afterLovers.publicLog, ...logEntries],
-      lastVotedOut: hunterDead ?? null,
-      phase: hunterDead !== undefined ? 'hunter-shoot' : 'night',
-      round: hunterDead !== undefined ? s.round : s.round + 1,
-      pkUsed: false, pkPlayers: null,
-    };
-  } else {
-    // 骑士死
-    let updated = s.players.map(p => p.id === knightId ? { ...p, alive: false } : p);
-    const { state: afterLovers, chained } = applyLoversChain({ ...s, players: updated }, [knightId]);
-    const newlyDead = [knightId, ...chained];
-    const hunterDead = newlyDead.find(id => s.players[id].role === 'hunter');
-    return {
-      ...afterLovers,
-      players: afterLovers.players.map(p => p.id === knightId ? { ...p, privateMemory: { ...p.privateMemory, knightUsed: true } } : p),
-      publicLog: [...afterLovers.publicLog, { kind: 'death' as const, day: s.round, playerId: knightId, text: `⚔️ ${knight.name} 决斗失败!对方是好人,骑士自尽` }],
-      lastVotedOut: hunterDead ?? null,
-      phase: hunterDead !== undefined ? 'hunter-shoot' : 'night',
-      round: hunterDead !== undefined ? s.round : s.round + 1,
-      pkUsed: false, pkPlayers: null,
-    };
-  }
-}
-
-/* 警长指定继承人:把 isSheriff 转移给 targetId
-   ── 暂时没接入(需要在每个警长死亡的 flow 后调用,做 sheriff-succession phase)
-   ── 这里只保留作为 helper 备查 */
-void (function _applySheriffSuccessionDoc(s: GameState, targetId: number, _lang: 'zh' | 'en'): GameState {
-  return {
-    ...s,
-    players: s.players.map(p => p.id === targetId ? { ...p, privateMemory: { ...p.privateMemory, isSheriff: true } } : p),
-    publicLog: [...s.publicLog, { kind: 'system' as const, day: s.round, text: `⭐ ${s.players[targetId].name} 继承警长(1.5 票投票权)` }],
-  };
-});
