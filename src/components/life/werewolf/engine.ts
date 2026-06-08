@@ -7,12 +7,13 @@
 
 import {
   ROLES, BOARDS, BOARD_LIST, type RoleId, type Faction, type Phase, type Personality,
-  type BoardId, pickPersonality,
+  type BoardId, type ClaimsByDay, type SeerClaim, type WitchClaim, type GuardClaim,
+  pickPersonality, canWitchSelfSave, emptyDayClaims,
 } from './data';
 
-/* ─────────────────────────────────────────────
+/* ═══════════════════════════════════════════════════════════════════
    状态类型
-   ───────────────────────────────────────────── */
+   ═══════════════════════════════════════════════════════════════════ */
 
 export interface Player {
   id: number;                 // 座位号 0-based
@@ -39,8 +40,8 @@ export interface PrivateMemory {
   witchPoisonedId: number | null;
   /** 守卫守过的人(最近一夜的) */
   guardLastTargetId: number | null;
-  /** 守卫已守过的人(本局,用于「不可连守」) */
-  guardHistory: number[];
+  /** 守卫已守过的人(本局,用于「不可连守」) —— P1-#18 修复:用 guardLastTargetId 已足够,标记 optional 不再写入 */
+  guardHistory?: number[];  // 保留以兼容旧 sessionStorage 数据,新代码不再写入
   /** 丘比特连的情侣 */
   cupidLinkedIds: [number, number] | null;
   /** 石像鬼查过的人 */
@@ -62,6 +63,8 @@ export interface SpeechRecord {
   day: number;          // 第几天(白天序号)
   text: string;
   isStreaming?: boolean;
+  /** P3-#39 修复:发言阶段(区分夜/昼/pk/last-words/sheriff-speech) */
+  phase?: 'night' | 'day' | 'pk' | 'last-words' | 'sheriff-speech';
 }
 
 export interface NightLog {
@@ -140,6 +143,16 @@ export interface GameState {
    *  - 投票结束后由 resolveNight / applyNightAction 处理
    */
   wolfVotes: number[];
+  /**
+   * 「报查验 / 悍跳」追踪(P1-#48)
+   * key = 第几天(round),value = 当天所有 claim
+   */
+  claims: import('./data').ClaimsByDay;
+  /**
+   * 狼王被投后,等待狼王选 victim (P0-#53)
+   * null = 未选(或 phase 不是 wolfking-pick)
+   */
+  wolfkingVictim: number | null;
 }
 
 const defaultMemory = (): PrivateMemory => ({
@@ -190,6 +203,8 @@ export function initGame(boardId: BoardId, userName: string, lang: 'zh' | 'en' =
     sheriffEndorsement: null,
     pendingLastWords: [],
     wolfVotes: [],
+    claims: {},
+    wolfkingVictim: null,
   };
 }
 
@@ -306,14 +321,16 @@ export function callAIStream(
   return { abort: () => ctrl.abort(), promise };
 }
 
-/* ─────────────────────────────────────────────
+/* ═══════════════════════════════════════════════════════════════════
    简单 JSON 解析(让 AI 输出 "decision: 5" / "speech: ..." 这种)
-   ───────────────────────────────────────────── */
+   ═══════════════════════════════════════════════════════════════════ */
 
+/* P0-#4 修复:decision 字段保持 1-based,不要在这里 -1。
+   调用方负责 1-based → 0-based 转换,且 0 表示「无目标」 */
 export function parseAIDecision(text: string): { decision?: number; speech?: string } {
   const out: { decision?: number; speech?: string } = {};
   const dMatch = text.match(/decision\s*[:：]\s*(\d+)/i);
-  if (dMatch) out.decision = parseInt(dMatch[1], 10) - 1; // 1-based → 0-based
+  if (dMatch) out.decision = parseInt(dMatch[1], 10); // 保持 1-based(0 = 无目标)
   const sMatch = text.match(/speech\s*[:：]\s*([\s\S]+)$/i);
   if (sMatch) out.speech = sMatch[1].trim();
   return out;
@@ -321,7 +338,8 @@ export function parseAIDecision(text: string): { decision?: number; speech?: str
 
 /* 容错抽取:AI 经常输出 {"speech":"...","target":N} 包装,
    但 prompt 可能没要求 JSON。这里用 JSON.parse 试抽,
-   抽到 speech 字段就返回。 */
+   抽到 speech 字段就返回。
+   target 保持 1-based(0 = 无目标),由调用方转换 */
 export function tryJsonExtract(text: string): { speech?: string; target?: number | null; useAntidote?: boolean } {
   // 找第一个 { ... } 块(用贪婪匹配平衡括号不靠谱,简单找最大块)
   const match = text.match(/\{[\s\S]*\}/);
@@ -338,34 +356,71 @@ export function tryJsonExtract(text: string): { speech?: string; target?: number
   }
 }
 
-/* ─────────────────────────────────────────────
-   胜负判定
-   ───────────────────────────────────────────── */
-
-export function checkWinner(state: GameState): Faction | null {
-  const alive = state.players.filter(p => p.alive);
-  const wolves = alive.filter(p => p.faction === 'wolf').length;
-  const goods = alive.filter(p => p.faction === 'good').length;
-  const thirds = alive.filter(p => p.faction === 'third').length;
-  // 丘比特胜利:任意情侣阵营胜利(好人/狼人),丘比特也胜
-  // 简化:第三方(丘比特)如果还活着 + (狼0 → 好人胜,或好人压倒 → 狼胜),丘比特胜
-  if (wolves === 0 && thirds === 0) return 'good';
-  if (wolves >= goods + thirds && thirds > 0) return 'wolf';      // 狼阵营胜(丘比特+狼)
-  if (wolves >= goods + thirds && thirds === 0) return 'wolf';    // 纯狼阵营胜
-  if (wolves === 0 && thirds > 0) return 'third';                  // 丘比特+好人阵营胜(丘比特随好人阵营胜)
-  // 第三方独立胜利:只剩 1 个第三方 + 1 个其他
-  if (thirds === 1 && alive.length === 2) {
-    const t = alive.find(p => p.faction === 'third')!;
-    if (t.role === 'gargoyle' || t.role === 'cupid') return 'third';
-  }
-  return null;
+/* 1-based (1...N) / 0-based (0 = 无) → 0-based 转换 helper
+   decision === 0 视为「无目标」返回 null (P0-#4 修复核心) */
+export function parseAIDecisionToTargetId(decision: number | undefined, totalPlayers: number): number | null {
+  if (decision === undefined) return null;
+  if (decision === 0) return null;  // 0 显式无目标
+  const t = decision - 1;  // 1-based → 0-based
+  if (t < 0 || t >= totalPlayers) return null;  // 越界也视为无目标
+  return t;
 }
 
-/* ─────────────────────────────────────────────
-   情侣殉情 helper
-   ── 输入:已死的人 id 列表,返回新增殉情死亡的人
-   ── 规则:任一情侣死亡,另一人也死亡
-   ───────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════
+   胜负判定 (P0-#51 修复)
+   ── 用户口径规则:
+   ── 1) 狼人全部死亡 → 好人胜利(无论神/民/第三方剩余多少)
+   ── 2) 只要有狼存活 + (神职全部死亡 OR 平民全部死亡) → 狼人胜利
+   ── 3) 第三方独立胜利:石像鬼只剩自己+1玩家时,或丘比特任一情侣阵营胜
+   ═══════════════════════════════════════════════════════════════════ */
+export function checkWinner(state: GameState): Faction | null {
+  const alive = state.players.filter(p => p.alive);
+  const wolves = alive.filter(p => p.faction === 'wolf');
+  const gods = alive.filter(p => p.faction === 'good' && ROLES[p.role].isGod);
+  const villagers = alive.filter(p => p.faction === 'good' && !ROLES[p.role].isGod);
+  const thirds = alive.filter(p => p.faction === 'third');
+
+  const wolfCount = wolves.length;
+  const godCount = gods.length;
+  const villagerCount = villagers.length;
+  const thirdCount = thirds.length;
+
+  // ── 规则 1: 狼人全灭 → 好人胜(包含丘比特"随好人阵营胜"的情况) ──
+  if (wolfCount === 0) {
+    // 第三方(cupid/gargoyle)如果有,根据其特殊条件处理
+    if (thirdCount === 0) return 'good';
+    if (thirds[0].role === 'gargoyle') {
+      // 石像鬼:只剩自己+1玩家时石像鬼胜
+      if (alive.length === 2 && thirdCount === 1) return 'third';
+    }
+    if (thirds[0].role === 'cupid') {
+      // 丘比特:任意情侣阵营胜时,丘比特也胜;此时狼全灭+丘比特活 = 好人+丘比特双胜
+      // 显示为 'good'(主导阵营),但 'third' 也胜(同画面显示)
+      return 'good';
+    }
+    return 'good';
+  }
+
+  // ── 规则 2: 狼存活 + (神全灭 OR 民全灭) → 狼胜 ──
+  if (godCount === 0 || villagerCount === 0) {
+    // 丘比特随狼阵营胜(同 good 一样处理:主导阵营)
+    return 'wolf';
+  }
+
+  // ── 规则 3: 第三方独立胜利 (cupid/gargoyle 特殊条件) ──
+  // 石像鬼:只剩自己+1玩家
+  if (thirdCount === 1 && alive.length === 2 && thirds[0].role === 'gargoyle') {
+    return 'third';
+  }
+  // 丘比特:在狼胜 + 丘比特是情侣一方时(已经被规则 2 覆盖),或者
+  // 丘比特+狼+0 神/0 民时由规则 2 覆盖;这里仅处理丘比特独立胜利(罕见)
+
+  return null;  // 游戏继续
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   情侣殉情 helper (P1-#13 修复:殉情人会加入 pendingLastWords)
+   ═══════════════════════════════════════════════════════════════════ */
 export function applyLoversChain(state: GameState, newlyDead: number[]): { state: GameState; chained: number[] } {
   let s = state;
   const chained: number[] = [];
@@ -383,6 +438,7 @@ export function applyLoversChain(state: GameState, newlyDead: number[]): { state
       }
     }
     if (loverId !== null && s.players[loverId].alive && !chained.includes(loverId) && !newlyDead.includes(loverId)) {
+      // P1-#13: 殉情人加进 pendingLastWords(让 last-words 念遗言)
       s = {
         ...s,
         players: s.players.map(p => p.id === loverId ? { ...p, alive: false } : p),
@@ -390,11 +446,46 @@ export function applyLoversChain(state: GameState, newlyDead: number[]): { state
           kind: 'death', day: s.round, playerId: loverId,
           text: `💘 情侣殉情:${loverId + 1}号 ${s.players[loverId].name} 跟着去了`,
         }],
+        pendingLastWords: [...(s.pendingLastWords || []), loverId],
       };
       chained.push(loverId);
     }
   }
   return { state: s, chained };
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   死亡 helper —— 统一处理"死亡"必须做的事 (P0-#3 修复)
+   ── 1) 标记 alive=false
+   ── 2) 清除 isSheriff(警长死后不再是警长)
+   ── 3) 加 publicLog
+   ── 4) 触发情侣殉情
+   ═══════════════════════════════════════════════════════════════════ */
+export function killPlayers(state: GameState, ids: number[], reason: string, killer: string): GameState {
+  const dead = ids.filter(id => state.players[id].alive);
+  if (dead.length === 0) return state;
+  let s: GameState = {
+    ...state,
+    players: state.players.map(p => {
+      if (!dead.includes(p.id)) return p;
+      // 死人:alive=false + 清 isSheriff
+      return {
+        ...p,
+        alive: false,
+        privateMemory: { ...p.privateMemory, isSheriff: false },
+      };
+    }),
+    publicLog: [...state.publicLog, ...dead.map(id => ({
+      kind: 'death' as const, day: state.round, playerId: id,
+      text: `${reason} ${id + 1}号 ${state.players[id].name}`,
+    }))],
+  };
+  // 触发情侣殉情
+  const { state: s2, chained } = applyLoversChain(s, dead);
+  s = s2;
+  // 殉情人有猎人(罕见的殉情链带猎人)→ 这里不处理(由调用方负责 hunter-shoot 流程)
+  void killer; void chained;  // 保留参数兼容旧调用
+  return s;
 }
 
 /* ─────────────────────────────────────────────
@@ -429,17 +520,15 @@ export function canVote(player: Player): boolean {
   return true;
 }
 
-/* ─────────────────────────────────────────────
-   警长票权重
-   ── 警长公开「归票」1 名玩家 → 警长自己的那票 = 1.5
-   ── 警长未归票 / 归票超过 1 人 → 警长那票 = 1
-   ── (归票超过 1 人的实现:实际只取 endorsement 字段的 1 个值;
-   ──   这里是给"已归票"状态用 1.5,其他情况 1)
-   ───────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════
+   警长票权重 (P0-#2 统一:1.5 票归票机制)
+   ── 警长公开「归票」1 名玩家 → 警长自己那票 = 1.5
+   ── 警长未归票 → 警长那票 = 1
+   ── 警长死后 → 没人是警长,所有票 = 1
+   ═══════════════════════════════════════════════════════════════════ */
 export function sheriffVoteWeight(state: GameState, voterId: number): number {
   const voter = state.players[voterId];
   if (!voter || !voter.privateMemory.isSheriff) return 1;
-  // 警长本人,且 endorsement 已设置(归票了 1 人) → 1.5
   if (state.sheriffEndorsement !== null) return 1.5;
   return 1;
 }
@@ -522,14 +611,15 @@ export function applySheriffSuccession(s: GameState, successorId: number): GameS
   };
 }
 
-/* ─────────────────────────────────────────────
-   狼自爆(任何白天阶段都能发生)
-   ── 修复:之前直接进夜晚没检查猎人;现在会先触发情侣殉情,再检测猎人
-   ───────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════
+   狼自爆(任何白天阶段都能发生) (P0-#3 修复:杀人时清 isSheriff)
+   ═══════════════════════════════════════════════════════════════════ */
 export function applyWolfSelfDestruct(s: GameState, wolfId: number, _lang: 'zh' | 'en'): GameState {
   if (s.players[wolfId].faction !== 'wolf') return s;
-  // 1) 标记狼死
-  let updated = s.players.map(p => p.id === wolfId ? { ...p, alive: false } : p);
+  // 1) 标记狼死(同时清 isSheriff 标记)
+  let updated = s.players.map(p => p.id === wolfId
+    ? { ...p, alive: false, privateMemory: { ...p.privateMemory, isSheriff: false } }
+    : p);
   // 2) 情侣殉情
   const { state: afterLovers, chained } = applyLoversChain({ ...s, players: updated }, [wolfId]);
   updated = afterLovers.players;
@@ -551,12 +641,9 @@ export function applyWolfSelfDestruct(s: GameState, wolfId: number, _lang: 'zh' 
   };
 }
 
-/* ─────────────────────────────────────────────
-   骑士决斗 —— 白天发动
-   ── target 是狼 → target 死
-   ── target 是好人 → knight 死
-   ── 触发情侣殉情 + 猎人检测
-   ───────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════
+   骑士决斗 —— 白天发动 (P0-#3 修复:杀人时清 isSheriff)
+   ═══════════════════════════════════════════════════════════════════ */
 export function applyKnightDuel(s: GameState, knightId: number, targetId: number, _lang: 'zh' | 'en'): GameState {
   const knight = s.players[knightId];
   const target = s.players[targetId];
@@ -568,8 +655,10 @@ export function applyKnightDuel(s: GameState, knightId: number, targetId: number
       : p),
   });
   if (target.faction === 'wolf') {
-    // 目标死
-    let updated = s.players.map(p => p.id === targetId ? { ...p, alive: false } : p);
+    // 目标死(清 isSheriff)
+    let updated = s.players.map(p => p.id === targetId
+      ? { ...p, alive: false, privateMemory: { ...p.privateMemory, isSheriff: false } }
+      : p);
     const { state: afterLovers, chained } = applyLoversChain({ ...s, players: updated }, [targetId]);
     const newlyDead = [targetId, ...chained];
     const hunterDead = newlyDead.find(id => s.players[id].role === 'hunter');
@@ -586,8 +675,10 @@ export function applyKnightDuel(s: GameState, knightId: number, targetId: number
       pkUsed: false, pkPlayers: null,
     });
   } else {
-    // 骑士死
-    let updated = s.players.map(p => p.id === knightId ? { ...p, alive: false } : p);
+    // 骑士死(清 isSheriff)
+    let updated = s.players.map(p => p.id === knightId
+      ? { ...p, alive: false, privateMemory: { ...p.privateMemory, isSheriff: false } }
+      : p);
     const { state: afterLovers, chained } = applyLoversChain({ ...s, players: updated }, [knightId]);
     const newlyDead = [knightId, ...chained];
     const hunterDead = newlyDead.find(id => s.players[id].role === 'hunter');
@@ -606,18 +697,24 @@ export function applyKnightDuel(s: GameState, knightId: number, targetId: number
   }
 }
 
-/* ─────────────────────────────────────────────
-   狼队投票聚合
-   ── 输入:每只狼的目标 ID 列表(可能为空)
+/* ═══════════════════════════════════════════════════════════════════
+   狼队投票聚合 (P1-#10 修复:排除自投)
+   ── 输入:每只狼的目标 ID 列表(顺序与狼 ID 一一对应)
    ── 规则:
    · 票数最多的玩家被选为击杀目标
    · 平票 → 从平票者中随机选一个
    · 全部为空(狼超时未选) → 返回 null(守卫/女巫等可挡)
-   ───────────────────────────────────────────── */
-export function aggregateWolfVotes(state: GameState, votes: number[]): number | null {
+   · P1-#10 修复:排除狼投自己(狼自投无效)
+   ═══════════════════════════════════════════════════════════════════ */
+export function aggregateWolfVotes(state: GameState, wolfIds: number[], votes: number[]): number | null {
+  if (wolfIds.length !== votes.length) {
+    // 不匹配时降级:只用 votes(旧行为)
+    votes = votes.slice(0, wolfIds.length);
+    while (votes.length < wolfIds.length) votes.push(0);
+  }
   const alive = new Set(state.players.filter(p => p.alive).map(p => p.id));
-  // 只统计有效票(target 存活,且不是投票狼自己)
-  const validVotes = votes.filter(v => alive.has(v));
+  // P1-#10: 排除狼投自己
+  const validVotes = votes.filter((v, i) => v > 0 && alive.has(v) && v !== wolfIds[i]);
   if (validVotes.length === 0) return null;
   // 计票
   const tally: Record<number, number> = {};
@@ -628,6 +725,20 @@ export function aggregateWolfVotes(state: GameState, votes: number[]): number | 
     .map(([id]) => parseInt(id, 10));
   if (topCandidates.length === 1) return topCandidates[0];
   // 平票 → 随机
+  return topCandidates[Math.floor(Math.random() * topCandidates.length)];
+}
+
+/* 保留旧签名兼容(返回 null 用于兜底) —— 实际调用都改用新签名 */
+export function aggregateWolfVotesLegacy(votes: number[]): number | null {
+  const validVotes = votes.filter(v => v !== null && v !== undefined && v > 0);
+  if (validVotes.length === 0) return null;
+  const tally: Record<number, number> = {};
+  validVotes.forEach(v => { tally[v] = (tally[v] || 0) + 1; });
+  const maxVotes = Math.max(...Object.values(tally));
+  const topCandidates = Object.entries(tally)
+    .filter(([_, c]) => c === maxVotes)
+    .map(([id]) => parseInt(id, 10));
+  if (topCandidates.length === 1) return topCandidates[0];
   return topCandidates[Math.floor(Math.random() * topCandidates.length)];
 }
 

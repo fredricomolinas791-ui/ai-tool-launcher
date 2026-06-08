@@ -26,7 +26,7 @@ export type Phase =
   | 'night' | 'night-resolve'
   | 'day-announce' | 'sheriff-election' | 'sheriff-pick-order' | 'knight-duel' | 'day-discuss' | 'day-vote'
   | 'vote-results' | 'pk-speech' | 'pk-vote'
-  | 'hunter-shoot' | 'idiot-flip' | 'last-words'
+  | 'hunter-shoot' | 'idiot-flip' | 'last-words' | 'wolfking-pick'
   | 'judge' | 'gameover';
 export type Personality =
   | 'strategist' | 'aggressive' | 'mysterious'
@@ -43,6 +43,8 @@ export interface RoleDef {
   hasNightAction: boolean;
   /** 这个角色特殊技能的简短说明(给 AI prompt 用) */
   skillHint: { zh: string; en: string };
+  /** 是否是「神职」(用于胜负判定:神或民任一方全灭 → 狼胜) */
+  isGod: boolean;
 }
 
 /**
@@ -64,6 +66,7 @@ export const ROLES: Record<RoleId, RoleDef> = {
     shortDesc: { zh: '夜晚杀人,白天隐藏', en: 'Kill at night, hide by day' },
     nightOrder: 20, hasNightAction: true,
     skillHint: { zh: '每晚与狼队友协商杀一人', en: 'Each night coordinate with wolf pack to kill one player' },
+    isGod: false,
   },
   wolfking: {
     id: 'wolfking', faction: 'wolf', emoji: '👑',
@@ -71,6 +74,7 @@ export const ROLES: Record<RoleId, RoleDef> = {
     shortDesc: { zh: '狼阵营主脑,被投时可带走一人', en: 'Wolf leader — when voted out, takes one victim with them' },
     nightOrder: 20, hasNightAction: true,
     skillHint: { zh: '夜晚可杀一人;白天被投票放逐时,可发动技能带走另一个人', en: 'Kills at night; when voted out, can take one player with them' },
+    isGod: false,
   },
   wolfbeauty: {
     id: 'wolfbeauty', faction: 'wolf', emoji: '💋',
@@ -78,6 +82,7 @@ export const ROLES: Record<RoleId, RoleDef> = {
     shortDesc: { zh: '被投时带走最后投票的人', en: 'When voted out, takes the last voter with them' },
     nightOrder: 20, hasNightAction: true,
     skillHint: { zh: '夜晚可杀一人;白天被投票放逐时,带走最后一个给自己投票的人', en: 'Kills at night; when voted out, takes the last voter down with them' },
+    isGod: false,
   },
   villager: {
     id: 'villager', faction: 'good', emoji: '👨‍🌾',
@@ -85,6 +90,7 @@ export const ROLES: Record<RoleId, RoleDef> = {
     shortDesc: { zh: '平民,纯靠推理', en: 'Plain folk, deduction only' },
     nightOrder: 99, hasNightAction: false,
     skillHint: { zh: '没有任何技能,靠发言和投票推理', en: 'No ability — relies on speech and voting' },
+    isGod: false,
   },
   seer: {
     id: 'seer', faction: 'good', emoji: '🔮',
@@ -92,13 +98,15 @@ export const ROLES: Record<RoleId, RoleDef> = {
     shortDesc: { zh: '每晚验一人身份', en: 'Verify one identity each night' },
     nightOrder: 30, hasNightAction: true,
     skillHint: { zh: '每晚可查验一名玩家是「好人」还是「狼人」', en: 'Each night check whether one player is good or wolf' },
+    isGod: true,
   },
   witch: {
     id: 'witch', faction: 'good', emoji: '💊',
     name: { zh: '女巫', en: 'Witch' },
     shortDesc: { zh: '解药+毒药各一(网杀首夜不能自救)', en: 'One antidote, one poison (online: no self-save night 1)' },
     nightOrder: 40, hasNightAction: true,
-    skillHint: { zh: '拥有 1 瓶解药(救当晚被狼杀的人)和 1 瓶毒药(杀 1 人),整局各只能用一次;网杀规则:首夜被狼杀自己时不能自救;同守同救:守卫+女巫同救一人 → 该人仍死', en: 'Has 1 antidote (saves wolf victim) and 1 poison (kills someone), each usable once per game. Online rule: cannot save self on night 1. Same-target-guard-save: if guard AND antidote target the same person, that person still dies' },
+    skillHint: { zh: '拥有 1 瓶解药(救当晚被狼杀的人)和 1 瓶毒药(杀 1 人),整局各只能用一次;自救规则见 canWitchSelfSave():9 人场首夜可自救,12 人场首夜不可自救;同守同救:守卫+女巫同救一人 → 该人仍死', en: 'Has 1 antidote (saves wolf victim) and 1 poison (kills someone), each usable once per game. Self-save rule: see canWitchSelfSave() (9p: night 1 can self-save; 12p: night 1 cannot). Same-target-guard-save cancels with witch antidote' },
+    isGod: true,
   },
   hunter: {
     id: 'hunter', faction: 'good', emoji: '🏹',
@@ -106,6 +114,7 @@ export const ROLES: Record<RoleId, RoleDef> = {
     shortDesc: { zh: '死亡时可开枪(被女巫毒杀不能)', en: 'Shoots on death (not when witch-poisoned)' },
     nightOrder: 99, hasNightAction: false,
     skillHint: { zh: '被狼杀或被投票放逐时,可以选择开枪带走一名玩家;被女巫毒杀则不能发动', en: 'When killed by wolf or voted out, can shoot one player. Cannot shoot when poisoned by witch' },
+    isGod: true,
   },
   guard: {
     id: 'guard', faction: 'good', emoji: '🛡️',
@@ -113,6 +122,7 @@ export const ROLES: Record<RoleId, RoleDef> = {
     shortDesc: { zh: '每晚守一人(不可连守同一人)', en: 'Guard one player (cannot guard same target two nights in a row)' },
     nightOrder: 10, hasNightAction: true,
     skillHint: { zh: '每晚守护一名玩家,被守护者当晚免疫狼杀;但不能连续两晚守同一个人;同守同救:守卫+女巫解药同救一人会抵消', en: 'Each night guard one player — they are immune to wolf kill; cannot guard the same person two nights in a row; same-target-guard-save cancels with witch antidote' },
+    isGod: true,
   },
   idiot: {
     id: 'idiot', faction: 'good', emoji: '🤪',
@@ -120,6 +130,7 @@ export const ROLES: Record<RoleId, RoleDef> = {
     shortDesc: { zh: '被投时翻牌免死(失去投票权)', en: 'When voted out, flip card to survive (loses voting right)' },
     nightOrder: 99, hasNightAction: false,
     skillHint: { zh: '白天被投票放逐时可翻牌免死,继续存活但之后失去投票权(不能参与白天讨论/投票)', en: 'When voted out during day, can flip card to survive but loses voting right for the rest of the game (cannot speak in discussion or vote)' },
+    isGod: true,
   },
   knight: {
     id: 'knight', faction: 'good', emoji: '⚔️',
@@ -127,6 +138,7 @@ export const ROLES: Record<RoleId, RoleDef> = {
     shortDesc: { zh: '白天可决斗一人(每局限一次)', en: 'Can duel one player during day (once per game)' },
     nightOrder: 99, hasNightAction: false,
     skillHint: { zh: '白天发言时可发动技能决斗一名玩家:对方是狼则对方死,对方是好人则自己死;整局限用一次', en: 'During day can duel one player: if they are wolf, they die; if good, the knight dies. Once per game' },
+    isGod: true,
   },
   gargoyle: {
     id: 'gargoyle', faction: 'third', emoji: '🗿',
@@ -134,6 +146,7 @@ export const ROLES: Record<RoleId, RoleDef> = {
     shortDesc: { zh: '独立阵营,胜利条件特殊', en: 'Independent faction, special win condition' },
     nightOrder: 60, hasNightAction: true,
     skillHint: { zh: '每晚可查验一名玩家是「神职」还是「非神职」;胜利条件:活到最后(只剩石像鬼+1 玩家时石像鬼胜)', en: 'Each night check if a player is a "god role" (seer/witch/hunter/guard/knight) or not. Win: be the last one standing (gargoyle + 1 remaining player)' },
+    isGod: false,
   },
   cupid: {
     id: 'cupid', faction: 'third', emoji: '💘',
@@ -141,6 +154,7 @@ export const ROLES: Record<RoleId, RoleDef> = {
     shortDesc: { zh: '首夜连两人做情侣', en: 'First night, link two players as lovers' },
     nightOrder: 50, hasNightAction: true,
     skillHint: { zh: '第一晚选择两名玩家成为情侣(可跨阵营,可在 UI 里选第 1、第 2 人);任一情侣死亡,另一人也殉情。丘比特胜利条件:任意情侣阵营胜利时,丘比特也胜利', en: 'First night choose two players as lovers (any faction; user picks both in UI). When one dies, the other dies too. Cupid wins if any lover\'s faction wins' },
+    isGod: false,
   },
 };
 
@@ -265,6 +279,49 @@ export function generatePlayerNames(count: number, userName = '你'): { name: st
     name: i === userPos ? userName : `${i + 1}号玩家`,
     isUser: i === userPos,
   }));
+}
+
+/* ─────────────────────────────────────────────
+   女巫自救规则(板子相关,集中管理避免 4 处实现不一致)
+   ── 9 人场:仅首夜可自救(round > 1 自救也禁止)
+   ── 12 人场:首夜不可自救(round === 1 自救禁止,其他夜可自救)
+   ───────────────────────────────────────────── */
+export function canWitchSelfSave(boardPlayerCount: number, round: number, isSelfTarget: boolean): boolean {
+  if (!isSelfTarget) return true;
+  if (boardPlayerCount === 9) {
+    return round === 1;  // 9p: 仅首夜可自救
+  } else {
+    return round > 1;  // 12p: 首夜不可自救,其他夜可
+  }
+}
+
+/* ─────────────────────────────────────────────
+   「报查验 / 悍跳」claim 数据结构 (P1-#48)
+   ── GameState.claims.byDay[day] 记录当天所有跳预言家/女巫/守卫的人
+   ───────────────────────────────────────────── */
+export interface SeerClaim {
+  playerId: number;
+  /** 报的查验列表 (谎报 / 真报) */
+  checks: { targetId: number; isWolf: boolean }[];
+}
+export interface WitchClaim {
+  playerId: number;
+  savedId: number | null;
+  poisonedId: number | null;
+}
+export interface GuardClaim {
+  playerId: number;
+  guardedId: number | null;
+}
+export interface DayClaims {
+  seerClaims: SeerClaim[];
+  witchClaims: WitchClaim[];
+  guardClaims: GuardClaim[];
+}
+export type ClaimsByDay = Record<number, DayClaims>;
+
+export function emptyDayClaims(): DayClaims {
+  return { seerClaims: [], witchClaims: [], guardClaims: [] };
 }
 
 export function factionDesc(f: Faction): { zh: string; en: string } {
