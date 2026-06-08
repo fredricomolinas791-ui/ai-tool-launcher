@@ -1378,7 +1378,7 @@ function applyNightAction(
       return {
         ...s,
         players: players.map((p, i) => i === actorId
-          ? { ...p, privateMemory: { ...p.privateMemory, guardLastTargetId: target } } }
+          ? { ...p, privateMemory: { ...p.privateMemory, guardLastTargetId: target } }
           : p),
         // 暂存"被守的人"
         publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: `🛡️ 守卫守了 ${target + 1}号` }],
