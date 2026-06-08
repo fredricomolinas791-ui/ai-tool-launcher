@@ -1671,7 +1671,8 @@ function WolfKingPick({ state, setState, lang, aiSpeak }: {
     }
     setState(s => {
       // P0-#3 修复:用 killPlayers helper(清 isSheriff + 触发殉情)
-      const logEntry: { kind: 'death' as const; day: number; playerId: number; text: string } = {
+      // P0-#53 修复:`as const` 只能用在值上,不能在类型注解里(用 'death' 字面量类型即可)
+      const logEntry: { kind: 'death'; day: number; playerId: number; text: string } = {
         kind: 'death', day: s.round, playerId: chosen,
         text: `👑 ${s.players[chosen].name} 跟着去了(狼王带人)`,
       };
