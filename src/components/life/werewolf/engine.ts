@@ -268,6 +268,7 @@ export function callAIStream(
   systemPrompt: string,
   userPrompt: string,
   onToken: (chunk: string) => void,
+  options?: { temperature?: number; maxTokens?: number },
 ): AIStreamHandle {
   const ctrl = new AbortController();
   const promise = (async () => {
@@ -282,8 +283,9 @@ export function callAIStream(
       body: JSON.stringify({
         model: cfg.model,
         stream: true,
-        temperature: 0.9,
-        max_tokens: 400,
+        // 默认 0.9(讨论/演讲场景);神职报身份场景会传 0.3
+        temperature: options?.temperature ?? 0.9,
+        max_tokens: options?.maxTokens ?? 400,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },

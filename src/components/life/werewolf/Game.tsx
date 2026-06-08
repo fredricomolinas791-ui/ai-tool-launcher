@@ -313,13 +313,19 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
      避免「读 state.speeches[length-1]」的闭包过时问题。
      target 是 0-based 座位号,null 表示无目标。
      P0-#4 修复:用 parseAIDecisionToTargetId 正确处理 decision=0(显式无目标)。 */
-  const aiSpeak = async (playerId: number, systemPrompt: string, userPrompt: string, silent: boolean = false): Promise<{ speech: string; target: number | null; useAntidote?: boolean }> => {
+  const aiSpeak = async (
+    playerId: number,
+    systemPrompt: string,
+    userPrompt: string,
+    silent: boolean = false,
+    options?: { temperature?: number; maxTokens?: number },
+  ): Promise<{ speech: string; target: number | null; useAntidote?: boolean }> => {
     let full = '';
     setStreamingText({ playerId, text: '' });
     const h = callAIStream(aiConfig, systemPrompt, userPrompt, (chunk: string) => {
       full += chunk;
       if (!silent) setStreamingText({ playerId, text: full });
-    });
+    }, options);
     const text = await h.promise;
     if (silent) setStreamingText(null);
     // 先尝试从 JSON 包装里抽取 speech + target
@@ -1242,7 +1248,7 @@ function UserNightActionUI({ role, state, lang, onConfirm }: {
    —— 女巫返回结构化决策 {useAntidote, poisonTarget},其他角色 target */
 async function runAIAction(
   actor: Player, state: GameState, lang: 'zh' | 'en',
-  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean) => Promise<{ speech: string; target: number | null; useAntidote?: boolean }>,
+  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean, options?: { temperature?: number; maxTokens?: number }) => Promise<{ speech: string; target: number | null; useAntidote?: boolean }>,
 ): Promise<{ target: number | null; decision?: { useAntidote: boolean; poisonTarget: number | null } }> {
   // 女巫: 走专用 prompt (P1-#7 修复:用 canWitchSelfSave 统一规则)
   if (actor.role === 'witch') {
@@ -1485,7 +1491,7 @@ function resolveNight(s: GameState, _lang: 'zh' | 'en'): GameState {
 function IdiotFlip({ state, setState, lang, aiSpeak }: {
   state: GameState; setState: (u: (s: GameState) => GameState) => void;
   lang: 'zh' | 'en';
-  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean) => Promise<{ speech: string; target: number | null }>;
+  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean, options?: { temperature?: number; maxTokens?: number }) => Promise<{ speech: string; target: number | null }>;
 }) {
   const idiotId = state.lastVotedOut;
   // P2-#23 修复:用 ref guard 防止 StrictMode 双跑
@@ -1611,7 +1617,7 @@ function IdiotFlip({ state, setState, lang, aiSpeak }: {
 function WolfKingPick({ state, setState, lang, aiSpeak }: {
   state: GameState; setState: (u: (s: GameState) => GameState) => void;
   lang: 'zh' | 'en';
-  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean) => Promise<{ speech: string; target: number | null; useAntidote?: boolean }>;
+  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean, options?: { temperature?: number; maxTokens?: number }) => Promise<{ speech: string; target: number | null; useAntidote?: boolean }>;
 }) {
   const wolfKingId = state.lastVotedOut;
   const [victim, setVictim] = useState<number | null>(state.wolfkingVictim ?? null);
@@ -1751,7 +1757,7 @@ type SheriffStep = 'register' | 'speech' | 'withdraw' | 'vote' | 'pk-speech' | '
 function SheriffElection({ state, setState, lang, aiSpeak }: {
   state: GameState; setState: (u: (s: GameState) => GameState) => void;
   lang: 'zh' | 'en';
-  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean) => Promise<{ speech: string; target: number | null }>;
+  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean, options?: { temperature?: number; maxTokens?: number }) => Promise<{ speech: string; target: number | null }>;
 }) {
   const alivePlayers = state.players.filter(p => p.alive);
   // 初始化 sheriffElection(如果还没有)
@@ -2280,7 +2286,7 @@ function DayAnnounce({ state, setState, lang }: { state: GameState; setState: (u
 function HunterShoot({ state, setState, lang, aiSpeak }: {
   state: GameState; setState: (u: (s: GameState) => GameState) => void;
   lang: 'zh' | 'en';
-  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean) => Promise<{ speech: string; target: number | null }>;
+  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean, options?: { temperature?: number; maxTokens?: number }) => Promise<{ speech: string; target: number | null }>;
 }) {
   const hunterId = state.lastVotedOut;
   const [target, setTarget] = useState<number | null>(null);
@@ -2409,7 +2415,7 @@ function HunterShoot({ state, setState, lang, aiSpeak }: {
 function DayDiscuss({ state, setState, lang, aiSpeak }: {
   state: GameState; setState: (u: (s: GameState) => GameState) => void;
   lang: 'zh' | 'en';
-  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean) => Promise<{ speech: string; target: number | null; useAntidote?: boolean }>;
+  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean, options?: { temperature?: number; maxTokens?: number }) => Promise<{ speech: string; target: number | null; useAntidote?: boolean }>;
 }) {
   const [discussIdx, setDiscussIdx] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -2465,43 +2471,67 @@ function DayDiscuss({ state, setState, lang, aiSpeak }: {
     if (busy) return;
     setBusy(true);
     const sys = buildDayDiscussionPrompt(cur, state, lang);
+    const temp = extractTempHint(sys);
     const usr = lang === 'zh'
       ? '请发言(30-100 字,口语化,像微信群聊天),带节奏、跟队友呼应'
       : 'Speak in 30-100 words, casual chat style, drive the discussion';
-    aiSpeak(cur.id, sys, usr).then(({ speech }) => {
+    aiSpeak(cur.id, sys, usr, false, { temperature: temp }).then(({ speech }) => {
       // P1-#48 修复:AI 发言也检测 claim 关键字
+      // 放宽正则:支持 "我是预"/"我验过"/"checked"/"3号位"/"3 是狼"/"3→狼" 等
       setState(s => {
         const newClaims = { ...(s.claims || {}) };
         if (!newClaims[s.round]) newClaims[s.round] = { seerClaims: [], witchClaims: [], guardClaims: [] };
         const dayClaims = newClaims[s.round];
-        if (/预言家|验了|seer|checked/i.test(speech)) {
-          const checkMatches = speech.match(/(\d+)\s*号/g);
-          if (checkMatches) {
-            const checks: { targetId: number; isWolf: boolean }[] = checkMatches.map(m => {
-              const num = parseInt(m, 10) - 1;
-              const isWolf = /狼|wolf/i.test(speech.substring(speech.indexOf(m), Math.min(speech.indexOf(m) + 8, speech.length)));
+
+        // ── 预言家 claim 检测 ──
+        // 触发词:我是预/预言家/seer/验了/我查/查过/checked
+        if (/预言家|我是预|验了|验过|我查|seer|checked|verify/i.test(speech)) {
+          // 提取"X 号"或"X →"或"X 是"等格式中的 X(1-2 位数字)
+          // 匹配: "3号" / "3 号" / "3号位" / "3" 后接 狼/好人/is wolf/is good/→/=/是/为
+          const checkRe = /(\d{1,2})\s*号(?:位|座位)?|\b(\d{1,2})\s*(?:是|为|=|→|->)\s*(?:狼|好人|神|民|wolf|good|god|villager)/gi;
+          const matches = [...speech.matchAll(checkRe)];
+          if (matches.length > 0) {
+            const checks: { targetId: number; isWolf: boolean }[] = matches.map(m => {
+              // 提取数字
+              const numStr = m[1] ?? m[2];
+              const num = parseInt(numStr, 10) - 1;
+              // 看整段:从匹配位置往后 30 字符内,看有没有 "狼/wolf/god" → 狼,否则好人
+              const after = speech.slice(m.index ?? 0, (m.index ?? 0) + 30).toLowerCase();
+              const isWolf = /狼|wolf/.test(after);
               return { targetId: num, isWolf };
-            });
-            const existing = dayClaims.seerClaims.findIndex(c => c.playerId === cur.id);
-            if (existing >= 0) dayClaims.seerClaims[existing] = { playerId: cur.id, checks };
-            else dayClaims.seerClaims.push({ playerId: cur.id, checks });
+            }).filter(c => c.targetId >= 0 && c.targetId < s.players.length);
+            if (checks.length > 0) {
+              const existing = dayClaims.seerClaims.findIndex(c => c.playerId === cur.id);
+              if (existing >= 0) dayClaims.seerClaims[existing] = { playerId: cur.id, checks };
+              else dayClaims.seerClaims.push({ playerId: cur.id, checks });
+            }
           }
         }
-        if (/女巫|解药|毒药|witch|antidote|poison/i.test(speech)) {
-          const savedMatch = speech.match(/(?:救了?|saved?)\s*(\d+)\s*号/);
-          const poisonedMatch = speech.match(/(?:毒了?|poisoned?)\s*(\d+)\s*号/);
+
+        // ── 女巫 claim 检测 ──
+        if (/女巫|我是女|解药|毒药|witch|antidote|poison|saved/i.test(speech)) {
+          // "救了 X 号" / "saved X" / "我用了解药救 X"
+          const savedMatch = speech.match(/(?:救了?|我救|saved?|antidote[^\d]{0,8})\s*(\d{1,2})\s*号?/i);
+          // "毒了 X 号" / "poisoned X" / "我用毒杀 X"
+          const poisonedMatch = speech.match(/(?:毒了?|poisoned?)\s*(\d{1,2})\s*号?/i);
           const savedId = savedMatch ? parseInt(savedMatch[1], 10) - 1 : null;
           const poisonedId = poisonedMatch ? parseInt(poisonedMatch[1], 10) - 1 : null;
-          const existing = dayClaims.witchClaims.findIndex(c => c.playerId === cur.id);
-          if (existing >= 0) dayClaims.witchClaims[existing] = { playerId: cur.id, savedId, poisonedId };
-          else dayClaims.witchClaims.push({ playerId: cur.id, savedId, poisonedId });
+          if (savedId !== null || poisonedId !== null) {
+            const existing = dayClaims.witchClaims.findIndex(c => c.playerId === cur.id);
+            if (existing >= 0) dayClaims.witchClaims[existing] = { playerId: cur.id, savedId, poisonedId };
+            else dayClaims.witchClaims.push({ playerId: cur.id, savedId, poisonedId });
+          }
         }
-        if (/守卫|守了|guard|guarded/i.test(speech)) {
-          const guardedMatch = speech.match(/(?:守了?|guarded?)\s*(\d+)\s*号/);
+
+        // ── 守卫 claim 检测 ──
+        if (/守卫|我是守|守了|守过|guard|guarded/i.test(speech)) {
+          const guardedMatch = speech.match(/(?:守了?|我守|guarded?)\s*(\d{1,2})\s*号?/i);
           const guardedId = guardedMatch ? parseInt(guardedMatch[1], 10) - 1 : null;
-          const existing = dayClaims.guardClaims.findIndex(c => c.playerId === cur.id);
-          if (existing >= 0) dayClaims.guardClaims[existing] = { playerId: cur.id, guardedId };
-          else dayClaims.guardClaims.push({ playerId: cur.id, guardedId });
+          if (guardedId !== null) {
+            const existing = dayClaims.guardClaims.findIndex(c => c.playerId === cur.id);
+            if (existing >= 0) dayClaims.guardClaims[existing] = { playerId: cur.id, guardedId };
+            else dayClaims.guardClaims.push({ playerId: cur.id, guardedId });
+          }
         }
         // 同步给 speeches 加 phase 字段(P3-#39)
         const idx = s.speeches.findIndex(sp => sp.playerId === cur.id && sp.day === s.round && sp.text === speech);
@@ -2716,7 +2746,7 @@ function DayDiscuss({ state, setState, lang, aiSpeak }: {
 function DayVote({ state, setState, lang, aiSpeak }: {
   state: GameState; setState: (u: (s: GameState) => GameState) => void;
   lang: 'zh' | 'en';
-  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean) => Promise<{ speech: string; target: number | null }>;
+  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean, options?: { temperature?: number; maxTokens?: number }) => Promise<{ speech: string; target: number | null }>;
 }) {
   const alivePlayers = state.players.filter(p => p.alive);
   const [userTarget, setUserTarget] = useState<number | null>(null);
@@ -2861,7 +2891,7 @@ function DayVote({ state, setState, lang, aiSpeak }: {
 function LastWords({ state, setState, lang, aiSpeak }: {
   state: GameState; setState: (u: (s: GameState) => GameState) => void;
   lang: 'zh' | 'en';
-  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean) => Promise<{ speech: string; target: number | null }>;
+  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean, options?: { temperature?: number; maxTokens?: number }) => Promise<{ speech: string; target: number | null }>;
 }) {
   // 优先用 pendingLastWords(明确按死亡顺序);空则降级到 deadThisNight(向后兼容)
   const deadIds = state.pendingLastWords.length > 0
@@ -3137,7 +3167,7 @@ function VoteResults({ state, setState, lang }: {
 function PKSpeech({ state, setState, lang, aiSpeak }: {
   state: GameState; setState: (u: (s: GameState) => GameState) => void;
   lang: 'zh' | 'en';
-  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean) => Promise<{ speech: string; target: number | null }>;
+  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean, options?: { temperature?: number; maxTokens?: number }) => Promise<{ speech: string; target: number | null }>;
 }) {
   const tiedIds = state.pkPlayers ?? [];
   const [pkIdx, setPkIdx] = useState(0);
@@ -3226,7 +3256,7 @@ function PKSpeech({ state, setState, lang, aiSpeak }: {
 function PKVote({ state, setState, lang, aiSpeak }: {
   state: GameState; setState: (u: (s: GameState) => GameState) => void;
   lang: 'zh' | 'en';
-  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean) => Promise<{ speech: string; target: number | null }>;
+  aiSpeak: (id: number, sys: string, usr: string, silent?: boolean, options?: { temperature?: number; maxTokens?: number }) => Promise<{ speech: string; target: number | null }>;
 }) {
   const tiedIds = state.pkPlayers ?? [];
   const alivePlayers = state.players.filter(p => p.alive);
@@ -3447,41 +3477,184 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
   const role = ROLES[actor.role];
   const alive = state.players.filter(x => x.alive).map(x => `${x.name}`).join('、');
   const dead = state.deadThisNight.map(id => `${state.players[id].name}`).join('、');
-  let extra = '';
-  if (actor.faction === 'wolf' && actor.privateMemory.wolfTeammates.length) {
+  const isZh = lang === 'zh';
+
+  // 今日是否已有人跳预言家 / 对跳预言家
+  const seerClaimsThisRound = state.claims?.[state.round]?.seerClaims ?? [];
+  const seerClaimed = seerClaimsThisRound.length > 0;
+  // 当前发言者自己是否就是今日的跳预言家
+  const actorIsClaimer = seerClaimsThisRound.some(c => c.playerId === actor.id);
+
+  // 站边逻辑块(只要场上有人跳预言家,非跳预言家的所有人必须站边)
+  // 跳过:预言家本人、正在悍跳的狼(它们的"立场"是表演,不需要真正站边)
+  const needStance = seerClaimed && !actorIsClaimer && actor.role !== 'seer';
+
+  // ─────────────────────────────────────────────
+  // 1) 角色专属"必须/禁止"块(放最顶部,让 LLM 先看)
+  // ─────────────────────────────────────────────
+  let roleBlock = '';
+  let outputFormat = '';
+  let suggestedTemp: number | undefined = undefined;
+
+  if (actor.role === 'seer' && actor.privateMemory.seerChecks.length) {
+    // P0-#46 重写:把"必报查验"塞到顶部 + 加硬性输出格式约束
+    const checks = actor.privateMemory.seerChecks.map(c => `${c.targetId + 1}号 → ${c.isWolf ? '狼' : '好人'}`).join('、');
+    roleBlock = isZh
+      ? `【你的身份:预言家 🔮】\n你的查验结果(必须公开报给好人阵营):${checks}\n\n你是好人阵营的核心情报源。如果不报查验,好人无法利用你的信息,等于浪费预言家。`
+      : `【Your role: Seer 🔮】\nYour checks (you MUST announce to the village): ${checks}\n\nYou are the village's main info source. Without announcing, your info is wasted.`;
+    outputFormat = isZh
+      ? `【输出格式 - 必须遵守】\n你的发言必须严格按以下结构:\n第 1 句:"我是预言家"\n第 2 句(必含查验):"昨晚/前 N 晚我验了 X 号,他是 [狼/好人]"\n第 3 句起:30-80 字分析(谁可疑 / 该投谁 / 回应别人)\n\n不要 JSON 包装。不要解释,直接给发言。`
+      : `【Output format - MUST follow】\nSentence 1: "I am the Seer"\nSentence 2 (MUST include a check): "Last night I checked #X, he is [wolf/good]"\nThen 30-80 words analysis.\n\nNo JSON. No preamble. Just the speech.`;
+    suggestedTemp = 0.3;
+  } else if (actor.faction === 'wolf' && actor.privateMemory.wolfTeammates.length) {
+    // P0-#47 狼人悍跳策略(可选项)
     const mates = actor.privateMemory.wolfTeammates.map(id => `${state.players[id].name}`).join('、');
-    // P0-#47 修复:狼人悍跳预言家策略
     const realSeerAlive = state.players.some(p => p.alive && p.role === 'seer');
-    const shouldCounterClaim = realSeerAlive && Math.random() < 0.6;
+    const counterClaimAlready = (state.claims?.[state.round]?.seerClaims ?? []).some(c => state.players[c.playerId]?.faction !== 'wolf');
+    const shouldCounterClaim = realSeerAlive && !counterClaimAlready && Math.random() < 0.5;
     if (shouldCounterClaim) {
-      extra = lang === 'zh'
-        ? `\n🐺 你是狼,你的队友:${mates}。\n⚔️ 高级策略(悍跳预言家): 你可以假扮预言家,报「我验了 X 号,他是好人」(指你队友保他)或「我验了 Y 号,他是狼」(咬你想投的人)。这样会让好人分不清谁是真的预言家,你的队友被保、目标被放逐。`
-        : `\n🐺 You're a wolf. Pack: ${mates}.\n⚔️ Counter-claim strategy: Pretend to be the seer. Claim "I checked #X, he is good" (to protect your pack) or "I checked #Y, he is wolf" (to target your victim). This confuses the village about who the real seer is.`;
+      // 狼悍跳预言家:必须按"预言家格式"输出
+      roleBlock = isZh
+        ? `【你的身份:狼人 🐺(悍跳预言家)】\n你的队友:${mates}。\n\n策略:假扮预言家,报"我验了 X 号,他是好人"(指队友保他)或"我验了 Y 号,他是狼"(咬你想投的人)。这会让好人分不清谁真谁假,你的队友被保,你的目标被放逐。`
+        : `【Your role: Werewolf 🐺 (counter-claiming as Seer)】\nPack: ${mates}.\n\nStrategy: Pretend to be the seer. Claim "I checked #X, he is good" (protect a packmate) or "I checked #Y, he is wolf" (target your victim).`;
+      outputFormat = isZh
+        ? `【输出格式 - 必须遵守】\n你的发言必须严格按以下结构:\n第 1 句:"我是预言家"\n第 2 句(必含编造的查验):"昨晚我验了 X 号,他是 [狼/好人]"\n第 3 句起:30-80 字分析\n\n不要 JSON 包装。编的查验要具体到"几号是狼/好人",越具体越好。`
+        : `【Output format - MUST follow】\nSentence 1: "I am the Seer"\nSentence 2 (MUST include a fabricated check): "I checked #X, he is [wolf/good]"\nThen 30-80 words analysis.`;
+      suggestedTemp = 0.4;
     } else {
-      extra = lang === 'zh' ? `\n🐺 你是狼,你的队友:${mates}。要隐藏身份、转移视线,如果有人跳预言家,你可以咬回去(说他是悍跳狼)。` : `\n🐺 You're a wolf. Pack: ${mates}. Hide and deflect. If someone claims seer, you can attack them as a wolf counter-claim.`;
+      roleBlock = isZh
+        ? `【你的身份:狼人 🐺】\n你的队友:${mates}。\n\n要隐藏身份、转移视线。如果有人跳预言家(尤其是悍跳的),可以咬回去(说对方是悍跳狼)。\n注意:你今天**不应主动跳预言家**——已经有人跳了,你再跳是"对跳",会暴露。`
+        : `【Your role: Werewolf 🐺】\nPack: ${mates}.\n\nHide, deflect. If someone claims seer, you can attack them. Do NOT claim seer yourself if someone already did—counter-counter-claims expose you.`;
+      outputFormat = isZh
+        ? `【输出格式】\n30-100 字口语发言(像微信群)。可以怀疑/拉票/站队,但不要直接报"我是预言家"除非你想悍跳。`
+        : `【Output format】\n30-100 words casual speech. Suspect, lobby, take sides. Do NOT claim seer unless intentionally counter-claiming.`;
+    }
+  } else if (actor.role === 'witch') {
+    const mem = actor.privateMemory;
+    const info: string[] = [];
+    if (mem.witchAntidoteUsed === false) info.push(isZh ? '解药还没用' : 'antidote unused');
+    if (mem.witchPoisonedId !== null) info.push(isZh ? `已毒 ${state.players[mem.witchPoisonedId]?.name}` : `poisoned ${state.players[mem.witchPoisonedId]?.name}`);
+    if (mem.witchSavedId !== null) info.push(isZh ? `已救 ${state.players[mem.witchSavedId]?.name}` : `saved ${state.players[mem.witchSavedId]?.name}`);
+    roleBlock = isZh
+      ? `【你的身份:女巫 💊】\n状态:${info.length ? info.join('、') : '解药毒药都还没用'}}\n\n策略(可选):\n- 报"昨晚我救了 X 号(没用毒)"证明自己是女巫,但会暴露给狼队\n- 报"我毒了 Y 号"反驳怀疑你的人\n- 也可以沉默保命`
+      : `【Your role: Witch 💊】\nStatus: ${info.length ? info.join(', ') : 'both unused'}\n\nOptional strategies:\n- Claim "I saved X (no poison)" to prove yourself (but reveals to wolves)\n- Claim "I poisoned Y" to refute suspects\n- Stay silent to survive.`;
+    outputFormat = isZh
+      ? `【输出格式】\n30-100 字口语发言。如果选择报身份,必须明确说"我是女巫"开头。`
+      : `【Output format】\n30-100 words casual speech. If claiming, MUST start with "I am the Witch".`;
+  } else if (actor.role === 'guard') {
+    const lastGuard = actor.privateMemory.guardLastTargetId;
+    roleBlock = isZh
+      ? `【你的身份:守卫 🛡️】\n上一夜守了:${lastGuard !== null ? state.players[lastGuard].name : '(空守)'}\n\n策略(可选):\n- 报"我守了 X"反驳预言家对 X 的怀疑(真话可挡刀)\n- 故意报错(谎报)可误导狼队,让他们明晚避开"以为安全"的人\n- 沉默保命也可以`
+      : `【Your role: Guard 🛡️】\nLast guarded: ${lastGuard !== null ? state.players[lastGuard].name : '(none)'}\n\nOptional strategies:\n- Claim "I guarded X" to refute seer's suspicion of X (truth blocks the kill)\n- Lie to mislead wolves\n- Stay silent.`;
+    outputFormat = isZh
+      ? `【输出格式】\n30-100 字口语发言。如果选择报身份,必须明确说"我是守卫"开头。`
+      : `【Output format】\n30-100 words. If claiming, MUST start with "I am the Guard".`;
+  } else {
+    // 普通村民 / 猎人 / 白痴 / 骑士 / 石像鬼 / 丘比特
+    roleBlock = isZh
+      ? `【你的身份:${role.name.zh} ${role.emoji}】\n阵营:${actor.faction === 'good' ? '好人' : actor.faction === 'wolf' ? '狼人' : '第三方'}。\n\n白天是发言+投票阶段。要主动站队/怀疑别人/分析局势。`
+      : `【Your role: ${role.name.en} ${role.emoji}】\nFaction: ${actor.faction}. Speak and vote. Take sides, analyze.`;
+    outputFormat = isZh
+      ? `【输出格式】\n30-100 字口语发言(像微信群)。不要 JSON 包装。`
+      : `【Output format】\n30-100 words casual chat. No JSON.`;
+  }
+
+  // ─────────────────────────────────────────────
+  // 1.5) 站边块(有人跳预言家时,所有非跳预言家的玩家必须站边)
+  // 排除:预言家本人(他在报查验)、悍跳的狼(它的"立场"是表演,真正目的是搅局)
+  // 守卫/女巫等报身份的也算"已表态",如果他也跳了(claims 里有他),则不强制他再站
+  // ─────────────────────────────────────────────
+  let stanceBlock = '';
+  if (needStance) {
+    const claimerList = seerClaimsThisRound
+      .map(c => {
+        const p = state.players[c.playerId];
+        const summary = c.checks.map(x => `${x.targetId + 1}号=${x.isWolf ? '狼' : '好人'}`).join('、');
+        return `${c.playerId + 1}号 ${p?.name ?? '?'}(报:${summary})`;
+      })
+      .join('\n  ');
+    const isWolfActor = actor.faction === 'wolf';
+    if (isZh) {
+      stanceBlock = isWolfActor
+        ? `【站边 - 狼人策略】\n场上已有人跳预言家(可能是真预言家,可能是悍跳):\n  ${claimerList}\n\n你作为狼,需要演戏。建议:\n- 站一个跳预言家的(保护队友/混淆视听) → "我站 X 号,因为他报的查验有逻辑"\n- 反站另一个(把真预言家投出去) → "我反对 X 号,因为他跳得太晚 / 报的查验有矛盾"\n- 装糊涂(信息不足) → "现在信息太少,我暂不站边"\n\n但务必给出**符合好人逻辑**的理由(不能直接说"我是狼"),这样其他玩家才信你。\n`
+        : `【站边 - 必填】\n场上已有人跳预言家,你必须明确表态(站边 / 反站 / 不站),并给出符合狼人杀逻辑的理由。\n\n今日跳预言家的人:\n  ${claimerList}\n\n可选立场:\n- 【站 X 号】:"我站 X 号(真预言家),因为..."\n  - 理由可以是:X 先跳(后跳的多半悍跳)/X 报的查验里 Y 昨晚确实死了(说明 X 没验错)/X 查的好人到现在都活着(悍跳保不了这么多人)/X 发言逻辑清晰没回避问题\n- 【反站 X 号 / 站 Y 号】:"我反 X 号(悍跳),我站 Y 号, 因为..."\n  - 理由可以是:X 跳得太晚(被投才跳是典型悍跳)/X 报的查验和已知死因冲突/X 查的全是好人(像在保队友)\n- 【不站边】:"目前 X 和 Y 都跳了,信息不足,我暂不站边,理由是..."\n  - 理由可以是:两边报的查验互相矛盾没法判断/要等今晚死的是谁才能定/要观察 X 和 Y 的投票行为\n\n【强制】\n- 必须在发言前 30 字内明确说出"我站 X"/"我反对 X"/"我暂不站边"之一\n- 理由必须**具体引用场上信息**(某个人的发言/某个查验/某个死因),不能空话\n- 不能直接说"因为感觉"\n- 如果你是狼,理由要**符合好人逻辑**,让其他玩家信你\n`;
+    } else {
+      stanceBlock = isWolfActor
+        ? `【Stance - Wolf strategy】\nSeer(s) have claimed:\n  ${claimerList}\n\nAs a wolf, you must perform. Pick a stance and give a good-faction-logical reason (never reveal you're a wolf):\n- "I trust #X" / "I distrust #X" / "I abstain for now"\n`
+        : `【Stance - MANDATORY】\nSeer(s) have claimed today. You MUST take a stance with a werewolf-logical reason:\n  ${claimerList}\n\nOptions:\n- "I trust #X" — give a specific reason (who claimed first, which check matches deaths, etc.)\n- "I distrust #X" — specific counter-evidence (claimed too late, checks conflict with deaths, etc.)\n- "I abstain" — explain what info is missing\n\nYour reason MUST cite specific game events (a player's speech, a check, a death), not vague feelings.`;
     }
   }
-  // P0-#49: 神职策略(守卫/女巫/骑士/白痴)报身份的提示
-  if (actor.role === 'witch' && actor.privateMemory.witchAntidoteUsed === false) {
-    extra += lang === 'zh' ? `\n💊 你是女巫,解药还没用。策略:可以报「昨晚我救了 X 号」来证明自己是女巫,但也可能暴露自己被狼针对。` : `\n💊 You're the Witch, antidote unused. Strategy: can claim "I saved X" to prove yourself, but this reveals you to wolves.`;
+
+  // ─────────────────────────────────────────────
+  // 2) 上下文块(之前发言摘要 + 今日声明)
+  // ─────────────────────────────────────────────
+  const contextParts: string[] = [];
+  // 之前发言(今天 + 昨天)
+  const todayStart = state.speeches.findIndex(s => s.day === state.round);
+  const recentSpeeches = state.speeches.slice(Math.max(0, todayStart - 8), todayStart);
+  if (recentSpeeches.length > 0) {
+    const lines = recentSpeeches.slice(-6).map(sp => {
+      const p = state.players[sp.playerId];
+      if (!p || !p.alive) return null;
+      return `${p.id + 1}号 ${p.name}: ${sp.text.slice(0, 60)}${sp.text.length > 60 ? '…' : ''}`;
+    }).filter(Boolean);
+    if (lines.length) {
+      contextParts.push(isZh
+        ? `【近期发言摘要(供参考,不是必须回应)】\n${lines.join('\n')}`
+        : `【Recent speech summary】\n${lines.join('\n')}`);
+    }
   }
-  if (actor.role === 'witch' && actor.privateMemory.witchPoisonUsed) {
-    extra += lang === 'zh' ? `\n💊 你的毒药已用(毒了 ${state.players[actor.privateMemory.witchPoisonedId ?? -1]?.name || '?'})。可以公开报「我毒了 X」来反驳怀疑你的人。` : '';
+  // 今日身份声明(本轮)
+  const todayClaims = state.claims?.[state.round];
+  if (todayClaims) {
+    const claimLines: string[] = [];
+    todayClaims.seerClaims.forEach(c => {
+      const p = state.players[c.playerId];
+      if (p?.alive) {
+        claimLines.push(isZh
+          ? `🔮 ${c.playerId + 1}号 ${p.name} 跳预言家:${c.checks.map(x => `${x.targetId + 1}号=${x.isWolf ? '狼' : '好人'}`).join('、')}`
+          : `🔮 #${c.playerId + 1} ${p.name} claims seer: ${c.checks.map(x => `#${x.targetId + 1}=${x.isWolf ? 'wolf' : 'good'}`).join(', ')}`);
+      }
+    });
+    todayClaims.witchClaims.forEach(c => {
+      const p = state.players[c.playerId];
+      if (p?.alive) {
+        claimLines.push(isZh
+          ? `💊 ${c.playerId + 1}号 ${p.name} 跳女巫:${c.savedId !== null ? `救了${c.savedId + 1}号 ` : ''}${c.poisonedId !== null ? `毒了${c.poisonedId + 1}号` : ''}`
+          : `💊 #${c.playerId + 1} ${p.name} claims witch: ${c.savedId !== null ? `saved #${c.savedId + 1} ` : ''}${c.poisonedId !== null ? `poisoned #${c.poisonedId + 1}` : ''}`);
+      }
+    });
+    todayClaims.guardClaims.forEach(c => {
+      const p = state.players[c.playerId];
+      if (p?.alive) {
+        claimLines.push(isZh
+          ? `🛡️ ${c.playerId + 1}号 ${p.name} 跳守卫:${c.guardedId !== null ? `守了${c.guardedId + 1}号` : '空守'}`
+          : `🛡️ #${c.playerId + 1} ${p.name} claims guard: ${c.guardedId !== null ? `guarded #${c.guardedId + 1}` : 'no guard'}`);
+      }
+    });
+    if (claimLines.length) {
+      contextParts.push(isZh
+        ? `【今日身份声明(已经有 X 人跳了预言家/女巫/守卫)】\n${claimLines.join('\n')}\n你可以质疑、相信、或者补充。`
+        : `【Today's claims】\n${claimLines.join('\n')}`);
+    }
   }
-  if (actor.role === 'guard' && actor.privateMemory.guardLastTargetId !== null) {
-    // P1-#49 强化:守卫主动报身份可挡刀(撒谎/真话可选)
-    extra += lang === 'zh' ? `\n🛡️ 你是守卫,上一夜守了 ${state.players[actor.privateMemory.guardLastTargetId].name}。可以报「我守了 X」(真或假)来反驳预言家对 X 的怀疑(但狼可能反向推断你的守人规律,明晚避开)。\n   💡 高级策略:有时候故意报错守人(谎报)可误导狼队,让他们明晚杀你"以为安全"的人。` : `\n🛡️ You're the Guard, last guarded: ${state.players[actor.privateMemory.guardLastTargetId].name}. Can claim "I guarded X" (true or false) to refute the seer's suspicion. Wolves might deduce your pattern and avoid.`;
-  }
-  // P0-#46 修复:预言家必须公开报查验
-  if (actor.role === 'seer' && actor.privateMemory.seerChecks.length) {
-    const checks = actor.privateMemory.seerChecks.map(c => `${c.targetId + 1}号 → ${c.isWolf ? '狼' : '好人'}`).join('、');
-    extra = lang === 'zh'
-      ? `\n🔮 你的查验结果:${checks}\n🗣️ 你必须公开报查验!预言家的核心职责是带领好人阵营放逐狼人。\n   报查验格式:「我是预言家,昨晚验了 X 号,他是 [狼/好人]」\n   如果不报查验,好人阵营无法利用你的信息,等于浪费预言家。`
-      : `\n🔮 Your checks: ${checks}\n🗣️ You MUST publicly announce your checks! The Seer's core job is to lead the good team to lynch wolves.\n   Format: "I'm the Seer, I checked #X last night, he is [wolf/good]"\n   If you don't announce, the good team can't use your info.`;
-  }
-  return lang === 'zh'
-    ? `你是"${actor.name}"(第${actor.id + 1}号),身份:${role.name.zh}\n昨晚死亡:${dead || '无(平安夜)'}\n存活玩家:${alive}${extra}\n\n现在白天讨论,所有人轮流发言。你有 30-100 字,用微信群聊天的口吻。要主动站队 / 怀疑别人。\n\n只输出你的发言,不要 JSON 包装。`
-    : `You are "${actor.name}" (#${actor.id + 1}), role: ${role.name.en}\nLast night deaths: ${dead || 'none'}\nAlive: ${alive}${extra}\n\nDay discussion. Speak 30-100 words, casual chat. Take sides, accuse others.\n\nOutput speech only (no JSON).`;
+
+  const contextBlock = contextParts.length ? `\n${contextParts.join('\n\n')}\n` : '';
+
+  // ─────────────────────────────────────────────
+  // 3) 拼装
+  // ─────────────────────────────────────────────
+  return (isZh
+    ? `${roleBlock}\n${outputFormat}${contextBlock}${stanceBlock}\n【局势】\n昨晚死亡:${dead || '无(平安夜)'}\n存活玩家:${alive}\n现在是第 ${state.round} 轮白天讨论。`
+    : `${roleBlock}\n${outputFormat}${contextBlock}${stanceBlock}\n【Situation】\nLast night deaths: ${dead || 'none'}\nAlive: ${alive}\nRound ${state.round} day discussion.`)
+    // 把 temperature hint 附在最后供调用方读取(解析时 grep TEMP_HINT)
+    + `\n<!-- TEMP_HINT:${suggestedTemp ?? 0.9} -->`;
+}
+
+/** 解析 TEMP_HINT 注释,取出建议 temperature */
+function extractTempHint(prompt: string): number {
+  const m = prompt.match(/TEMP_HINT:([\d.]+)/);
+  return m ? parseFloat(m[1]) : 0.9;
 }
 
 function buildVotePrompt(actor: Player, state: GameState, lang: 'zh' | 'en'): string {
