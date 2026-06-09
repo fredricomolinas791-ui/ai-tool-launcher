@@ -18,7 +18,7 @@ if (typeof window !== 'undefined' && !window.__werewolfLog) {
   window.__werewolfLog = [];
 }
 
-import { useState, useEffect, useRef, type Dispatch, type SetStateAction } from 'react';
+import { useState, useEffect, useRef, useMemo, type Dispatch, type SetStateAction } from 'react';
 import { Drama, Sparkles, Sun, ChevronRight, Crown, AlertTriangle, Play, X, Skull, Shield, Users, Swords } from 'lucide-react';
 import { Button } from '../../ui/Button';
 import { useI18n } from '../../../hooks/useI18n';
@@ -93,14 +93,17 @@ function BoardCard({ board, onSelect, lang, disabled, disabledReason }: {
    玩家座位
    ═══════════════════════════════════════════════════════════════════ */
 
-function PlayerSeat({ player, isYou, isSpeaking, isActing, lang }: {
+function PlayerSeat({ player, isYou, isSpeaking, isActing, lang, userMark, wolfTeammateSet }: {
   player: Player; isYou: boolean; isSpeaking?: boolean; isActing?: boolean; lang: 'zh' | 'en';
+  userMark?: string;  // P1-#22: 用户手动标记(如"狼人/好人/守卫")
+  wolfTeammateSet?: Set<number>;  // P1-#22: 用户的狼队友 ID 集合
 }) {
-  // isActing:boolean
   const role = ROLES[player.role];
   // 严格隐藏:座位框里永远不显示角色名,只用 emoji(只对自己显示真实身份)
   const display = !player.alive ? '💀' : isYou ? role.emoji : '👤';
   const isSheriff = player.privateMemory.isSheriff;
+  // P1-#22 修复(用户反馈):狼人应该看到自己的队友
+  const isMyWolfTeammate = !isYou && wolfTeammateSet?.has(player.id);
   return (
     <div className="relative flex flex-col items-center" style={{ width: 72 }}>
       <div
@@ -125,6 +128,16 @@ function PlayerSeat({ player, isYou, isSpeaking, isActing, lang }: {
       {isYou && <div className="text-[9px] mt-0.5" style={{ color: 'var(--color-accent)' }}>{lang === 'zh' ? '你' : 'You'}</div>}
       {isSheriff && player.alive && (
         <div className="text-[9px] mt-0.5" title={lang === 'zh' ? '警长(1.5 票)' : 'Sheriff (1.5 votes)'} style={{ color: '#facc15' }}>⭐ {lang === 'zh' ? '警长' : 'Sheriff'}</div>
+      )}
+      {/* P1-#22: 显示狼队友(用户是狼时) */}
+      {isMyWolfTeammate && player.alive && (
+        <div className="text-[9px] mt-0.5" title={lang === 'zh' ? '你的狼队友' : 'Your wolf teammate'} style={{ color: '#dc2626' }}>🐺 {lang === 'zh' ? '队友' : 'Pack'}</div>
+      )}
+      {/* P1-#22: 用户手动标记 */}
+      {userMark && (
+        <div className="text-[9px] mt-0.5 px-1 rounded" style={{ background: 'rgba(99,102,241,0.2)', color: '#a78bfa' }}>
+          ✏️ {userMark}
+        </div>
       )}
     </div>
   );
@@ -317,6 +330,14 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
   const alivePlayers = state.players.filter(p => p.alive);
   const winner = checkWinner(state);
 
+  // P1-#22 修复(用户反馈):狼人应该能看到自己的队友
+  // 如果用户自己是狼,把这个用户的狼队友 ID 集合传给 PlayerSeat 显示 🐺 标记
+  const userP = state.players[state.userId];
+  const userWolfTeammates: Set<number> = useMemo(
+    () => new Set(userP?.faction === 'wolf' ? userP.privateMemory.wolfTeammates : []),
+    [userP?.id, userP?.privateMemory.wolfTeammates]
+  );
+
   useEffect(() => {
     if (winner) setState(s => ({ ...s, phase: 'gameover' }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -401,7 +422,9 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
                     isYou={p.id === state.userId}
                     isSpeaking={streamingText?.playerId === p.id}
                     isActing={actingPlayerIds.includes(p.id)}
-                    lang={lang} />
+                    lang={lang}
+                    userMark={state.userMarks?.[p.id]}
+                    wolfTeammateSet={userWolfTeammates} />
                 ))}
               </div>
               {/* 右列 */}
@@ -411,7 +434,9 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
                     isYou={p.id === state.userId}
                     isSpeaking={streamingText?.playerId === p.id}
                     isActing={actingPlayerIds.includes(p.id)}
-                    lang={lang} />
+                    lang={lang}
+                    userMark={state.userMarks?.[p.id]}
+                    wolfTeammateSet={userWolfTeammates} />
                 ))}
               </div>
             </div>
@@ -433,10 +458,112 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
         </div>
 
         {/* 右侧:信息流(发言 + 法官 + 死亡 + 投票,可滚动) */}
-        <InfoStream state={state} lang={lang} streamingText={streamingText} />
+        <div className="space-y-2">
+          <MarkPanel state={state} setState={setState} lang={lang} />
+          <InfoStream state={state} lang={lang} streamingText={streamingText} />
+        </div>
       </div>
 
       {state.phase === 'gameover' && winner && <GameOver state={state} winner={winner} lang={lang} onExit={onExit} onReplay={onReplay} />}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   身份标记面板 (P1-#22 修复:用户可手动标记身份)
+   ── 纯笔记,不影响游戏逻辑
+   ═══════════════════════════════════════════════════════════════════ */
+function MarkPanel({ state, setState, lang }: {
+  state: GameState; setState: (u: (s: GameState) => GameState) => void; lang: 'zh' | 'en';
+}) {
+  const [open, setOpen] = useState(false);
+  const [targetId, setTargetId] = useState<number | null>(null);
+  const marks = state.userMarks || {};
+  const markOptions = lang === 'zh'
+    ? ['狼', '好人', '预言家', '女巫', '守卫', '猎人', '骑士', '白痴', '丘比特', '石像鬼', '存疑']
+    : ['wolf', 'good', 'seer', 'witch', 'guard', 'hunter', 'knight', 'idiot', 'cupid', 'gargoyle', 'unsure'];
+
+  return (
+    <div className="mb-2 p-2 rounded" style={{ background: 'var(--color-bg-deep)', border: '1px solid var(--color-border-light)' }}>
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full text-left text-[10px] font-semibold flex items-center justify-between"
+        style={{ color: '#a78bfa' }}
+      >
+        <span>✏️ {lang === 'zh' ? '身份标记' : 'Identity marks'} ({Object.keys(marks).length})</span>
+        <span>{open ? '▼' : '▶'}</span>
+      </button>
+      {open && (
+        <div className="mt-2 space-y-1.5">
+          {Object.entries(marks).map(([id, mark]) => {
+            const pid = parseInt(id, 10);
+            const p = state.players[pid];
+            if (!p || !p.alive) return null;
+            return (
+              <div key={id} className="flex items-center gap-1 text-[10px]">
+                <span style={{ color: 'var(--color-text)' }}>{pid + 1}.{p.name}</span>
+                <span className="px-1 rounded" style={{ background: 'rgba(99,102,241,0.2)', color: '#a78bfa' }}>{mark}</span>
+                <button
+                  onClick={() => setState(s => {
+                    const newMarks = { ...(s.userMarks || {}) };
+                    delete newMarks[pid];
+                    return { ...s, userMarks: newMarks };
+                  })}
+                  className="text-[9px] px-1 rounded"
+                  style={{ background: 'rgba(220,38,38,0.2)', color: '#dc2626' }}
+                >
+                  {lang === 'zh' ? '清除' : 'Clear'}
+                </button>
+              </div>
+            );
+          })}
+          <div className="border-t pt-1.5" style={{ borderColor: 'var(--color-border-light)' }}>
+            <div className="text-[10px] mb-1" style={{ color: 'var(--color-text-muted)' }}>
+              {lang === 'zh' ? '选玩家标记:' : 'Select player to mark:'}
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {state.players.filter(p => p.alive && p.id !== state.userId).map(p => (
+                <button
+                  key={p.id}
+                  onClick={() => setTargetId(p.id)}
+                  className="px-1.5 py-0.5 rounded text-[10px]"
+                  style={{
+                    background: targetId === p.id ? 'var(--color-accent)' : 'var(--color-card-bg)',
+                    color: targetId === p.id ? '#fff' : 'var(--color-text)',
+                  }}
+                >
+                  {p.id + 1}.{p.name}
+                </button>
+              ))}
+            </div>
+            {targetId !== null && (
+              <div className="mt-1.5">
+                <div className="text-[10px] mb-1" style={{ color: 'var(--color-text-muted)' }}>
+                  {lang === 'zh' ? '选身份:' : 'Choose identity:'}
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {markOptions.map(opt => (
+                    <button
+                      key={opt}
+                      onClick={() => {
+                        setState(s => ({
+                          ...s,
+                          userMarks: { ...(s.userMarks || {}), [targetId!]: opt },
+                        }));
+                        setTargetId(null);
+                      }}
+                      className="px-1.5 py-0.5 rounded text-[10px]"
+                      style={{ background: 'rgba(99,102,241,0.2)', color: '#a78bfa' }}
+                    >
+                      {opt}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2521,16 +2648,17 @@ function DayDiscuss({ state, setState, lang, aiSpeak }: {
         if (!newClaims[s.round]) newClaims[s.round] = { seerClaims: [], witchClaims: [], guardClaims: [] };
         const dayClaims = newClaims[s.round];
 
-        // ── 预言家 claim 检测 ──
-        if (/预言家|我是预|验了|验过|我查|seer|checked|verify/i.test(speech)) {
-          const checkRe = /(\d{1,2})\s*号(?:位|座位)?|\b(\d{1,2})\s*(?:是|为|=|→|->)\s*(?:狼|好人|神|民|wolf|good|god|villager)/gi;
+        // ── 预言家 claim 检测 (P1-#22 严格化修复)
+        // 之前:任何提到"验了/预言家"就被当作 seer claim → 误把"我站4号" "4号和5号矛盾" 识别为查验
+        // 现在:必须 speech 以"我是预言家"开头(真 claim),才提取"验了 X 号, 他是 [狼/好人]"
+        if (/^\s*(我是预言家|我是预|我(?:是|来)验|我(?:刚|昨晚)?(?:验了|查了)?|i\s*am\s*the\s*seer)/i.test(speech)) {
+          // 严格模式: 找 "验了 X 号" 后紧跟 "他是 [狼/好人]"
+          const checkRe = /验了?\s*(\d{1,2})\s*号\s*[,,。\s]*\s*他是?\s*(狼|好人|wolf|good)/gi;
           const matches = [...speech.matchAll(checkRe)];
           if (matches.length > 0) {
             const checks: { targetId: number; isWolf: boolean }[] = matches.map(m => {
-              const numStr = m[1] ?? m[2];
-              const num = parseInt(numStr, 10) - 1;
-              const after = speech.slice(m.index ?? 0, (m.index ?? 0) + 30).toLowerCase();
-              const isWolf = /狼|wolf/.test(after);
+              const num = parseInt(m[1], 10) - 1;
+              const isWolf = /狼|wolf/i.test(m[2]);
               return { targetId: num, isWolf };
             }).filter(c => c.targetId >= 0 && c.targetId < s.players.length);
             if (checks.length > 0) {
@@ -2959,14 +3087,14 @@ function LastWords({ state, setState, lang, aiSpeak }: {
         if (hunterDied !== undefined) {
           return { ...s, phase: 'hunter-shoot', lastVotedOut: hunterDied, pendingLastWords: [] };
         }
-        // P1-#22 修复(用户反馈:首夜后应进白天,不是直接进夜):
-        // 用 lastVotedOut 区分来源 — 被投票放逐产生的死亡→下一阶段是夜,其他→下一阶段是天
+        // P1-#22 修复(用户反馈:首夜后应进白天,且 12+ 人局要有警长竞选):
+        // 用 lastVotedOut 区分来源 — 被投票放逐产生的死亡→下一阶段是夜,其他→下一阶段是 day-announce
         if (s.lastVotedOut !== null) {
           // 白天投票放逐 → 下一阶段是夜晚(round+1)
           return { ...s, phase: 'night', round: s.round + 1, pendingLastWords: [], lastVotedOut: null };
         }
-        // 夜间死亡(首夜狼杀)→ 下一阶段是白天(12+ 人局会先进 sheriff-election)
-        return { ...s, phase: 'day-discuss', pendingLastWords: [] };
+        // 夜间死亡 → 下一阶段是 day-announce(它会检查 12+ 人局进 sheriff-election)
+        return { ...s, phase: 'day-announce', pendingLastWords: [] };
       });
       return;
     }

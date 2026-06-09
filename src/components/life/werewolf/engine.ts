@@ -153,6 +153,11 @@ export interface GameState {
    * null = 未选(或 phase 不是 wolfking-pick)
    */
   wolfkingVictim: number | null;
+  /**
+   * P1-#22: 用户手动标记(身份猜测,纯笔记用,不影响游戏逻辑)
+   * key = 玩家 ID,value = 标记文字(如"狼""守卫""预言家""存疑")
+   */
+  userMarks: Record<number, string>;
 }
 
 const defaultMemory = (): PrivateMemory => ({
@@ -205,6 +210,7 @@ export function initGame(boardId: BoardId, userName: string, lang: 'zh' | 'en' =
     wolfVotes: [],
     claims: {},
     wolfkingVictim: null,
+    userMarks: {},
   };
 }
 
