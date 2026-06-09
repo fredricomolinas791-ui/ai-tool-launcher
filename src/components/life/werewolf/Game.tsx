@@ -5,6 +5,19 @@
              其他 3 个 12 人板点进去显示"敬请推出"
    ═══════════════════════════════════════════════════════════════════ */
 
+/* P1-#22 修复(用户反馈):全局对话日志,方便 Claude 自己读取
+   暴露到 window.__werewolfLog,用户可以:
+   - 在 DevTools Console 输入 `JSON.stringify(window.__werewolfLog)` 看完整 JSON
+   - 或在 GameOver 点"复制对话"按钮(会调 formatGameLog 复制纯文本) */
+declare global {
+  interface Window {
+    __werewolfLog?: Array<{ ts: number; kind: string; data: any }>;
+  }
+}
+if (typeof window !== 'undefined' && !window.__werewolfLog) {
+  window.__werewolfLog = [];
+}
+
 import { useState, useEffect, useRef, type Dispatch, type SetStateAction } from 'react';
 import { Drama, Sparkles, Sun, ChevronRight, Crown, AlertTriangle, Play, X, Skull, Shield, Users, Swords } from 'lucide-react';
 import { Button } from '../../ui/Button';
@@ -3397,6 +3410,7 @@ function GameOver({ state, winner, lang, onExit, onReplay }: {
   state: GameState; winner: 'wolf' | 'good' | 'third'; lang: 'zh' | 'en';
   onExit: () => void; onReplay: () => void;
 }) {
+  const [copied, setCopied] = useState(false);
   const title = winner === 'good'
     ? (lang === 'zh' ? '🌟 好人胜利!' : '🌟 Good wins!')
     : winner === 'wolf'
@@ -3408,6 +3422,21 @@ function GameOver({ state, winner, lang, onExit, onReplay }: {
     : winner === 'wolf'
       ? (lang === 'zh' ? '狼人阵营达成胜利条件(神/民任一方全灭)' : 'Wolves achieved win condition (gods or villagers all dead)')
       : (lang === 'zh' ? '第三方达成胜利条件' : 'Third party achieved win condition');
+
+  // P1-#22 修复(用户反馈):导出对话功能
+  // 复制整个游戏的对话日志到剪贴板,方便发回给 Claude 调试
+  const exportDialogue = async () => {
+    const text = formatGameLog(state, lang);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (e) {
+      // 兜底:用 prompt 显示
+      window.prompt(lang === 'zh' ? '复制下面的对话:' : 'Copy the dialogue below:', text);
+    }
+  };
+
   return (
     <div className="p-6 rounded-xl text-center" style={{
       background: 'var(--color-card-bg)',
@@ -3429,6 +3458,14 @@ function GameOver({ state, winner, lang, onExit, onReplay }: {
           </div>
         ))}
       </div>
+      {/* P1-#22 修复:导出对话按钮(给 Claude 调试用) */}
+      <div className="mb-3">
+        <Button onClick={exportDialogue} variant="secondary" className="text-xs">
+          {copied
+            ? (lang === 'zh' ? '✓ 已复制到剪贴板' : '✓ Copied')
+            : (lang === 'zh' ? '📋 复制对话日志(发回给 Claude 调试)' : '📋 Copy dialogue log (debug)')}
+        </Button>
+      </div>
       {/* P3-#41 修复:重玩同板子 + 换板子 两个按钮 */}
       <div className="space-x-2">
         <Button onClick={onReplay}>{lang === 'zh' ? '重玩此板子' : 'Replay board'}</Button>
@@ -3436,6 +3473,178 @@ function GameOver({ state, winner, lang, onExit, onReplay }: {
       </div>
     </div>
   );
+}
+
+/* P1-#22: 导出对话日志(纯文本格式,方便发回给 Claude 调试) */
+function formatGameLog(state: GameState, lang: 'zh' | 'en'): string {
+  const lines: string[] = [];
+  const L = (zh: string, en: string) => lang === 'zh' ? zh : en;
+  const roleName = (r: RoleId) => ROLES[r].name[lang];
+
+  lines.push('═'.repeat(40));
+  lines.push(`🐺 ${L('狼人杀游戏日志', 'Werewolf Game Log')}`);
+  lines.push('═'.repeat(40));
+  lines.push(`${L('板子', 'Board')}: ${BOARDS[state.boardId].name[lang]}`);
+  lines.push(`${L('总轮数', 'Total rounds')}: ${state.round}`);
+  lines.push(`${L('结果', 'Result')}: ${state.winner ? (state.winner === 'good' ? L('好人胜', 'Good wins') : state.winner === 'wolf' ? L('狼人胜', 'Wolves win') : L('第三方胜', 'Third wins')) : L('进行中', 'In progress')}`);
+  lines.push('');
+
+  // 角色表
+  lines.push(`── ${L('角色分配', 'Role Assignment')} ──`);
+  for (const p of state.players) {
+    const role = roleName(p.role);
+    const personality = p.personality;
+    const faction = ROLES[p.role].faction;
+    const factionStr = faction === 'wolf' ? '🐺' : faction === 'good' ? '🛡️' : '🎭';
+    const isUser = p.isUser ? ` ${L('(你)', '(You)')}` : '';
+    const isSheriff = p.privateMemory.isSheriff ? ` ⭐${L('警长', 'Sheriff')}` : '';
+    const alive = p.alive ? '🟢' : '💀';
+    lines.push(`${alive} ${p.id + 1}. ${p.name} (${factionStr}${role}) [${personality}]${isSheriff}${isUser}`);
+  }
+  lines.push('');
+
+  // 按轮次整理
+  const eventsByRound = new Map<number, typeof state.publicLog>();
+  for (const e of state.publicLog) {
+    if (!eventsByRound.has(e.day)) eventsByRound.set(e.day, []);
+    eventsByRound.get(e.day)!.push(e);
+  }
+
+  // 发言按玩家整理
+  const speechesByPlayer = new Map<number, Array<{ day: number; text: string; phase?: string }>>();
+  for (const sp of state.speeches) {
+    if (!speechesByPlayer.has(sp.playerId)) speechesByPlayer.set(sp.playerId, []);
+    speechesByPlayer.get(sp.playerId)!.push({ day: sp.day, text: sp.text, phase: sp.phase });
+  }
+
+  // 死亡记录
+  const deathById = new Map<number, string>();
+  for (const e of state.publicLog) {
+    if (e.kind === 'death' && e.playerId !== undefined) {
+      const cur = deathById.get(e.playerId) || '';
+      deathById.set(e.playerId, cur + (cur ? '; ' : '') + e.text);
+    }
+  }
+
+  // 查验记录
+  const seerChecks: Array<{ playerId: number; targetId: number; isWolf: boolean; night: number }> = [];
+  for (const p of state.players) {
+    if (p.role === 'seer') {
+      for (const c of p.privateMemory.seerChecks) seerChecks.push({ playerId: p.id, ...c });
+    }
+  }
+
+  // 守卫记录
+  const guardHistory: Array<{ playerId: number; targetId: number | null; night: number }> = [];
+  for (const p of state.players) {
+    if (p.role === 'guard' && p.privateMemory.guardLastTargetId !== null) {
+      guardHistory.push({ playerId: p.id, targetId: p.privateMemory.guardLastTargetId, night: state.round });
+    }
+  }
+
+  // 女巫记录
+  const witchHistory: Array<{ playerId: number; savedId: number | null; poisonedId: number | null }> = [];
+  for (const p of state.players) {
+    if (p.role === 'witch') {
+      witchHistory.push({
+        playerId: p.id,
+        savedId: p.privateMemory.witchSavedId,
+        poisonedId: p.privateMemory.witchPoisonedId,
+      });
+    }
+  }
+
+  // 投票记录 (lastVoteData)
+  if (state.lastVoteData) {
+    lines.push(`── ${L('最近一次投票', 'Last Vote')} ──`);
+    for (const v of state.lastVoteData.allVotes) {
+      lines.push(`  ${v.voterId + 1}.${state.players[v.voterId].name} → ${v.targetId + 1}.${state.players[v.targetId].name}`);
+    }
+    lines.push(`${L('票数', 'Tally')}: ${JSON.stringify(state.lastVoteData.tally)}`);
+    if (state.lastVoteData.exiled !== null) {
+      lines.push(`${L('放逐', 'Exiled')}: ${state.lastVoteData.exiled + 1}.${state.players[state.lastVoteData.exiled].name}`);
+    }
+    lines.push('');
+  }
+
+  // 查验
+  if (seerChecks.length) {
+    lines.push(`── ${L('预言家查验记录', 'Seer Check Log')} ──`);
+    for (const c of seerChecks) {
+      lines.push(`  ${L('第', 'Night ')}${c.night}${L('夜', '')}: ${c.playerId + 1}.${state.players[c.playerId].name} 查验 ${c.targetId + 1}.${state.players[c.targetId].name} → ${c.isWolf ? L('狼', 'wolf') : L('好人', 'good')}`);
+    }
+    lines.push('');
+  }
+
+  // 守卫
+  if (guardHistory.length) {
+    lines.push(`── ${L('守卫记录', 'Guard Log')} ──`);
+    for (const g of guardHistory) {
+      lines.push(`  ${g.playerId + 1}.${state.players[g.playerId].name} 守了 ${g.targetId !== null ? (g.targetId + 1) + '.' + state.players[g.targetId].name : L('(空守)', '(none)')}`);
+    }
+    lines.push('');
+  }
+
+  // 女巫
+  if (witchHistory.length && (witchHistory[0].savedId !== null || witchHistory[0].poisonedId !== null)) {
+    lines.push(`── ${L('女巫用药', 'Witch Potions')} ──`);
+    for (const w of witchHistory) {
+      if (w.savedId !== null) lines.push(`  ${w.playerId + 1}.${state.players[w.playerId].name} 解药救了 ${w.savedId + 1}.${state.players[w.savedId].name}`);
+      if (w.poisonedId !== null) lines.push(`  ${w.playerId + 1}.${state.players[w.playerId].name} 毒药杀了 ${w.poisonedId + 1}.${state.players[w.poisonedId].name}`);
+    }
+    lines.push('');
+  }
+
+  // 警长
+  if (state.sheriffElection) {
+    const el = state.sheriffElection;
+    lines.push(`── ${L('警长竞选', 'Sheriff Election')} ──`);
+    lines.push(`  ${L('报名', 'Registered')}: ${el.registeredIds.map(id => `${id+1}.${state.players[id].name}`).join('、') || L('(无)', '(none)')}`);
+    lines.push(`  ${L('退水', 'Withdrew')}: ${el.withdrawnIds.map(id => `${id+1}.${state.players[id].name}`).join('、') || L('(无)', '(none)')}`);
+    lines.push('');
+  }
+
+  // 公开日志(按时间)
+  lines.push(`── ${L('公开事件流(死亡/系统消息)', 'Public Event Log (deaths/system)')} ──`);
+  for (const e of state.publicLog) {
+    if (e.kind === 'death') {
+      lines.push(`  💀 ${L('第', 'Day ')}${e.day}${L('天', '')}: ${e.text}`);
+    } else if (e.kind === 'system') {
+      lines.push(`  ⚖️ ${e.text}`);
+    }
+  }
+  lines.push('');
+
+  // 完整发言
+  lines.push(`── ${L('完整发言记录', 'All Speeches')} ──`);
+  for (let day = 1; day <= state.round; day++) {
+    const daySpeeches = state.speeches.filter(s => s.day === day);
+    if (daySpeeches.length === 0) continue;
+    lines.push(`  ${L('--- 第', '--- Day ')}${day}${L('天 ---', ' ---')}`);
+    for (const sp of daySpeeches) {
+      const phase = sp.phase === 'night' ? L('夜', 'night')
+                   : sp.phase === 'pk' ? 'PK'
+                   : sp.phase === 'last-words' ? L('遗言', 'last-words')
+                   : sp.phase === 'sheriff-speech' ? L('警长竞选', 'sheriff')
+                   : L('白天', 'day');
+      lines.push(`  [${phase}] ${sp.playerId + 1}.${state.players[sp.playerId].name}: ${sp.text}`);
+    }
+  }
+  lines.push('');
+
+  // 死亡总结
+  lines.push(`── ${L('死亡总结', 'Death Summary')} ──`);
+  for (const [id, txt] of deathById) {
+    lines.push(`  ${id + 1}.${state.players[id].name} (${roleName(state.players[id].role)}): ${txt}`);
+  }
+
+  lines.push('');
+  lines.push('═'.repeat(40));
+  lines.push(L('【日志结束】', '【End of log】'));
+  lines.push(`${L('导出时间', 'Exported at')}: ${new Date().toISOString()}`);
+  lines.push(L('给 Claude:贴回这个对话 + 你认为有问题的部分', 'For Claude: paste this back + describe what looks wrong'));
+
+  return lines.join('\n');
 }
 
 /* ═══════════════════════════════════════════════════════════════════
