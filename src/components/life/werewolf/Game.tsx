@@ -2478,11 +2478,21 @@ function DayDiscuss({ state, setState, lang, aiSpeak }: {
     return () => clearTimeout(id);
   }, [timeLeft, busy, isUserTurn, cur, discussIdx, speakers.length]);
 
-  /* AI 发言:在 discussIdx 变化且不是用户时跑 */
+  /* AI 发言:在 discussIdx 变化且不是用户时跑
+     P1-#22 修复(用户反馈:任何玩家都可能重复发言,比如 10 号):
+     跟警长竞选同样的 bug — 跨组件 batch + useEffect 重跑时,cur 仍为同一玩家。
+     修法:加 lastProcessedSpeakerRef + 在 setState 内同步推进 discussIdx/phase */
+  const lastProcessedSpeakerRef = useRef<number | null>(null);
+  // 重置 ref:phase 变化时(包括进入新一轮 day-discuss)
+  useEffect(() => {
+    lastProcessedSpeakerRef.current = null;
+  }, [state.phase, state.round]);
   useEffect(() => {
     if (!cur) return;
     if (cur.id === state.userId) return; // 用户自己,等用户输入
     if (busy) return;
+    if (lastProcessedSpeakerRef.current === cur.id) return;  // 防止重复
+    lastProcessedSpeakerRef.current = cur.id;
     setBusy(true);
     const sys = buildDayDiscussionPrompt(cur, state, lang);
     const temp = extractTempHint(sys);
@@ -2492,24 +2502,20 @@ function DayDiscuss({ state, setState, lang, aiSpeak }: {
     aiSpeak(cur.id, sys, usr, false, { temperature: temp }).then(({ speech }) => {
       // P1-#48 修复:AI 发言也检测 claim 关键字
       // 放宽正则:支持 "我是预"/"我验过"/"checked"/"3号位"/"3 是狼"/"3→狼" 等
+      // P1-#22: 在 setState 内同步推进 discussIdx/phase(避免 setTimeout race)
       setState(s => {
         const newClaims = { ...(s.claims || {}) };
         if (!newClaims[s.round]) newClaims[s.round] = { seerClaims: [], witchClaims: [], guardClaims: [] };
         const dayClaims = newClaims[s.round];
 
         // ── 预言家 claim 检测 ──
-        // 触发词:我是预/预言家/seer/验了/我查/查过/checked
         if (/预言家|我是预|验了|验过|我查|seer|checked|verify/i.test(speech)) {
-          // 提取"X 号"或"X →"或"X 是"等格式中的 X(1-2 位数字)
-          // 匹配: "3号" / "3 号" / "3号位" / "3" 后接 狼/好人/is wolf/is good/→/=/是/为
           const checkRe = /(\d{1,2})\s*号(?:位|座位)?|\b(\d{1,2})\s*(?:是|为|=|→|->)\s*(?:狼|好人|神|民|wolf|good|god|villager)/gi;
           const matches = [...speech.matchAll(checkRe)];
           if (matches.length > 0) {
             const checks: { targetId: number; isWolf: boolean }[] = matches.map(m => {
-              // 提取数字
               const numStr = m[1] ?? m[2];
               const num = parseInt(numStr, 10) - 1;
-              // 看整段:从匹配位置往后 30 字符内,看有没有 "狼/wolf/god" → 狼,否则好人
               const after = speech.slice(m.index ?? 0, (m.index ?? 0) + 30).toLowerCase();
               const isWolf = /狼|wolf/.test(after);
               return { targetId: num, isWolf };
@@ -2524,9 +2530,7 @@ function DayDiscuss({ state, setState, lang, aiSpeak }: {
 
         // ── 女巫 claim 检测 ──
         if (/女巫|我是女|解药|毒药|witch|antidote|poison|saved/i.test(speech)) {
-          // "救了 X 号" / "saved X" / "我用了解药救 X"
           const savedMatch = speech.match(/(?:救了?|我救|saved?|antidote[^\d]{0,8})\s*(\d{1,2})\s*号?/i);
-          // "毒了 X 号" / "poisoned X" / "我用毒杀 X"
           const poisonedMatch = speech.match(/(?:毒了?|poisoned?)\s*(\d{1,2})\s*号?/i);
           const savedId = savedMatch ? parseInt(savedMatch[1], 10) - 1 : null;
           const poisonedId = poisonedMatch ? parseInt(poisonedMatch[1], 10) - 1 : null;
@@ -2553,8 +2557,15 @@ function DayDiscuss({ state, setState, lang, aiSpeak }: {
         return { ...s, claims: newClaims };
       });
       setBusy(false);
-      // AI 说完,自动推进到下一位
-      setTimeout(() => nextSpeaker(), 600);
+      // AI 说完,自动推进到下一位(用 setTimeout 避免 setState 还没生效)
+      setTimeout(() => {
+        if (discussIdx + 1 >= speakers.length) {
+          setState(s => ({ ...s, phase: 'day-vote' }));
+        } else {
+          setDiscussIdx(i => i + 1);
+          setTimeLeft(60);
+        }
+      }, 600);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [discussIdx]);
