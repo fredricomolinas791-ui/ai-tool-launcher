@@ -2946,8 +2946,14 @@ function LastWords({ state, setState, lang, aiSpeak }: {
         if (hunterDied !== undefined) {
           return { ...s, phase: 'hunter-shoot', lastVotedOut: hunterDied, pendingLastWords: [] };
         }
-        // 都没有 → 直接进入夜晚
-        return { ...s, phase: 'night', round: s.round + 1, pendingLastWords: [] };
+        // P1-#22 修复(用户反馈:首夜后应进白天,不是直接进夜):
+        // 用 lastVotedOut 区分来源 — 被投票放逐产生的死亡→下一阶段是夜,其他→下一阶段是天
+        if (s.lastVotedOut !== null) {
+          // 白天投票放逐 → 下一阶段是夜晚(round+1)
+          return { ...s, phase: 'night', round: s.round + 1, pendingLastWords: [], lastVotedOut: null };
+        }
+        // 夜间死亡(首夜狼杀)→ 下一阶段是白天(12+ 人局会先进 sheriff-election)
+        return { ...s, phase: 'day-discuss', pendingLastWords: [] };
       });
       return;
     }
@@ -3521,15 +3527,24 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
   let outputFormat = '';
   let suggestedTemp: number | undefined = undefined;
 
-  if (actor.role === 'seer' && actor.privateMemory.seerChecks.length) {
-    // P0-#46 重写:把"必报查验"塞到顶部 + 加硬性输出格式约束
-    const checks = actor.privateMemory.seerChecks.map(c => `${c.targetId + 1}号 → ${c.isWolf ? '狼' : '好人'}`).join('、');
-    roleBlock = isZh
-      ? `【你的身份:预言家 🔮】\n你的查验结果(必须公开报给好人阵营):${checks}\n\n你是好人阵营的核心情报源。如果不报查验,好人无法利用你的信息,等于浪费预言家。`
-      : `【Your role: Seer 🔮】\nYour checks (you MUST announce to the village): ${checks}\n\nYou are the village's main info source. Without announcing, your info is wasted.`;
+  if (actor.role === 'seer') {
+    // P1-#22 修复(用户反馈:预言家不上警不报查验,都说套话):
+    // 关键:seer 永远在 seer 块里,**不**依赖 seerChecks.length
+    // 之前用 `actor.role === 'seer' && seerChecks.length` 当 gate,
+    //   → seer 没 checks 时会 fall through 到村民块,prompt 撒谎说"你是村民"
+    if (actor.privateMemory.seerChecks.length) {
+      const checks = actor.privateMemory.seerChecks.map(c => `${c.targetId + 1}号 → ${c.isWolf ? '狼' : '好人'}`).join('、');
+      roleBlock = isZh
+        ? `【你的身份:预言家 🔮】\n你的查验结果(必须公开报给好人阵营):${checks}\n\n你是好人阵营的核心情报源。如果不报查验,好人无法利用你的信息,等于浪费预言家。`
+        : `【Your role: Seer 🔮】\nYour checks (you MUST announce to the village): ${checks}\n\nYou are the village's main info source. Without announcing, your info is wasted.`;
+    } else {
+      roleBlock = isZh
+        ? `【你的身份:预言家 🔮】\n你暂时还没查验(异常情况,首夜应该有 1 个查验)。\n仍然要明确报"我是预言家",引导好人阵营。`
+        : `【Your role: Seer 🔮】\nNo checks yet (unusual). Still claim "I am the Seer" and lead the good team.`;
+    }
     outputFormat = isZh
-      ? `【输出格式 - 必须遵守】\n你的发言必须严格按以下结构:\n第 1 句:"我是预言家"\n第 2 句(必含查验):"昨晚/前 N 晚我验了 X 号,他是 [狼/好人]"\n第 3 句起:30-80 字分析(谁可疑 / 该投谁 / 回应别人)\n\n不要 JSON 包装。不要解释,直接给发言。`
-      : `【Output format - MUST follow】\nSentence 1: "I am the Seer"\nSentence 2 (MUST include a check): "Last night I checked #X, he is [wolf/good]"\nThen 30-80 words analysis.\n\nNo JSON. No preamble. Just the speech.`;
+      ? `【输出格式 - 硬性约束,违反 = 发言无效】\n第 1 句(必含):"我是预言家"\n第 2 句(必含查验):"昨晚/前 N 晚我验了 X 号,他是 [狼/好人]"\n第 3 句起:30-80 字分析(谁可疑 / 该投谁 / 回应别人)\n\n不要 JSON 包装。不要解释,直接给发言。如果不知道"该说什么",哪怕只重复"我是预言家,昨晚验了 X 号是狼/好人"也行,不要输出空话。`
+      : `【Output format - HARD constraint】\nSentence 1: "I am the Seer"\nSentence 2 (MUST include a check): "Last night I checked #X, he is [wolf/good]"\nThen 30-80 words analysis.\n\nNo JSON. No preamble. If unsure, just repeat "I am the Seer, I checked #X he is wolf/good".`;
     suggestedTemp = 0.3;
   } else if (actor.faction === 'wolf' && actor.privateMemory.wolfTeammates.length) {
     // P0-#47 狼人悍跳策略(可选项)
