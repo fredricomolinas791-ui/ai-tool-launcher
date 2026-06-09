@@ -1788,18 +1788,22 @@ function SheriffElection({ state, setState, lang, aiSpeak }: {
   const currentSpeakers = step === 'pk-speech' ? pkSpeakers : candidates;
   const currentSpeakerId = currentSpeakers[election.speechIdx];
 
-  /* AI 决定:报名 / 跳过 */
+  /* AI 决定:报名 / 跳过
+     P1-#22 修复(用户反馈:预言家必须上警):
+     预言家 100% 必报名(警长是预言家的护身符,预言家不上警会被狼集火)
+     其他神职 60%(高于之前的 25%,神职上警能带队)
+     狼 40%(不变,狼想抢警徽)
+     普通村民 15% */
   useEffect(() => {
     if (step !== 'register' || userRegister === null) return;
     if (Object.keys(aiDecisions).length >= alivePlayers.length - (state.userId !== null && userRegister !== null ? 1 : 0)) return;
-    // 决定每个 AI 是否报名(简化:狼人常报名抢警徽,好人有时报名,有时放弃)
     const decisions: Record<number, 'register' | 'skip'> = {};
     for (const p of alivePlayers) {
       if (p.id === state.userId) continue;  // 用户自己不算
-      // 决策概率:狼人 40%,神职 25%,普通村民 10%
       let prob = 0.15;
-      if (p.faction === 'wolf') prob = 0.4;
-      else if (['seer', 'witch', 'hunter', 'guard', 'knight'].includes(p.role)) prob = 0.25;
+      if (p.role === 'seer') prob = 1.0;  // 预言家 100% 必报名(用户要求)
+      else if (p.faction === 'wolf') prob = 0.4;
+      else if (['witch', 'hunter', 'guard', 'knight'].includes(p.role)) prob = 0.6;
       decisions[p.id] = Math.random() < prob ? 'register' : 'skip';
     }
     setAiDecisions(prev => ({ ...prev, ...decisions }));
@@ -1837,12 +1841,20 @@ function SheriffElection({ state, setState, lang, aiSpeak }: {
     setBusy(false);
   };
 
-  /* 发言阶段:AI 自动逐个发言 */
+  /* 发言阶段:AI 自动逐个发言
+     P1-#22 修复(用户反馈:6 号玩家重复发言):
+     最后一个候选人发言时,setState 返回 s 不改 speechIdx,导致 useEffect 重跑时
+     currentSpeakerId 仍是同一个玩家 → 无限循环。
+     修法:在 .then() 里同步推进 setStep(不依赖 listener useEffect),
+     并加 lastProcessedSpeakerRef 防止 setState 失败时的 race。 */
+  const lastProcessedSpeakerRef = useRef<number | null>(null);
   useEffect(() => {
     if (step !== 'speech' || !currentSpeakerId) return;
+    if (lastProcessedSpeakerRef.current === currentSpeakerId) return;  // 防止重复
     const speaker = stateRef.current.players[currentSpeakerId];
     if (speaker.id === state.userId) return;  // 用户自己,等用户操作
     if (busy) return;
+    lastProcessedSpeakerRef.current = currentSpeakerId;
     setBusy(true);
     const sys = lang === 'zh'
       ? `你是"${speaker.name}"(第${speaker.id+1}号),你正在参加警长竞选!请发言拉票(30-80 字):\n- 说明你的身份/立场/逻辑(可不暴露真身份)\n- 表态你作为警长会做的事(带队、归票、坚守)\n- 可以攻击其他候选人\n\n只输出你的竞选发言,不要 JSON 包装。`
@@ -1854,8 +1866,10 @@ function SheriffElection({ state, setState, lang, aiSpeak }: {
       setState(s => {
         const cur = s.sheriffElection!;
         const newIdx = cur.speechIdx + 1;
-        if (newIdx >= cur.registeredIds.filter(id => !cur.withdrawnIds.includes(id)).length) {
-          // 全部发言完,进入退水阶段
+        const totalCands = cur.registeredIds.filter(id => !cur.withdrawnIds.includes(id)).length;
+        if (newIdx >= totalCands) {
+          // 全部发言完 → 同步推进 setStep(避免 useEffect 重跑时 currentSpeakerId 仍是这个玩家)
+          setStep('withdraw');
           return s;
         }
         return { ...s, sheriffElection: { ...cur, speechIdx: newIdx } };
