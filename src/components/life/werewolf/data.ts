@@ -159,7 +159,7 @@ export const ROLES: Record<RoleId, RoleDef> = {
 };
 
 export type BoardId = 'p9-classic' | 'p12-classic' | 'p12-wolfking' | 'p12-wolfbeauty' | 'p12-gargoyle' | 'p12-cupid';
-export type Variant = 'standard' | 'plague' | /* future: */ 'assassin' | 'mimic';
+export type Variant = 'standard' | 'plague' | /* future: */ 'assassin' | 'mimic' | 'coming-soon';
 
 export interface BoardDef {
   id: BoardId;
@@ -201,7 +201,7 @@ const BOARD_12_CLASSIC: BoardDef = {
 
 /** 12 人 · 狼王守卫局 */
 const BOARD_12_WOLFKING: BoardDef = {
-  id: 'p12-wolfking', playerCount: 12, variant: 'standard',
+  id: 'p12-wolfking', playerCount: 12, variant: 'coming-soon',
   name: { zh: '12 人 · 狼王守卫', en: '12-Player Wolf King Guard' },
   desc: { zh: '狼王 + 狼2 + 村3 + 预言家 + 女巫 + 猎人 + 守卫 + 白痴 + 村1', en: 'Wolf King · 2 wolves · 3 villagers · seer · witch · hunter · guard · idiot · villager' },
   feature: { zh: '狼阵营有「狼王」可带人,守卫能保人,逻辑链最长', en: 'Wolf King can take victims; guard protects — longest logic chain' },
@@ -212,7 +212,7 @@ const BOARD_12_WOLFKING: BoardDef = {
 
 /** 12 人 · 狼美骑士局 */
 const BOARD_12_WOLFBEAUTY: BoardDef = {
-  id: 'p12-wolfbeauty', playerCount: 12, variant: 'standard',
+  id: 'p12-wolfbeauty', playerCount: 12, variant: 'coming-soon',
   name: { zh: '12 人 · 狼美骑士', en: '12-Player Wolf Beauty Knight' },
   desc: { zh: '狼美人 + 狼2 + 村3 + 预言家 + 女巫 + 猎人 + 骑士 + 守卫 + 白痴', en: 'Wolf Beauty · 2 wolves · 3 villagers · seer · witch · hunter · knight · guard · idiot' },
   feature: { zh: '狼美人可「殉情」,骑士可「决斗」,白天反杀机会多', en: 'Wolf Beauty can drag voter down; knight can duel — day has more counter-play' },
@@ -223,7 +223,7 @@ const BOARD_12_WOLFBEAUTY: BoardDef = {
 
 /** 12 人 · 石像鬼迷雾局 */
 const BOARD_12_GARGOYLE: BoardDef = {
-  id: 'p12-gargoyle', playerCount: 12, variant: 'standard',
+  id: 'p12-gargoyle', playerCount: 12, variant: 'coming-soon',
   name: { zh: '12 人 · 石像鬼迷雾', en: '12-Player Gargoyle Fog' },
   desc: { zh: '石像鬼 + 狼2 + 村3 + 预言家 + 女巫 + 猎人 + 守卫 + 白痴 + 长老', en: 'Gargoyle · 2 wolves · 3 villagers · seer · witch · hunter · guard · idiot · elder' },
   feature: { zh: '第三方「石像鬼」隐匿到终盘,场上永远充满迷雾', en: 'Third-party Gargoyle hides to endgame — fog of war throughout' },
@@ -234,7 +234,7 @@ const BOARD_12_GARGOYLE: BoardDef = {
 
 /** 12 人 · 丘比特之恋 */
 const BOARD_12_CUPID: BoardDef = {
-  id: 'p12-cupid', playerCount: 12, variant: 'standard',
+  id: 'p12-cupid', playerCount: 12, variant: 'coming-soon',
   name: { zh: '12 人 · 丘比特之恋', en: '12-Player Cupid\'s Love' },
   desc: { zh: '丘比特 + 狼3 + 村2 + 预言家 + 女巫 + 猎人 + 守卫 + 白痴 + 村1', en: 'Cupid · 3 wolves · 2 villagers · seer · witch · hunter · guard · idiot · villager' },
   feature: { zh: '首夜丘比特连「情侣」,殉情机制让局势瞬变', en: 'Cupid links lovers on night 1 — chain deaths reshape the game' },
@@ -253,6 +253,11 @@ export const BOARDS: Record<BoardId, BoardDef> = {
 };
 
 export const BOARD_LIST: BoardDef[] = Object.values(BOARDS);
+
+/* P1-#22: 板子是否可玩(coming-soon 板子暂存,不进 UI 选板) */
+export function isBoardPlayable(b: BoardDef): boolean {
+  return b.variant !== 'coming-soon';
+}
 
 /* ─────────────────────────────────────────────
    性格库 —— 困难 AI 用的差异化人格

@@ -33,10 +33,11 @@ import { canWitchSelfSave } from './data';
 import { PersonalityRender } from './Personalities';
 
 /* ── 所有 6 个板子都可玩 ── */
-const PLAYABLE_BOARDS: BoardId[] = [
-  'p9-classic', 'p12-classic', 'p12-wolfking',
-  'p12-wolfbeauty', 'p12-gargoyle', 'p12-cupid',
-];
+// P1-#22: 板子可玩性改为在 data.ts 用 variant: 'coming-soon' 标记
+//   旧的 PLAYABLE_BOARDS 列表已废弃(4 个特殊板子暂存: wolfking / wolfbeauty / gargoyle / cupid)
+// const PLAYABLE_BOARDS: BoardId[] = [
+//   'p9-classic', 'p12-classic',
+// ];
 
 /* ═══════════════════════════════════════════════════════════════════
    板子选择卡片
@@ -280,12 +281,12 @@ function BoardSelect({ lang, noKey, onStart }: {
         </h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
           {BOARD_LIST.map(b => {
-            const isPlayable = PLAYABLE_BOARDS.includes(b.id);
+            const isPlayable = b.variant !== 'coming-soon';
             return (
               <BoardCard key={b.id} board={b} lang={lang}
                 disabled={!isPlayable || noKey}
                 disabledReason={!isPlayable
-                  ? (lang === 'zh' ? '该板子即将推出,先玩 9 人经典 / 12 人狼王守卫' : 'Coming soon — try 9P classic / 12P wolf king')
+                  ? (lang === 'zh' ? '该板子暂存中(P1-#22 暂存 4 个特殊板子),先玩 9 人预女猎 / 12 人预女猎白' : 'Parked (P1-#22: 4 special boards), try 9P 预女猎 / 12P 预女猎白')
                   : undefined}
                 onSelect={() => onStart(b.id)} />
             );
@@ -1259,16 +1260,17 @@ function UserNightActionUI({ role, state, lang, onConfirm }: {
         <div className="space-y-1.5">
           <label className={`flex items-center gap-2 text-xs ${canAntidote ? '' : 'opacity-50'}`}>
             <input type="checkbox" checked={useAntidote} disabled={!canAntidote}
-              onChange={e => setUseAntidote(e.target.checked)} />
+              onChange={e => { setUseAntidote(e.target.checked); if (e.target.checked) setPoisonTarget(null); }} />
             💊 {lang === 'zh' ? '使用解药救' : 'Use antidote on'} {wolfTarget !== null ? state.players[wolfTarget].name : '目标'}
             {!canAntidote && (lang === 'zh' ? ' (不可用)' : ' (unavailable)')}
           </label>
           <div>
-            <label className={`flex items-center gap-2 text-xs ${canPoison ? '' : 'opacity-50'}`}>
-              <input type="checkbox" checked={poisonTarget !== null} disabled={!canPoison}
-                onChange={e => setPoisonTarget(e.target.checked ? (aliveOthers[0]?.id ?? null) : null)} />
+            <label className={`flex items-center gap-2 text-xs ${canPoison && !useAntidote ? '' : 'opacity-50'}`}>
+              <input type="checkbox" checked={poisonTarget !== null} disabled={!canPoison || useAntidote}
+                onChange={e => { if (e.target.checked) { setPoisonTarget(aliveOthers[0]?.id ?? null); setUseAntidote(false); } else { setPoisonTarget(null); } }} />
               ☠️ {lang === 'zh' ? '使用毒药(选一个人杀)' : 'Use poison (kill someone)'}
               {!canPoison && (lang === 'zh' ? ' (已用)' : ' (used)')}
+              {useAntidote && (lang === 'zh' ? ' (解药已用)' : ' (antidote used)')}
             </label>
             {poisonTarget !== null && canPoison && (
               <div className="flex flex-wrap gap-1 mt-1 ml-5">
@@ -1458,8 +1460,17 @@ function applyWitchAction(s: GameState, witchId: number, useAntidote: boolean, p
   let newDead = [...s.deadThisNight];
   let newMem = { ...mem };
 
+  // P1-#22 修复(用户反馈):同夜只能 1 瓶药(解药 or 毒药,or 跳过)
+  // 优先级:当解药可用 + 狼杀了人(且能救) → 优先用解药(忽略 poisonTarget)
+  let effectiveUseAntidote = useAntidote;
+  let effectivePoisonTarget = poisonTarget;
+  if (useAntidote && poisonTarget !== null) {
+    // 同时给了两个 → 优先解药
+    effectivePoisonTarget = null;
+  }
+
   // 解药:仅记录使用决策和救了谁(实际是否生效由 resolveNight 决定)
-  if (useAntidote && !mem.witchAntidoteUsed && wolfTarget !== null) {
+  if (effectiveUseAntidote && !mem.witchAntidoteUsed && wolfTarget !== null) {
     // P1-#7 修复:自救规则统一用 canWitchSelfSave()
     if (canWitchSelfSave(s.players.length, s.round, wolfTarget === witchId)) {
       newMem.witchAntidoteUsed = true;
@@ -1469,13 +1480,13 @@ function applyWitchAction(s: GameState, witchId: number, useAntidote: boolean, p
   }
 
   // 毒药:直接加进 deadThisNight
-  if (poisonTarget !== null && !mem.witchPoisonUsed
-    && poisonTarget !== witchId
-    && s.players[poisonTarget]?.alive
-    && !newDead.includes(poisonTarget)) {
+  if (effectivePoisonTarget !== null && !mem.witchPoisonUsed
+    && effectivePoisonTarget !== witchId
+    && s.players[effectivePoisonTarget]?.alive
+    && !newDead.includes(effectivePoisonTarget)) {
     newMem.witchPoisonUsed = true;
-    newMem.witchPoisonedId = poisonTarget;
-    newDead.push(poisonTarget);
+    newMem.witchPoisonedId = effectivePoisonTarget;
+    newDead.push(effectivePoisonTarget);
   }
 
   return {
