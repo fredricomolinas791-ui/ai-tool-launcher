@@ -600,6 +600,8 @@ export function applySheriffSuccession(s: GameState, successorId: number): GameS
 
 /* ═══════════════════════════════════════════════════════════════════
    狼自爆(任何白天阶段都能发生) (P0-#3 修复:杀人时清 isSheriff)
+   P2-#D 修复:自爆走 last-words 阶段(对比 VoteResults.proceed 对被投的人加 pendingLastWords)
+   之前是直接进 night,狼的"遗言"被吞,用户看不见;现在狼能留遗言(规则上更标准)
    ═══════════════════════════════════════════════════════════════════ */
 export function applyWolfSelfDestruct(s: GameState, wolfId: number, _lang: 'zh' | 'en'): GameState {
   if (s.players[wolfId].faction !== 'wolf') return s;
@@ -617,13 +619,15 @@ export function applyWolfSelfDestruct(s: GameState, wolfId: number, _lang: 'zh' 
     ...afterLovers,
     players: updated,
     publicLog: [...afterLovers.publicLog, {
-      kind: 'death' as const, day: s.round, playerId: wolfId,
+      kind: 'system' as const, day: s.round,
       text: `💥 ${s.players[wolfId].name} 狼人自爆!立即进入夜晚`,
     }],
     deadThisDay: wolfId,
-    lastVotedOut: hunterDead ?? null,
-    phase: hunterDead !== undefined ? 'hunter-shoot' : 'night',
-    round: hunterDead !== undefined ? s.round : s.round + 1,
+    lastVotedOut: wolfId,  // P2-#D:让狼走 last-words 阶段
+    pendingLastWords: [wolfId, ...(afterLovers.pendingLastWords ?? [])],
+    // 有猎人被殉情链带走 → 先开枪;否则走 last-words(让狼留遗言)再进 night
+    phase: hunterDead !== undefined ? 'hunter-shoot' : 'last-words',
+    round: s.round,
     pkUsed: false, pkPlayers: null,
   };
 }

@@ -148,11 +148,53 @@ function PlayerSeat({ player, isYou, isSpeaking, isActing, lang, userMark, wolfT
    发言气泡
    ═══════════════════════════════════════════════════════════════════ */
 
-function SpeechBubble({ player, text, streaming, lang }: {
+function SpeechBubble({ player, text, streaming, lang, phase, isCurrent }: {
   player: Player; text: string; streaming?: boolean; lang: 'zh' | 'en';
+  phase?: 'night' | 'day' | 'pk' | 'last-words' | 'sheriff-speech';
+  isCurrent?: boolean;  // P3-#A:当前正在发言(高亮)
 }) {
+  // P3-#C:按 phase 加视觉前缀
+  const phaseLabel =
+    phase === 'last-words' ? (lang === 'zh' ? '🕯️ 遗言' : '🕯️ Last Words')
+    : phase === 'pk' ? (lang === 'zh' ? '⚔️ PK' : '⚔️ PK')
+    : phase === 'sheriff-speech' ? (lang === 'zh' ? '⭐ 警长竞选' : '⭐ Sheriff')
+    : phase === 'night' ? (lang === 'zh' ? '🌙 夜' : '🌙 Night')
+    : null;
+  // P3-#A:当前发言用黄色脉冲边框 + 缩放
+  const bubbleStyle: React.CSSProperties = isCurrent
+    ? {
+        background: 'rgba(250,204,21,0.08)',
+        color: 'var(--color-text)',
+        border: '2px solid #facc15',
+        boxShadow: '0 0 12px rgba(250,204,21,0.4)',
+        transform: 'scale(1.02)',
+        transition: 'all 0.2s',
+      }
+    : phase === 'last-words'
+      ? {
+          background: 'rgba(107,114,128,0.12)',
+          color: 'var(--color-text)',
+          border: '1px solid #6b7280',
+        }
+      : phase === 'pk'
+        ? {
+            background: 'rgba(249,115,22,0.08)',
+            color: 'var(--color-text)',
+            border: '1px solid #f97316',
+          }
+        : phase === 'sheriff-speech'
+          ? {
+              background: 'rgba(250,204,21,0.08)',
+              color: 'var(--color-text)',
+              border: '1px solid #facc15',
+            }
+          : {
+              background: 'var(--color-card-bg)',
+              color: 'var(--color-text)',
+              border: '1px solid var(--color-border-light)',
+            };
   return (
-    <div className="flex gap-2 mb-2 animate-fade-in">
+    <div className={`flex gap-2 mb-2 animate-fade-in ${isCurrent ? 'animate-pulse' : ''}`}>
       <div className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-base"
         style={{ background: 'var(--color-accent-glow)' }}>
         {/* 严格隐藏:气泡里永远不显示身份 emoji,统一用 👤 */}
@@ -162,11 +204,19 @@ function SpeechBubble({ player, text, streaming, lang }: {
         <div className="text-[11px] mb-0.5 flex items-center gap-1.5" style={{ color: 'var(--color-text-muted)' }}>
           <span className="font-medium" style={{ color: 'var(--color-text)' }}>{player.id + 1}. {player.name}</span>
           <PersonalityRender id={player.personality} lang={lang} />
+          {phaseLabel && (
+            <span className="text-[9px] px-1 rounded" style={{
+              background: 'var(--color-bg-deep)',
+              color: phase === 'last-words' ? '#9ca3af' : phase === 'pk' ? '#f97316' : '#facc15',
+            }}>{phaseLabel}</span>
+          )}
+          {isCurrent && (
+            <span className="text-[9px] px-1 rounded animate-pulse" style={{ background: '#facc15', color: '#000' }}>
+              {lang === 'zh' ? '🎙️ 正在发言' : '🎙️ Speaking'}
+            </span>
+          )}
         </div>
-        <div className="rounded-lg p-2 text-sm" style={{
-          background: 'var(--color-card-bg)', color: 'var(--color-text)',
-          border: '1px solid var(--color-border-light)',
-        }}>
+        <div className="rounded-lg p-2 text-sm" style={bubbleStyle}>
           {text || (streaming ? <span style={{ color: 'var(--color-text-muted)' }}>...</span> : '')}
           {streaming && <span className="inline-block ml-1 animate-pulse">▍</span>}
         </div>
@@ -322,6 +372,11 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
   const [streamingText, setStreamingText] = useState<{ playerId: number; text: string } | null>(null);
   /* 当前夜晚正在行动的玩家 IDs(用于座位高亮)—— 仅对行动者(及其队友,如狼队)可见,平民看不到 */
   const [actingPlayerIds, setActingPlayerIds] = useState<number[]>([]);
+  /* P2-#C:自爆 banner 提示(进入夜间高亮通知,3 秒后自动消失)
+     用户原话:"不然我都不知道狼人自爆了" */
+  const [selfDestructBanner, setSelfDestructBanner] = useState<{ name: string; ts: number } | null>(null);
+  // 检测自爆事件(从 publicLog 增量里提取)
+  const seenSelfDestructRef = useRef<number>(0);
   /* setState wrapper:把 (s:GameState) => GameState 形式适配到 prop 的 Dispatch<SetStateAction<GameState|null>>
      —— 子组件里都假设 state 非 null,这里用 prev ? u(prev) : prev 兜底(理论上 prop 永远非 null) */
   const setState = (u: (s: GameState) => GameState) =>
@@ -343,6 +398,34 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
     if (winner) setState(s => ({ ...s, phase: 'gameover' }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [winner]);
+
+  /* P2-#C:检测最新自爆事件,在顶部 + InfoStream 顶部显示高亮 banner(3 秒后自动消失) */
+  useEffect(() => {
+    // 只看新增的 system 事件(从 seenSelfDestructRef 起)
+    const log = state.publicLog;
+    for (let i = seenSelfDestructRef.current; i < log.length; i++) {
+      const e = log[i];
+      if (e.kind === 'system' && e.text.includes('狼人自爆')) {
+        // 提取狼名:从 "💥 X号 狼人自爆..." 抽取
+        const m = e.text.match(/(\d+)号\s*([^ 　]+?)\s*狼人自爆/);
+        if (m) {
+          const num = m[1];
+          const name = m[2];
+          setSelfDestructBanner({ name: `${num}号 ${name}`, ts: Date.now() });
+        } else {
+          setSelfDestructBanner({ name: '某狼', ts: Date.now() });
+        }
+        break;
+      }
+    }
+    seenSelfDestructRef.current = log.length;
+  }, [state.publicLog.length]);
+
+  useEffect(() => {
+    if (!selfDestructBanner) return;
+    const tid = window.setTimeout(() => setSelfDestructBanner(null), 4000);
+    return () => clearTimeout(tid);
+  }, [selfDestructBanner?.ts]);
 
   /* aiSpeak 返回 {speech, target} —— 让调用方(夜晚行动/投票)能直接拿到 target,
      避免「读 state.speeches[length-1]」的闭包过时问题。
@@ -390,6 +473,29 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
 
   return (
     <div className="space-y-3">
+      {/* P2-#C:自爆高亮 banner —— 进入夜间模式提示(用户原话"不然我都不知道狼人自爆了") */}
+      {selfDestructBanner && (
+        <div
+          className="p-3 rounded-xl flex items-center justify-center gap-2 animate-pulse"
+          style={{
+            background: 'linear-gradient(90deg, rgba(220,38,38,0.25), rgba(220,38,38,0.5), rgba(220,38,38,0.25))',
+            border: '2px solid #dc2626',
+            boxShadow: '0 0 20px rgba(220,38,38,0.4)',
+          }}
+        >
+          <span className="text-2xl">💥</span>
+          <div className="text-center">
+            <div className="text-base font-bold" style={{ color: '#dc2626' }}>
+              {lang === 'zh' ? `🐺 ${selfDestructBanner.name} 狼人自爆!` : `🐺 ${selfDestructBanner.name} Wolf Self-Destruct!`}
+            </div>
+            <div className="text-xs" style={{ color: 'var(--color-text)' }}>
+              {lang === 'zh' ? '🌙 立即进入夜间模式' : '🌙 Entering Night Mode'}
+            </div>
+          </div>
+          <span className="text-2xl">🌙</span>
+        </div>
+      )}
+
       {/* 顶部信息条 */}
       <div className="flex items-center justify-between p-3 rounded-xl"
         style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-border-light)' }}>
@@ -578,10 +684,18 @@ function InfoStream({ state, lang, streamingText }: {
   streamingText: { playerId: number; text: string } | null;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  // 自动滚到底
+  // P3-#A 修复:当前发言气泡的 ref(用于 scrollIntoView)
+  const currentBubbleRef = useRef<HTMLDivElement>(null);
+  // 自动滚到底 + 当前发言气泡滚到可视中央
   useEffect(() => {
     if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
   }, [state.publicLog.length, state.speeches.length, streamingText]);
+  useEffect(() => {
+    // 当前发言变化时,把这个气泡 scrollIntoView
+    if (currentBubbleRef.current) {
+      currentBubbleRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [streamingText?.playerId, streamingText?.text]);
 
   // 死亡记录
   const deaths = state.publicLog.filter(e => e.kind === 'death');
@@ -591,6 +705,8 @@ function InfoStream({ state, lang, streamingText }: {
   const exiles = state.publicLog.filter(e => e.kind === 'death' && e.text.startsWith('🗳️'));
   // P1-#48 修复:今日 claim 面板
   const todayClaims = state.claims?.[state.round];
+  // P3-#A:当前正在发言的玩家 ID(用于高亮)
+  const currentSpeakerId = streamingText?.playerId ?? null;
 
   return (
     <div ref={ref} className="p-3 rounded-xl space-y-3 overflow-y-auto"
@@ -643,6 +759,61 @@ function InfoStream({ state, lang, streamingText }: {
         </div>
       )}
 
+      {/* P3-#B:最近一次投票详情(谁投了谁 + 票数 + 警长 1.5 票标记)
+         用户原话:"玩家发言和玩家投票信息可以在右边栏清晰查看" */}
+      {state.lastVoteData && state.lastVoteData.allVotes.length > 0 && (
+        <div>
+          <div className="text-[10px] mb-1.5 flex items-center gap-1 font-semibold" style={{ color: '#a855f7' }}>
+            📊 {lang === 'zh' ? '最近一次投票详情' : 'Latest vote details'}
+          </div>
+          <div className="space-y-0.5 mb-1">
+            {state.lastVoteData.allVotes.map((v, i) => {
+              const voter = state.players[v.voterId];
+              const target = state.players[v.targetId];
+              if (!voter || !target) return null;
+              const isUserVoter = v.voterId === state.userId;
+              const isSheriffVoter = voter.privateMemory.isSheriff;
+              const weight = isSheriffVoter ? 1.5 : 1;
+              return (
+                <div key={i} className="text-[11px] flex items-center gap-1 px-1.5 py-0.5 rounded"
+                  style={{ background: isUserVoter ? 'rgba(168,85,247,0.12)' : 'transparent' }}>
+                  <span style={{ color: isUserVoter ? '#a855f7' : 'var(--color-text)' }}>
+                    {voter.id + 1}.{voter.name}
+                  </span>
+                  <span style={{ color: 'var(--color-text-muted)' }}>→</span>
+                  <span style={{ color: '#a855f7' }}>{target.id + 1}.{target.name}</span>
+                  {isSheriffVoter && (
+                    <span className="text-[9px]" style={{ color: '#facc15' }} title={lang === 'zh' ? '警长 1.5 票' : 'Sheriff 1.5x'}>⭐</span>
+                  )}
+                  <span className="text-[9px] ml-auto" style={{ color: 'var(--color-text-muted)' }}>
+                    ({weight}{lang === 'zh' ? '票' : 'x'})
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          {/* 票数统计 */}
+          <div className="text-[9px] flex flex-wrap gap-1.5 px-1">
+            {Object.entries(state.lastVoteData.tally).map(([id, count]) => {
+              const pid = parseInt(id, 10);
+              const target = state.players[pid];
+              if (!target) return null;
+              const isExiled = state.lastVoteData?.exiled === pid;
+              return (
+                <span key={id} className="px-1.5 py-0.5 rounded"
+                  style={{
+                    background: isExiled ? 'rgba(220,38,38,0.2)' : 'var(--color-bg-deep)',
+                    color: isExiled ? '#dc2626' : 'var(--color-text)',
+                    fontWeight: isExiled ? 'bold' : 'normal',
+                  }}>
+                  {target.name}: {count}{lang === 'zh' ? '票' : ' votes'}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* P1-#48 修复:今日 claim 面板(谁跳了预言家/守卫/女巫) */}
       {todayClaims && (todayClaims.seerClaims.length > 0 || todayClaims.witchClaims.length > 0 || todayClaims.guardClaims.length > 0) && (
         <div>
@@ -674,11 +845,26 @@ function InfoStream({ state, lang, streamingText }: {
         </div>
         {state.speeches.slice(-15).map((sp, i) => {
           const p = state.players[sp.playerId];
-          return <SpeechBubble key={i} player={p} text={sp.text} lang={lang} />;
+          const isCurrent = currentSpeakerId === sp.playerId;
+          return (
+            <div key={i} ref={isCurrent ? currentBubbleRef : undefined}>
+              <SpeechBubble
+                player={p}
+                text={sp.text}
+                lang={lang}
+                phase={sp.phase}
+                isCurrent={isCurrent}
+              />
+            </div>
+          );
         })}
         {streamingText && (
-          <SpeechBubble player={state.players[streamingText.playerId]} text={streamingText.text}
-            streaming lang={lang} />
+          <div ref={currentSpeakerId === streamingText.playerId ? currentBubbleRef : undefined}>
+            <SpeechBubble player={state.players[streamingText.playerId]} text={streamingText.text}
+              streaming lang={lang}
+              phase="day"
+              isCurrent={true} />
+          </div>
         )}
       </div>
     </div>
@@ -793,6 +979,8 @@ function NightPanel({ state, setState, lang, aiSpeak, onActingChange }: {
   aiSpeakRef.current = aiSpeak;
   // AI 完成标记:防止「超时强制 outro」和「AI 正常完成 outro」双触发
   const aiDoneRef = useRef(false);
+  // P1-#D:无夜行角色时直接结算的定时器句柄(round 变化时清理)
+  const noActorsTimerRef = useRef<number | null>(null);
 
   // 当 round 变化时,初始化行动队列
   // 标准规则:狼队(所有狼)同时行动(一起睁眼、互相知道身份),其他角色独立行动
@@ -813,6 +1001,21 @@ function NightPanel({ state, setState, lang, aiSpeak, onActingChange }: {
     setActionIdx(0);
     setScene('intro');
     setTimeLeft(NIGHT_INTRO_SEC);
+    // P1-#D 修复:无夜行角色(hunter/idiot/villager 全部存活)→ 直接结算夜间跳到白天
+    // 之前场景会卡在 'action' 状态(因为 !cur → effect 提前 return)
+    if (sorted.length === 0) {
+      noActorsTimerRef.current = window.setTimeout(() => {
+        setScene('done');
+        setState(s => resolveNight(s, lang));
+      }, NIGHT_INTRO_SEC * 1000);
+    }
+    // 清理上一轮的 noActors 定时器(如果还有)
+    return () => {
+      if (noActorsTimerRef.current !== null) {
+        clearTimeout(noActorsTimerRef.current);
+        noActorsTimerRef.current = null;
+      }
+    };
   }, [state.round]);
 
   const cur = actions[actionIdx];
@@ -1077,10 +1280,13 @@ function NightSceneDisplay({ scene, cur, state, lang, timeLeft, onUserAction, bu
   const role = ROLES[cur.role];
   const isMe = cur.playerIds.includes(state.userId);
   const isWolfPack = cur.playerIds.length > 1;
+  // P1-#A 修复:把 userSeerChecks 提前声明,outro 块也需要用到
+  const userP = state.players[state.userId];
+  const userIsSeerAction = cur.role === 'seer' && isMe;
+  const userSeerChecks = userIsSeerAction ? userP.privateMemory.seerChecks : [];
   // 标准规则:夜间只有行动者(及其同阵营可见)能看到行动信息
   // 狼队回合:所有狼人可见(包括用户若为狼)
   // 其他角色回合:只有自己可见
-  const userP = state.players[state.userId];
   const userIsWolf = userP?.alive && userP.faction === 'wolf';
   const canSeeInfo = isMe || (isWolfPack && userIsWolf);
 
@@ -1129,13 +1335,26 @@ function NightSceneDisplay({ scene, cur, state, lang, timeLeft, onUserAction, bu
     );
   }
   if (scene === 'outro') {
+    // P1-#A 修复:用户是预言家刚查验完时,在 outro 立即告知结果(否则要等下一夜才能看到)
+    let seerResultEl: React.ReactNode = null;
+    if (cur.role === 'seer' && isMe && userSeerChecks.length > 0) {
+      const last = userSeerChecks[userSeerChecks.length - 1];
+      seerResultEl = (
+        <div className="mt-3 p-2 rounded text-xs animate-fade-in" style={{ background: 'rgba(99,102,241,0.18)', border: '1px solid #6366f1' }}>
+          🔮 {lang === 'zh'
+            ? `你验的 ${last.targetId + 1} 号 → ${last.isWolf ? '🐺 狼人' : '🛡️ 好人'}`
+            : `You checked #${last.targetId + 1}: ${last.isWolf ? '🐺 Wolf' : '🛡️ Good'}`}
+        </div>
+      );
+    }
     return (
       <div>
         <div className="text-5xl mb-3">😴</div>
         <div className="text-2xl font-bold mb-2" style={{ color: 'var(--color-text)' }}>
           {lang === 'zh' ? `${role.name.zh}请闭眼` : `${role.name.en}, close your eyes`}
         </div>
-        <div className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+        {seerResultEl}
+        <div className="text-xs mt-2" style={{ color: 'var(--color-text-muted)' }}>
           {lang === 'zh' ? `下一位…` : 'Next…'}
         </div>
       </div>
@@ -1143,8 +1362,7 @@ function NightSceneDisplay({ scene, cur, state, lang, timeLeft, onUserAction, bu
   }
   // action
   // 修复(P0):用户是预言家时,在行动 UI 上方显示已查验结果(否则验完看不到)
-  const userIsSeerAction = cur.role === 'seer' && isMe;
-  const userSeerChecks = userIsSeerAction ? userP.privateMemory.seerChecks : [];
+  // userSeerChecks 已在函数顶部声明(outro 块也用得到)
   return (
     <div>
       <div className="text-4xl mb-2">{role.emoji}</div>
@@ -1481,6 +1699,16 @@ Output JSON: {"speech":"reasoning (optional)","useAntidote":true/false,"poisonTa
   const { target } = await aiSpeak(actor.id, sys, usr, true /* silent:夜晚不暴露 */);
   if (target !== null && target >= 0 && target < state.players.length && state.players[target].alive) {
     return { target };
+  }
+  // P1-#C 修复:狼 AI 返回 null 时兜底随机选一个非狼存活目标(规则:狼每晚必杀)
+  // 否则单狼场景会出现"4 晚连续平安夜"的致命 bug
+  if (actor.role === 'werewolf' || actor.role === 'wolfking' || actor.role === 'wolfbeauty') {
+    const wolfIdSet = new Set([actor.id, ...actor.privateMemory.wolfTeammates]);
+    const candidates = state.players.filter(p => p.alive && !wolfIdSet.has(p.id));
+    if (candidates.length > 0) {
+      const fallback = candidates[Math.floor(Math.random() * candidates.length)].id;
+      return { target: fallback };
+    }
   }
   return { target: null };
 }
@@ -2332,7 +2560,7 @@ function SheriffElection({ state, setState, lang, aiSpeak }: {
         const cur = s.sheriffElection!;
         return {
           ...s,
-          speeches: [...s.speeches, { playerId: s.userId, day: s.round, text }],
+          speeches: [...s.speeches, { playerId: s.userId, day: s.round, text, phase: 'sheriff-speech' }],
           publicLog: [...s.publicLog, { kind: 'speech', day: s.round, playerId: s.userId, text }],
           sheriffElection: { ...cur, speechIdx: cur.speechIdx + 1 },
         };
@@ -2797,14 +3025,28 @@ function DayDiscuss({ state, setState, lang, aiSpeak }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cur?.id]);
 
-  /* AI 狼自爆:10% 概率在白天讨论中自爆(绝望时刻) */
+  /* AI 狼自爆:动态概率
+     ── 最后 1 狼 → 0%(自爆即输,死规则硬阻断)
+     ── 狼优势(aliveWolves > aliveGood / 2)→ 0%(无故自爆送头)
+     ── 劣势 → 15%(放手一搏,比之前 10% 高)
+     ── 持平 → 5%(保守) */
   useEffect(() => {
     if (!cur) return;
     if (cur.faction !== 'wolf') return;
     if (cur.id === state.userId) return;
     if (busy) return;
-    // 10% 概率自爆
-    if (Math.random() < 0.10) {
+    const aliveWolves = state.players.filter(p => p.alive && p.faction === 'wolf').length;
+    if (aliveWolves === 0) return;
+    // 死亡玩家可能仍在本组件(speakers 已过滤 alive),cur 应该 alive
+    if (aliveWolves === 1) return;  // P2-#A:最后一只狼禁止自爆
+    const aliveGood = state.players.filter(p => p.alive && p.faction === 'good').length;
+    const wolfAdvantage = aliveWolves > aliveGood / 2;  // P2-#B:狼优势
+    if (wolfAdvantage) return;
+    // 动态概率
+    let prob = 0.10;
+    if (aliveWolves < aliveGood) prob = 0.15;       // 劣势
+    else if (aliveWolves === aliveGood) prob = 0.05; // 持平
+    if (Math.random() < prob) {
       setState(s => applyWolfSelfDestruct(s, cur.id, lang));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2869,9 +3111,23 @@ function DayDiscuss({ state, setState, lang, aiSpeak }: {
     nextSpeaker();
   };
 
-  /* 用户狼自爆 */
+  /* 用户狼自爆
+     ── P2-#A 阻断:最后 1 狼 → 自爆即输,按钮 disabled
+     ── P2-#B 阻断:狼优势时(aliveWolves > aliveGood/2)→ 无故自爆送头,按钮 disabled + 解释 */
+  const aliveWolvesCount = state.players.filter(p => p.alive && p.faction === 'wolf').length;
+  const aliveGoodCount = state.players.filter(p => p.alive && p.faction === 'good').length;
+  const isLastWolf = userIsWolf && aliveWolvesCount === 1;
+  const wolfAdvantage = userIsWolf && aliveWolvesCount > aliveGoodCount / 2 && aliveWolvesCount > 1;
+  const selfDestructBlocked = isLastWolf || wolfAdvantage;
+  const selfDestructBlockReason = isLastWolf
+    ? (lang === 'zh' ? '⚠️ 你是最后一只狼,自爆狼阵营立刻输!' : '⚠️ You are the last wolf — self-destruct = instant loss!')
+    : wolfAdvantage
+      ? (lang === 'zh' ? `⚠️ 狼阵营优势(${aliveWolvesCount} 狼 vs ${aliveGoodCount} 好人),无故自爆是送头` : `⚠️ Wolves have advantage (${aliveWolvesCount} vs ${aliveGoodCount}), self-destruct wastes your win`)
+      : null;
+
   const onSelfDestruct = () => {
     if (!userIsWolf) return;
+    if (selfDestructBlocked) return;
     if (typeof window !== 'undefined' && !window.confirm(lang === 'zh' ? '确认自爆?翻牌后立即进入夜晚!' : 'Confirm self-detonate? Goes to night immediately!')) return;
     setState(s => applyWolfSelfDestruct(s, state.userId, lang));
   };
@@ -2933,13 +3189,27 @@ function DayDiscuss({ state, setState, lang, aiSpeak }: {
         </div>
       ) : null}
 
-      {/* 狼自爆按钮(仅存活狼可见) */}
+      {/* 狼自爆按钮(仅存活狼可见)
+          P2-#A/P2-#B:最后狼 / 狼优势时 disabled 并显示原因 */}
       {userIsWolf && (
         <div className="mt-3 pt-3 border-t" style={{ borderColor: 'var(--color-border-light)' }}>
+          {selfDestructBlockReason && (
+            <div className="mb-1.5 p-1.5 rounded text-[10px] text-center" style={{ background: 'rgba(220,38,38,0.1)', color: '#dc2626' }}>
+              {selfDestructBlockReason}
+            </div>
+          )}
           <button
             onClick={onSelfDestruct}
-            className="w-full px-3 py-2 rounded text-xs font-semibold transition-all hover:scale-105"
-            style={{ background: 'rgba(220,38,38,0.15)', color: '#dc2626', border: '1px solid #dc2626' }}
+            disabled={selfDestructBlocked}
+            className="w-full px-3 py-2 rounded text-xs font-semibold transition-all"
+            style={{
+              background: selfDestructBlocked ? 'rgba(107,114,128,0.15)' : 'rgba(220,38,38,0.15)',
+              color: selfDestructBlocked ? '#6b7280' : '#dc2626',
+              border: `1px solid ${selfDestructBlocked ? '#6b7280' : '#dc2626'}`,
+              cursor: selfDestructBlocked ? 'not-allowed' : 'pointer',
+              opacity: selfDestructBlocked ? 0.5 : 1,
+            }}
+            title={selfDestructBlockReason ?? undefined}
           >
             💥 {lang === 'zh' ? '狼人自爆(翻牌 + 立即进夜)' : 'Wolf Self-Detonate'}
           </button>
@@ -2991,6 +3261,22 @@ function DayVote({ state, setState, lang, aiSpeak }: {
   const alivePlayers = state.players.filter(p => p.alive);
   const [userTarget, setUserTarget] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // P1-#B 修复:死人不能投票(规则上死亡玩家失去投票权);只可观战
+  const userAlive = state.players[state.userId]?.alive;
+  if (!userAlive) {
+    return (
+      <div className="p-4 rounded-xl text-center" style={{ background: 'var(--color-card-bg)', border: '1px solid #6b7280' }}>
+        <Skull size={20} className="mx-auto mb-2" style={{ color: '#9ca3af' }} />
+        <h3 className="font-semibold mb-1" style={{ color: 'var(--color-text-muted)' }}>
+          {lang === 'zh' ? '💀 你已死亡' : '💀 You are dead'}
+        </h3>
+        <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+          {lang === 'zh' ? '死亡玩家不能投票,只能观战。看 AI 玩家怎么斗智斗勇。' : 'Dead players cannot vote. Spectate only.'}
+        </p>
+      </div>
+    );
+  }
 
   // P3-#42 修复:用户点「确认投票」→ 锁住 userTarget → 跑 AI 投票 → finalize
   const confirmAndFinalize = async () => {
@@ -3185,7 +3471,16 @@ function LastWords({ state, setState, lang, aiSpeak }: {
     const sys = lang === 'zh'
       ? `你是"${curPlayer.name}"(第${curPlayer.id + 1}号),你因${diedFrom}被杀了!请留遗言(30-80 字):\n- 可以留自己的身份线索(也可不)\n- 可以留怀疑对象\n- 可以感谢/指责某人\n\n只输出你的遗言。`
       : `You are "${curPlayer.name}", you died. Leave last words (30-80 words). Output speech only.`;
-    aiSpeak(curPlayer.id, sys, lang === 'zh' ? '请留遗言(30-80 字)' : 'Leave last words (30-80 words)').then(() => {
+    aiSpeak(curPlayer.id, sys, lang === 'zh' ? '请留遗言(30-80 字)' : 'Leave last words (30-80 words)').then(({ speech }) => {
+      // P3-#C 修复:给 AI 遗言打 phase='last-words' 标签(否则右侧栏看不出是遗言)
+      setState(s => ({
+        ...s,
+        speeches: s.speeches.map(sp =>
+          sp.playerId === curPlayer.id && sp.day === s.round && sp.text === speech && !sp.phase
+            ? { ...sp, phase: 'last-words' as const }
+            : sp
+        ),
+      }));
       setBusy(false);
       setTimeout(() => next(), 500);
     });
@@ -3197,7 +3492,7 @@ function LastWords({ state, setState, lang, aiSpeak }: {
     const text = userInput.trim() || (lang === 'zh' ? '(我暂时没有想说的)' : '(I have nothing to say)');
     setState(s => ({
       ...s,
-      speeches: [...s.speeches, { playerId: state.userId, day: s.round, text }],
+      speeches: [...s.speeches, { playerId: state.userId, day: s.round, text, phase: 'last-words' }],
       publicLog: [...s.publicLog, { kind: 'speech', day: s.round, playerId: state.userId, text }],
     }));
     next();
@@ -3453,7 +3748,7 @@ function PKSpeech({ state, setState, lang, aiSpeak }: {
     const text = userInput.trim() || (lang === 'zh' ? '(我坚持立场,大家投我)' : '(I stand by my position)');
     setState(s => ({
       ...s,
-      speeches: [...s.speeches, { playerId: state.userId, day: s.round, text }],
+      speeches: [...s.speeches, { playerId: state.userId, day: s.round, text, phase: 'pk' }],
       publicLog: [...s.publicLog, { kind: 'speech', day: s.round, playerId: state.userId, text }],
     }));
     next();
@@ -4040,19 +4335,19 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
   // 2) 上下文块(之前发言摘要 + 今日声明)
   // ─────────────────────────────────────────────
   const contextParts: string[] = [];
-  // 之前发言(今天 + 昨天)
+  // 之前发言(今天 + 昨天) —— P4-#A:扩到 10 条,含 ID 前缀,便于 AI 引用
   const todayStart = state.speeches.findIndex(s => s.day === state.round);
   const recentSpeeches = state.speeches.slice(Math.max(0, todayStart - 8), todayStart);
   if (recentSpeeches.length > 0) {
-    const lines = recentSpeeches.slice(-6).map(sp => {
+    const lines = recentSpeeches.slice(-10).map(sp => {
       const p = state.players[sp.playerId];
       if (!p || !p.alive) return null;
-      return `${p.id + 1}号 ${p.name}: ${sp.text.slice(0, 60)}${sp.text.length > 60 ? '…' : ''}`;
+      return `${p.id + 1}号 ${p.name}: ${sp.text.slice(0, 80)}${sp.text.length > 80 ? '…' : ''}`;
     }).filter(Boolean);
     if (lines.length) {
       contextParts.push(isZh
-        ? `【近期发言摘要(供参考,不是必须回应)】\n${lines.join('\n')}`
-        : `【Recent speech summary】\n${lines.join('\n')}`);
+        ? `【近期发言摘要(必看,发言时引用具体编号和观点)】\n${lines.join('\n')}`
+        : `【Recent speeches (must reference specific IDs/arguments)】\n${lines.join('\n')}`);
     }
   }
   // 今日身份声明(本轮)
@@ -4093,11 +4388,28 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
   const contextBlock = contextParts.length ? `\n${contextParts.join('\n\n')}\n` : '';
 
   // ─────────────────────────────────────────────
+  // 2.5) P4-#B:全局"反废话"约束(应用到所有角色)
+  // ─────────────────────────────────────────────
+  const commonRules = isZh
+    ? `\n【发言硬约束 - 违反 = 发言无效】
+- 第 1 句**必须**引用至少 1 个具体玩家(用"X 号"格式)或具体观点/查验/死因
+- 严禁通用开场白:"大家早上好""我觉得""咱们得团结"等空话开头
+- 严禁复述别人说过的话 —— 你要说新信息或新推理
+- 不要解释规则,不要输出 JSON 包装,直接给发言
+- 30-100 字口语化(像微信群聊天)`
+    : `\n【Hard constraints - violating = invalid speech】
+- Sentence 1 MUST reference at least 1 specific player (use "#X" format) or a specific argument/check/death
+- NO generic openings: "good morning everyone", "I think", "we should unite" etc.
+- NO repeating what others said — bring new info or new reasoning
+- No JSON wrapping, output speech directly
+- 30-100 words casual chat style`;
+
+  // ─────────────────────────────────────────────
   // 3) 拼装
   // ─────────────────────────────────────────────
   return (isZh
-    ? `${roleBlock}\n${outputFormat}${contextBlock}${stanceBlock}\n【局势】\n昨晚死亡:${dead || '无(平安夜)'}\n存活玩家:${alive}\n现在是第 ${state.round} 轮白天讨论。`
-    : `${roleBlock}\n${outputFormat}${contextBlock}${stanceBlock}\n【Situation】\nLast night deaths: ${dead || 'none'}\nAlive: ${alive}\nRound ${state.round} day discussion.`)
+    ? `${roleBlock}\n${outputFormat}${commonRules}${contextBlock}${stanceBlock}\n【局势】\n昨晚死亡:${dead || '无(平安夜)'}\n存活玩家:${alive}\n现在是第 ${state.round} 轮白天讨论。`
+    : `${roleBlock}\n${outputFormat}${commonRules}${contextBlock}${stanceBlock}\n【Situation】\nLast night deaths: ${dead || 'none'}\nAlive: ${alive}\nRound ${state.round} day discussion.`)
     // 把 temperature hint 附在最后供调用方读取(解析时 grep TEMP_HINT)
     + `\n<!-- TEMP_HINT:${suggestedTemp ?? 0.9} -->`;
 }
