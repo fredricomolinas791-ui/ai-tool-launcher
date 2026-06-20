@@ -1965,10 +1965,38 @@ function applyWitchAction(s: GameState, witchId: number, useAntidote: boolean, p
     newDead.push(effectivePoisonTarget);
   }
 
+  // P9:记录女巫用药操作,用于强制白天发言公开身份 + 操作
+  const usedAntidote = newMem.witchAntidoteUsed && (newMem.witchSavedId !== null);
+  const usedPoison = newMem.witchPoisonedId !== null;
+  const logEntries: { kind: 'system'; day: number; text: string }[] = [];
+  if (usedAntidote) {
+    const savedName = s.players[newMem.witchSavedId!]?.name ?? `?${newMem.witchSavedId}`;
+    logEntries.push({
+      kind: 'system', day: s.round,
+      text: `💊 女巫 ${witch.name} 解药救了 ${newMem.witchSavedId! + 1}号 ${savedName}(待天亮公布)`,
+    });
+  }
+  if (usedPoison) {
+    const poisonedName = s.players[newMem.witchPoisonedId!]?.name ?? `?${newMem.witchPoisonedId}`;
+    logEntries.push({
+      kind: 'system', day: s.round,
+      text: `☠️ 女巫 ${witch.name} 毒药杀了 ${newMem.witchPoisonedId! + 1}号 ${poisonedName}(待天亮公布)`,
+    });
+  }
+
   return {
     ...s,
     players: s.players.map(p => p.id === witchId ? { ...p, privateMemory: newMem } : p),
     deadThisNight: newDead,
+    publicLog: [...s.publicLog, ...logEntries],
+    lastWitchAction: (usedAntidote || usedPoison)
+      ? {
+          savedId: usedAntidote ? newMem.witchSavedId : null,
+          poisonedId: usedPoison ? newMem.witchPoisonedId : null,
+          byPlayerId: witchId,
+          announced: false,
+        }
+      : s.lastWitchAction,
   };
 }
 
@@ -3537,6 +3565,14 @@ function DayDiscuss({ state, setState, lang, aiSpeak }: {
         // 同步给 speeches 加 phase 字段(P3-#39)
         const idx = s.speeches.findIndex(sp => sp.playerId === cur.id && sp.day === s.round && sp.text === speech);
         if (idx >= 0) s.speeches[idx].phase = 'day';
+        // P9:女巫刚公开身份/操作后,标记 lastWitchAction.announced = true(下次不再强制)
+        if (cur.role === 'witch' && s.lastWitchAction?.byPlayerId === cur.id && !s.lastWitchAction.announced) {
+          return {
+            ...s,
+            claims: newClaims,
+            lastWitchAction: { ...s.lastWitchAction, announced: true },
+          };
+        }
         return { ...s, claims: newClaims };
       });
       setBusy(false);
@@ -3646,11 +3682,16 @@ function DayDiscuss({ state, setState, lang, aiSpeak }: {
         if (existing >= 0) dayClaims.guardClaims[existing] = { playerId: state.userId, guardedId };
         else dayClaims.guardClaims.push({ playerId: state.userId, guardedId });
       }
+      // P9:女巫提交发言后,标记 lastWitchAction.announced = true
+      const witchMark = userP?.role === 'witch' && s.lastWitchAction?.byPlayerId === state.userId && !s.lastWitchAction.announced
+        ? { ...s.lastWitchAction, announced: true }
+        : s.lastWitchAction;
       return {
         ...s,
         speeches: [...s.speeches, newSpeech],
         publicLog: [...s.publicLog, { kind: 'speech', day: s.round, playerId: state.userId, text }],
         claims: newClaims,
+        lastWitchAction: witchMark,
       };
     });
     nextSpeaker();
@@ -4838,9 +4879,26 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
     roleBlock = isZh
       ? `【你的身份:女巫 💊】\n状态:${info.length ? info.join('、') : '解药毒药都还没用'}}\n\n策略(可选):\n- 报"昨晚我救了 X 号(没用毒)"证明自己是女巫,但会暴露给狼队\n- 报"我毒了 Y 号"反驳怀疑你的人\n- 也可以沉默保命`
       : `【Your role: Witch 💊】\nStatus: ${info.length ? info.join(', ') : 'both unused'}\n\nOptional strategies:\n- Claim "I saved X (no poison)" to prove yourself (but reveals to wolves)\n- Claim "I poisoned Y" to refute suspects\n- Stay silent to survive.`;
-    outputFormat = isZh
-      ? `【输出格式】\n30-100 字口语发言。如果选择报身份,必须明确说"我是女巫"开头。`
-      : `【Output format】\n30-100 words casual speech. If claiming, MUST start with "I am the Witch".`;
+    // P9:女巫用了药必须公开身份 + 操作(不能藏)
+    // 如果 lastWitchAction.byPlayerId === actor.id 且 !announced → 强制在发言里说
+    const lastWitch = state.lastWitchAction;
+    const mustAnnounce = lastWitch && lastWitch.byPlayerId === actor.id && !lastWitch.announced;
+    if (mustAnnounce) {
+      const announceZh = (lastWitch.savedId !== null ? `我昨晚解药救了 ${lastWitch.savedId + 1}号 ${state.players[lastWitch.savedId]?.name}` : '') +
+        (lastWitch.savedId !== null && lastWitch.poisonedId !== null ? ',并且' : (lastWitch.poisonedId !== null ? '我' : '我')) +
+        (lastWitch.poisonedId !== null ? `昨晚毒药杀了 ${lastWitch.poisonedId + 1}号 ${state.players[lastWitch.poisonedId]?.name}` : '');
+      const announceEn = (lastWitch.savedId !== null ? `I used antidote to save #${lastWitch.savedId + 1} ${state.players[lastWitch.savedId]?.name}` : '') +
+        (lastWitch.savedId !== null && lastWitch.poisonedId !== null ? ', and' : (lastWitch.poisonedId !== null ? 'I' : 'I')) +
+        (lastWitch.poisonedId !== null ? `used poison to kill #${lastWitch.poisonedId + 1} ${state.players[lastWitch.poisonedId]?.name}` : '');
+      outputFormat = isZh
+        ? `【输出格式 - P9 强制】\n第 1 句必须是:"我是女巫,${announceZh}"\n第 2 句起:30-100 字分析(为什么救/毒)\n\n不要 JSON 包装。`
+        : `【Output format - P9 MANDATORY】\nSentence 1 MUST be: "I am the Witch, ${announceEn}"\nSentence 2+: 30-100 words analysis.\n\nNo JSON wrapping.`;
+      suggestedTemp = 0.3;
+    } else {
+      outputFormat = isZh
+        ? `【输出格式】\n30-100 字口语发言。如果选择报身份,必须明确说"我是女巫"开头。`
+        : `【Output format】\n30-100 words casual speech. If claiming, MUST start with "I am the Witch".`;
+    }
   } else if (actor.role === 'guard') {
     const lastGuard = actor.privateMemory.guardLastTargetId;
     roleBlock = isZh

@@ -174,6 +174,19 @@ export interface GameState {
    * - number = 死掉的警长 ID,等 next() 跳到 sheriff-succession 阶段
    */
   pendingSheriffSuccession: number | null;
+  /**
+   * P9:女巫最近一次用药操作(用于强制女巫在白天发言时公开身份 + 操作)
+   * - savedId: 用解药救了谁(null = 没用)
+   * - poisonedId: 用毒药杀了谁(null = 没用)
+   * - byPlayerId: 操作的女巫 ID
+   * - announced: 女巫是否已经在发言里公开过(避免重复公告)
+   */
+  lastWitchAction: {
+    savedId: number | null;
+    poisonedId: number | null;
+    byPlayerId: number;
+    announced: boolean;
+  } | null;
 }
 
 const defaultMemory = (): PrivateMemory => ({
@@ -229,6 +242,7 @@ export function initGame(boardId: BoardId, userName: string, lang: 'zh' | 'en' =
     userMarks: {},
     voteHistory: [],
     pendingSheriffSuccession: null,
+    lastWitchAction: null,
   };
 }
 
