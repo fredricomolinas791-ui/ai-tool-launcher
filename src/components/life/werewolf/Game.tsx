@@ -1325,16 +1325,27 @@ function NightPanel({ state, setState, lang, aiSpeak, onActingChange }: {
           const actor = state.players[actorId];
           // P6-#C 修复:女巫超时兜底强制用解药 + 毒药(不能空过)
           // 规则:女巫是神职,几乎必须用道具 —— AI 思考过久或没给决策时强制使用
-          const witchFallback = () => {
+          // P8-#C 增强:即使 AI 返回了 decision(比如 useAntidote:false, poisonTarget:null),
+          //      如果有可用道具,也要强制使用 —— 之前 AI 选择"全空过"时,fallback 没触发
+          const witchFallback = (forced: boolean) => {
             const cur = stateRef.current;
             const wolfTarget = cur.deadThisNight[0] ?? null;
             const mem = actor.privateMemory;
             const canSelfSave = canWitchSelfSave(cur.players.length, cur.round, wolfTarget === actorId);
-            const useAntidote = !mem.witchAntidoteUsed && wolfTarget !== null && (wolfTarget !== actorId || canSelfSave);
+            let useAntidote = !mem.witchAntidoteUsed && wolfTarget !== null && (wolfTarget !== actorId || canSelfSave);
             const candidates = cur.players.filter(p => p.alive && p.id !== actorId);
-            const poisonTarget = !mem.witchPoisonUsed && candidates.length > 0
+            let poisonTarget = !mem.witchPoisonUsed && candidates.length > 0
               ? candidates[Math.floor(Math.random() * candidates.length)].id
               : null;
+            // P8-#C:如果强制模式 + AI 想空过,必须用
+            if (forced) {
+              if (!useAntidote && mem.witchAntidoteUsed) {
+                // 已经用过解药了,跳过
+              } else if (wolfTarget === null) {
+                // 没目标 → 解药用不了,毒药必须用(优先挑非狼:这里随机活人)
+                useAntidote = false;
+              }
+            }
             return { useAntidote, poisonTarget };
           };
           startCountdown(timeoutSec, () => {
@@ -1342,7 +1353,7 @@ function NightPanel({ state, setState, lang, aiSpeak, onActingChange }: {
             aiDoneRef.current = true;
             if (cancelled) return;
             if (cur.role === 'witch') {
-              const fb = witchFallback();
+              const fb = witchFallback(true);
               setState(s => applyWitchAction(s, actorId, fb.useAntidote, fb.poisonTarget, lang));
             } else {
               setState(s => applyNightAction(s, cur.role, actorId, null, lang));
@@ -1353,12 +1364,25 @@ function NightPanel({ state, setState, lang, aiSpeak, onActingChange }: {
           runAIAction(actor, stateRef.current, lang, aiSpeakRef.current).then((result) => {
             if (cancelled || aiDoneRef.current) return;
             aiDoneRef.current = true;
-            if (cur.role === 'witch' && result.decision) {
-              setState(s => applyWitchAction(s, actorId, result.decision!.useAntidote ?? false, result.decision!.poisonTarget ?? null, lang));
-            } else if (cur.role === 'witch') {
-              // AI 没给出 decision → 用兜底(强制用解药 + 毒药)
-              const fb = witchFallback();
-              setState(s => applyWitchAction(s, actorId, fb.useAntidote, fb.poisonTarget, lang));
+            if (cur.role === 'witch') {
+              // P8-#C:检查 AI 是否真的用了药 —— 如果两个都没用且都可用,强制使用
+              const mem = stateRef.current.players[actorId].privateMemory;
+              const aiUsedAntidote = result.decision?.useAntidote ?? false;
+              const aiUsedPoison = (result.decision?.poisonTarget ?? null) !== null;
+              const antidoteAvail = !mem.witchAntidoteUsed;
+              const poisonAvail = !mem.witchPoisonUsed;
+              const wolfTarget = stateRef.current.deadThisNight[0] ?? null;
+              const canSelfSave = canWitchSelfSave(stateRef.current.players.length, stateRef.current.round, wolfTarget === actorId);
+              const shouldUseAntidote = antidoteAvail && wolfTarget !== null && (wolfTarget !== actorId || canSelfSave);
+              // 如果 AI 完全没用,但有可用道具 → 强制用
+              if (!aiUsedAntidote && !aiUsedPoison && (shouldUseAntidote || poisonAvail)) {
+                const fb = witchFallback(true);
+                setState(s => applyWitchAction(s, actorId, fb.useAntidote, fb.poisonTarget, lang));
+                console.warn(`[Werewolf] Witch ${actor.name} tried to skip potions, forcing use`);
+              } else {
+                // AI 选择用了(可能只用一种),尊重
+                setState(s => applyWitchAction(s, actorId, aiUsedAntidote, result.decision?.poisonTarget ?? null, lang));
+              }
             } else if (result.target !== null) {
               setState(s => applyNightAction(s, cur.role, actorId, result.target, lang));
             }
@@ -3442,11 +3466,37 @@ function DayDiscuss({ state, setState, lang, aiSpeak }: {
           const checkRe = /验了?\s*(\d{1,2})\s*号\s*[,,。\s]*\s*他是?\s*(狼|好人|wolf|good)/gi;
           const matches = [...speech.matchAll(checkRe)];
           if (matches.length > 0) {
-            const checks: { targetId: number; isWolf: boolean }[] = matches.map(m => {
+            let checks: { targetId: number; isWolf: boolean }[] = matches.map(m => {
               const num = parseInt(m[1], 10) - 1;
               const isWolf = /狼|wolf/i.test(m[2]);
               return { targetId: num, isWolf };
             }).filter(c => c.targetId >= 0 && c.targetId < s.players.length);
+            // P8-#A 修复:真预言家的 claim 必须与实际 seerChecks 一致
+            // (LLM 经常幻觉报错信息 —— "6号是好人"但实际是狼)
+            // 规则:如果说话者是真正的预言家,且 state.privateMemory.seerChecks 里
+            //      有这个 target 的记录,用实际记录覆盖 claim
+            //      (悍跳的狼 → claim 保留,作为假情报)
+            const speaker = s.players[cur.id];
+            const isRealSeer = speaker.role === 'seer';
+            if (isRealSeer && speaker.privateMemory.seerChecks.length > 0) {
+              const realChecks = speaker.privateMemory.seerChecks;
+              checks = checks.map(c => {
+                const realCheck = realChecks.find(rc => rc.targetId === c.targetId);
+                if (realCheck) {
+                  // 用实际结果覆盖(防止 AI 幻觉报反)
+                  if (realCheck.isWolf !== c.isWolf) {
+                    return { targetId: c.targetId, isWolf: realCheck.isWolf };
+                  }
+                }
+                return c;
+              });
+              // 如果 AI 没提到某些实际查验过的人,补进去
+              for (const rc of realChecks) {
+                if (!checks.some(c => c.targetId === rc.targetId)) {
+                  checks.push({ targetId: rc.targetId, isWolf: rc.isWolf });
+                }
+              }
+            }
             if (checks.length > 0) {
               const existing = dayClaims.seerClaims.findIndex(c => c.playerId === cur.id);
               if (existing >= 0) {
