@@ -911,7 +911,15 @@ function NightPanel({ state, setState, lang, aiSpeak, onActingChange }: {
             if (cancelled) return;
             // 超时:不强制投谁,让 aggregateWolfVotes 用现有票数(可能全空 → null)
             // P1-#10 修复:用新签名 aggregateWolfVotesLegacy(只需 votes 数组)
-            const target = aggregateWolfVotesLegacy(stateRef.current.wolfVotes);
+            let target = aggregateWolfVotesLegacy(stateRef.current.wolfVotes);
+            // 修复(P0):如果所有狼票都无效,兜底随机选一个非狼存活目标(否则会出现"狼人行动但没杀人"卡死)
+            if (target === null) {
+              const wolfIdSet = new Set(cur.playerIds);
+              const candidates = stateRef.current.players.filter(p => p.alive && !wolfIdSet.has(p.id));
+              if (candidates.length > 0) {
+                target = candidates[Math.floor(Math.random() * candidates.length)].id;
+              }
+            }
             setState(s => applyNightAction(s, cur.role, cur.playerIds[0], target, lang));
             setBusy(false);
             setScene('outro');
@@ -937,7 +945,15 @@ function NightPanel({ state, setState, lang, aiSpeak, onActingChange }: {
             // 把狼队的票数写到 state.wolfVotes(供下个阶段查阅)
             // P1-#10 修复:用新签名 aggregateWolfVotesLegacy(只需 votes 数组)
             const validVotes = votes.filter((v): v is number => v !== null);
-            const target = aggregateWolfVotesLegacy(validVotes);
+            let target = aggregateWolfVotesLegacy(validVotes);
+            // 修复(P0):所有狼票都无效时,兜底随机选一个非狼存活目标
+            if (target === null) {
+              const wolfIdSet = new Set(cur.playerIds);
+              const candidates = stateRef.current.players.filter(p => p.alive && !wolfIdSet.has(p.id));
+              if (candidates.length > 0) {
+                target = candidates[Math.floor(Math.random() * candidates.length)].id;
+              }
+            }
             setState(s => ({
               ...s,
               wolfVotes: votes.filter((v): v is number => v !== null),
@@ -1266,13 +1282,18 @@ function UserNightActionUI({ role, state, lang, onConfirm }: {
     const canSelfSave = canWitchSelfSave(state.players.length, state.round, selfTarget);
     const canAntidote = !mem.witchAntidoteUsed && wolfTarget !== null && (!selfTarget || canSelfSave);
     const canPoison = !mem.witchPoisonUsed;
+    // 修复(P0):根据当前板子有没有守卫,显示不同 fallback 文案(否则 12p 无守卫会说"守卫挡住了")
+    const hasGuard = BOARDS[state.boardId].roles.includes('guard');
+    const noTargetHint = hasGuard
+      ? (lang === 'zh' ? '没人(守卫挡住了)' : 'nobody (guard blocked)')
+      : (lang === 'zh' ? '没人(狼队没选目标)' : 'nobody (wolves picked no target)');
     // P1-#7 修复:自救规则统一用 canWitchSelfSave() 后 ruleHint 改在 UI 内联生成(避免未用变量)
     return (
       <div>
         <p className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>
           {lang === 'zh'
-            ? `今晚狼人想杀的是:${wolfTarget !== null ? `${wolfTarget + 1}号 ${state.players[wolfTarget].name}` : '没人(守卫挡住了)'}${isFirstNight && selfTarget ? '(首夜你自己,网杀规则不能自救)' : ''}`
-            : `Wolves target: ${wolfTarget !== null ? `${state.players[wolfTarget].name}` : 'nobody'}${isFirstNight && selfTarget ? ' (night 1, online: no self-save)' : ''}`}
+            ? `今晚狼人想杀的是:${wolfTarget !== null ? `${wolfTarget + 1}号 ${state.players[wolfTarget].name}` : noTargetHint}${isFirstNight && selfTarget ? '(首夜你自己,网杀规则不能自救)' : ''}`
+            : `Wolves target: ${wolfTarget !== null ? `${state.players[wolfTarget].name}` : noTargetHint}${isFirstNight && selfTarget ? ' (night 1, online: no self-save)' : ''}`}
         </p>
         <div className="space-y-1.5">
           <label className={`flex items-center gap-2 text-xs ${canAntidote ? '' : 'opacity-50'}`}>
@@ -1418,9 +1439,14 @@ async function runAIAction(
     const canSelfSave = canWitchSelfSave(state.players.length, state.round, selfTarget);
     const canAntidote = !mem.witchAntidoteUsed && (!selfTarget || canSelfSave);
     const canPoison = !mem.witchPoisonUsed;
+    // 修复(P0):AI prompt 同样根据板子有没有守卫显示不同文案
+    const hasGuard = BOARDS[state.boardId].roles.includes('guard');
+    const noTargetHint = hasGuard
+      ? (lang === 'zh' ? '没人(守卫挡住了)' : 'nobody (guard blocked)')
+      : (lang === 'zh' ? '没人(狼队没选目标)' : 'nobody (wolves picked no target)');
     const sys = lang === 'zh'
       ? `你是"${actor.name}"(第${actor.id + 1}号),身份:女巫 💊
-今晚狼人想杀的是:${wolfTarget !== null ? `${wolfTarget + 1}号 ${state.players[wolfTarget].name}` : '没人(没狼/守卫挡了)'}
+今晚狼人想杀的是:${wolfTarget !== null ? `${wolfTarget + 1}号 ${state.players[wolfTarget].name}` : noTargetHint}
 ${isFirstNight && selfTarget ? '⚠️ 但因为是首夜(网杀规则),你不能自救。' : ''}
 ${!canAntidote ? '解药:已用' : '解药:可用'}
 ${canPoison ? '毒药:可用' : '毒药:已用'}

@@ -702,7 +702,13 @@ export function aggregateWolfVotes(state: GameState, wolfIds: number[], votes: n
   const alive = new Set(state.players.filter(p => p.alive).map(p => p.id));
   // P1-#10: 排除狼投自己
   const validVotes = votes.filter((v, i) => v > 0 && alive.has(v) && v !== wolfIds[i]);
-  if (validVotes.length === 0) return null;
+  if (validVotes.length === 0) {
+    // 修复(P0):所有狼都投票失败/null,兜底随机选一个非狼存活目标(防止"狼人行动但没杀人"卡死)
+    const wolfIdSet = new Set(wolfIds);
+    const candidates = state.players.filter(p => p.alive && !wolfIdSet.has(p.id));
+    if (candidates.length === 0) return null;
+    return candidates[Math.floor(Math.random() * candidates.length)].id;
+  }
   // 计票
   const tally: Record<number, number> = {};
   validVotes.forEach(v => { tally[v] = (tally[v] || 0) + 1; });
