@@ -364,8 +364,11 @@ function NoKeyWarn({ lang }: { lang: 'zh' | 'en' }) {
    ── 现在显示:phase 名 + 当前进展("AI X 正在投票/发言…")+ "你是鬼,看着就行"
    ── 替换原本 DayVote 静态 "你已死亡" 面板
    ═══════════════════════════════════════════════════════════════════ */
-function DeadSpectator({ state, lang, busyHint }: {
-  state: GameState; lang: 'zh' | 'en'; busyHint?: string;
+function DeadSpectator({ state, lang, busyHint, progress }: {
+  state: GameState; lang: 'zh' | 'en';
+  busyHint?: string;
+  /** P7-#B:可选进度(0-1),有的话显示进度条让用户看到游戏在动 */
+  progress?: { current: number; total: number; label?: string };
 }) {
   const phaseLabel: Record<Phase, { zh: string; en: string }> = {
     setup: { zh: '初始化', en: 'Setup' },
@@ -407,6 +410,24 @@ function DeadSpectator({ state, lang, busyHint }: {
       <div className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
         {lang === 'zh' ? `存活 ${aliveCount}/${totalCount} 人 · 你是鬼,看着就行` : `Alive ${aliveCount}/${totalCount} · Spectate only`}
       </div>
+      {/* P7-#B:进度条 —— 显示讨论/投票进度,让用户清楚游戏在动 */}
+      {progress && (
+        <div className="mt-3 text-left">
+          <div className="text-[10px] mb-1" style={{ color: '#a78bfa' }}>
+            {progress.label ?? (lang === 'zh' ? `进度 ${progress.current}/${progress.total}` : `Progress ${progress.current}/${progress.total}`)}
+          </div>
+          <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(0,0,0,0.4)' }}>
+            <div
+              className="h-full transition-all duration-500"
+              style={{
+                width: `${Math.min(100, (progress.current / Math.max(1, progress.total)) * 100)}%`,
+                background: 'linear-gradient(90deg, #a78bfa, #6366f1)',
+                boxShadow: '0 0 8px rgba(99,102,241,0.5)',
+              }}
+            />
+          </div>
+        </div>
+      )}
       {busyHint && (
         <div className="mt-2 text-[11px] px-2 py-1 rounded inline-block" style={{
           background: 'rgba(99,102,241,0.15)',
@@ -3320,7 +3341,12 @@ function DayDiscuss({ state, setState, lang, aiSpeak }: {
       busyHint={cur ? (lang === 'zh'
         ? `🎤 ${cur.name} 正在发言(剩 ${timeLeft}s)…`
         : `🎤 ${cur.name} speaking (${timeLeft}s)…`)
-        : undefined} />;
+        : undefined}
+      progress={cur ? {
+        current: discussIdx + 1,
+        total: speakers.length,
+        label: lang === 'zh' ? `🗣️ 发言进度 ${discussIdx + 1}/${speakers.length}` : `🗣️ Speech ${discussIdx + 1}/${speakers.length}`,
+      } : undefined} />;
   }
 
   // 推断:用户是否是狼(用于显示自爆按钮)
@@ -3338,18 +3364,26 @@ function DayDiscuss({ state, setState, lang, aiSpeak }: {
     setTimeLeft(60); // 重置倒计时
   };
 
-  /* 60s 倒计时(超时自动跳过) */
+  /* 60s 倒计时(超时自动跳过)
+     P7-#A 修复:即使 busy=true 也会检查 timeLeft<=0,强制跳过(防止 AI 卡住) */
   useEffect(() => {
     if (!cur) return;
-    if (busy || isUserTurn) {
-      // AI 思考中或用户输入中,倒计时暂停
+    if (isUserTurn) {
+      // 用户输入中,倒计时暂停
       return;
     }
     if (timeLeft <= 0) {
-      // 超时:AI 自动 next(应该已经 busy=false 时已经过 nextSpeaker 了,这里兜底)
+      // 超时:无论 busy 与否都强制 next(AI 兜底用)
+      if (lastProcessedSpeakerRef.current === cur.id) {
+        lastProcessedSpeakerRef.current = null;
+      }
+      setBusy(false);  // 强制解除 busy
       if (discussIdx + 1 < speakers.length) {
         setDiscussIdx(i => i + 1);
         setTimeLeft(60);
+      } else {
+        // 全部说完,直接进 day-vote
+        setState(s => ({ ...s, phase: 'day-vote' }));
       }
       return;
     }
@@ -3378,7 +3412,20 @@ function DayDiscuss({ state, setState, lang, aiSpeak }: {
     const usr = lang === 'zh'
       ? '请发言(30-100 字,口语化,像微信群聊天),带节奏、跟队友呼应'
       : 'Speak in 30-100 words, casual chat style, drive the discussion';
+    // P7-#A 修复:AI 发言超时兜底(防止"卡着"—— AI 长时间不响应时强制推进)
+    const speechTimeoutMs = 45000;  // 45s 超时
+    const timeoutId = window.setTimeout(() => {
+      if (lastProcessedSpeakerRef.current === cur.id) {
+        // 超时还没返回 → 强制 setBusy(false),让 countdown 继续
+        // eslint-disable-next-line no-console
+        console.warn(`[Werewolf] AI speech timeout for player ${cur.id}, forcing advance`);
+        lastProcessedSpeakerRef.current = null;  // 重置以便 .then() 不会再误触发
+        setBusy(false);
+        setTimeLeft(0);
+      }
+    }, speechTimeoutMs);
     aiSpeak(cur.id, sys, usr, false, { temperature: temp }).then(({ speech }) => {
+      clearTimeout(timeoutId);
       // P1-#48 修复:AI 发言也检测 claim 关键字
       // 放宽正则:支持 "我是预"/"我验过"/"checked"/"3号位"/"3 是狼"/"3→狼" 等
       // P1-#22: 在 setState 内同步推进 discussIdx/phase(避免 setTimeout race)
