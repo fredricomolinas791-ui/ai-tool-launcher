@@ -1507,6 +1507,9 @@ function applyNightAction(
     case 'wolfking':
     case 'wolfbeauty': {
       if (target === null) return s;
+      // 修复(P0):狼人不能选已死的玩家,否则 resolveNight 会重复 log 死亡
+      // 也会防止选自己或空 ID
+      if (target < 0 || target >= players.length || !players[target]?.alive) return s;
       // 记录狼队决定的杀(暂存到 publicLog,等结算用)
       return {
         ...s,
@@ -1520,6 +1523,8 @@ function applyNightAction(
     }
     case 'seer': {
       if (target === null) return s;
+      // 修复(P0):预言家不能验自己(规则上 always 失败,且会污染 seerChecks)
+      if (target === actorId) return s;
       const isWolf = players[target].faction === 'wolf';
       return {
         ...s,
@@ -2674,8 +2679,14 @@ function DayDiscuss({ state, setState, lang, aiSpeak }: {
             }).filter(c => c.targetId >= 0 && c.targetId < s.players.length);
             if (checks.length > 0) {
               const existing = dayClaims.seerClaims.findIndex(c => c.playerId === cur.id);
-              if (existing >= 0) dayClaims.seerClaims[existing] = { playerId: cur.id, checks };
-              else dayClaims.seerClaims.push({ playerId: cur.id, checks });
+              if (existing >= 0) {
+                dayClaims.seerClaims[existing] = { playerId: cur.id, checks };
+              } else if (dayClaims.seerClaims.length < 3) {
+                // 修复(P1):每轮最多 3 个 seer claim(1 真预 + 1 狼悍跳 + 1 混乱者)
+                // 超过的只 log 到 publicLog,不进 seerClaims(避免无限假预言家稀释真预言家权重)
+                dayClaims.seerClaims.push({ playerId: cur.id, checks });
+              }
+              // else: 已超 3 个,本轮不再添加新 seer claim(防止第 4+ 个假预言家污染)
             }
           }
         }
@@ -2776,8 +2787,13 @@ function DayDiscuss({ state, setState, lang, aiSpeak }: {
           });
           // 覆盖或新增
           const existing = dayClaims.seerClaims.findIndex(c => c.playerId === state.userId);
-          if (existing >= 0) dayClaims.seerClaims[existing] = { playerId: state.userId, checks };
-          else dayClaims.seerClaims.push({ playerId: state.userId, checks });
+          if (existing >= 0) {
+            dayClaims.seerClaims[existing] = { playerId: state.userId, checks };
+          } else if (dayClaims.seerClaims.length < 3) {
+            // 修复(P1):每轮最多 3 个 seer claim(与 AI 发言分支对齐,防止假预言家无限出现)
+            dayClaims.seerClaims.push({ playerId: state.userId, checks });
+          }
+          // else: 已超 3 个,本轮不再添加
         }
       }
       if (/女巫|解药|毒药|witch|antidote|poison/i.test(text)) {
