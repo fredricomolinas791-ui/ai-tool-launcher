@@ -26,7 +26,7 @@ import {
   BOARDS, BOARD_LIST, ROLES, type BoardId, type GameState, type Player, type RoleId, type SpeechRecord,
   initGame, loadAIConfig, callAIStream, checkWinner, parseAIDecision, tryJsonExtract, applyLoversChain,
   applyKnightDuel, applyWolfSelfDestruct, canVote, killPlayers,
-  sheriffVoteWeight, aggregateWolfVotesLegacy, parseAIDecisionToTargetId,
+  sheriffVoteWeight, aggregateWolfVotes, parseAIDecisionToTargetId,
 } from './engine';
 import type { BoardDef } from './data';
 import { canWitchSelfSave } from './data';
@@ -909,9 +909,9 @@ function NightPanel({ state, setState, lang, aiSpeak, onActingChange }: {
             if (aiDoneRef.current) return;
             aiDoneRef.current = true;
             if (cancelled) return;
-            // 超时:不强制投谁,让 aggregateWolfVotes 用现有票数(可能全空 → null)
-            // P1-#10 修复:用新签名 aggregateWolfVotesLegacy(只需 votes 数组)
-            let target = aggregateWolfVotesLegacy(stateRef.current.wolfVotes);
+            // 超时:用现有票数走严格多数逻辑
+            // 修复(P0 强化):改用带 state 的 aggregateWolfVotes,狼队协商一致(>50%)才算,否则在被选过的目标里随机
+            let target = aggregateWolfVotes(stateRef.current, cur.playerIds, stateRef.current.wolfVotes);
             // 修复(P0):如果所有狼票都无效,兜底随机选一个非狼存活目标(否则会出现"狼人行动但没杀人"卡死)
             if (target === null) {
               const wolfIdSet = new Set(cur.playerIds);
@@ -943,9 +943,9 @@ function NightPanel({ state, setState, lang, aiSpeak, onActingChange }: {
             if (cancelled || aiDoneRef.current) return;
             aiDoneRef.current = true;
             // 把狼队的票数写到 state.wolfVotes(供下个阶段查阅)
-            // P1-#10 修复:用新签名 aggregateWolfVotesLegacy(只需 votes 数组)
+            // 修复(P0 强化):改用带 state 的 aggregateWolfVotes,严格多数(>50%)才算
             const validVotes = votes.filter((v): v is number => v !== null);
-            let target = aggregateWolfVotesLegacy(validVotes);
+            let target = aggregateWolfVotes(stateRef.current, cur.playerIds, validVotes);
             // 修复(P0):所有狼票都无效时,兜底随机选一个非狼存活目标
             if (target === null) {
               const wolfIdSet = new Set(cur.playerIds);

@@ -712,13 +712,19 @@ export function aggregateWolfVotes(state: GameState, wolfIds: number[], votes: n
   // 计票
   const tally: Record<number, number> = {};
   validVotes.forEach(v => { tally[v] = (tally[v] || 0) + 1; });
+  const totalValid = validVotes.length;
   const maxVotes = Math.max(...Object.values(tally));
-  const topCandidates = Object.entries(tally)
-    .filter(([_, c]) => c === maxVotes)
-    .map(([id]) => parseInt(id, 10));
-  if (topCandidates.length === 1) return topCandidates[0];
-  // 平票 → 随机
-  return topCandidates[Math.floor(Math.random() * topCandidates.length)];
+  // 修复(P0 强化):少数服从多数 —— 严格多数(>50%)才算"狼队协商一致",否则在被选过的目标里随机
+  //  - 4-0 / 3-1 / 2-0 等:严格多数 → 选 max
+  //  - 2-2(4狼):2*2=4 不 > 4,无多数 → 随机
+  //  - 2-1-1(4狼):2*2=4 不 > 4,无多数 → 随机
+  //  - 1-1-1-1(4狼):无多数 → 随机
+  if (maxVotes * 2 > totalValid) {
+    return parseInt(Object.entries(tally).find(([_, c]) => c === maxVotes)![0], 10);
+  }
+  // 无严格多数:在所有被选过的目标里随机选一个击杀
+  const allVotedTargets = Object.keys(tally).map(k => parseInt(k, 10));
+  return allVotedTargets[Math.floor(Math.random() * allVotedTargets.length)];
 }
 
 /* 保留旧签名兼容(返回 null 用于兜底) —— 实际调用都改用新签名 */
