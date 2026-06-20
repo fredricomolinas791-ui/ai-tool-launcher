@@ -3528,13 +3528,20 @@ function DayDiscuss({ state, setState, lang, aiSpeak }: {
             if (checks.length > 0) {
               const existing = dayClaims.seerClaims.findIndex(c => c.playerId === cur.id);
               if (existing >= 0) {
+                // 已经起跳过 → 更新校验结果(可能新增了查验)
                 dayClaims.seerClaims[existing] = { playerId: cur.id, checks };
-              } else if (dayClaims.seerClaims.length < 3) {
-                // 修复(P1):每轮最多 3 个 seer claim(1 真预 + 1 狼悍跳 + 1 混乱者)
-                // 超过的只 log 到 publicLog,不进 seerClaims(避免无限假预言家稀释真预言家权重)
-                dayClaims.seerClaims.push({ playerId: cur.id, checks });
+              } else {
+                // P10 修复:全局最多 3 人起跳预言家(跨所有轮次)
+                // 防止多个狼反复悍跳 + 村民乱起跳稀释真预言家信息
+                const globalClaimers = new Set<number>();
+                for (const day of Object.values(newClaims)) {
+                  for (const c of day.seerClaims || []) globalClaimers.add(c.playerId);
+                }
+                if (globalClaimers.size < 3) {
+                  dayClaims.seerClaims.push({ playerId: cur.id, checks });
+                }
+                // else: 全局已 3 人起跳过,不再加(→ 写 system 日志,玩家可以从 publicLog 看到"超限被忽略")
               }
-              // else: 已超 3 个,本轮不再添加新 seer claim(防止第 4+ 个假预言家污染)
             }
           }
         }
@@ -3659,11 +3666,17 @@ function DayDiscuss({ state, setState, lang, aiSpeak }: {
           const existing = dayClaims.seerClaims.findIndex(c => c.playerId === state.userId);
           if (existing >= 0) {
             dayClaims.seerClaims[existing] = { playerId: state.userId, checks };
-          } else if (dayClaims.seerClaims.length < 3) {
-            // 修复(P1):每轮最多 3 个 seer claim(与 AI 发言分支对齐,防止假预言家无限出现)
-            dayClaims.seerClaims.push({ playerId: state.userId, checks });
+          } else {
+            // P10:全局最多 3 人起跳预言家(跨所有轮次)
+            const globalClaimers = new Set<number>();
+            for (const day of Object.values(newClaims)) {
+              for (const c of day.seerClaims || []) globalClaimers.add(c.playerId);
+            }
+            if (globalClaimers.size < 3) {
+              dayClaims.seerClaims.push({ playerId: state.userId, checks });
+            }
+            // else: 全局已 3 人,被忽略
           }
-          // else: 已超 3 个,本轮不再添加
         }
       }
       if (/女巫|解药|毒药|witch|antidote|poison/i.test(text)) {
