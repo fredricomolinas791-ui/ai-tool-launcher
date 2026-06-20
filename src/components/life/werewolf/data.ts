@@ -27,6 +27,7 @@ export type Phase =
   | 'day-announce' | 'sheriff-election' | 'sheriff-pick-order' | 'knight-duel' | 'day-discuss' | 'day-vote'
   | 'vote-results' | 'pk-speech' | 'pk-vote'
   | 'hunter-shoot' | 'idiot-flip' | 'last-words' | 'wolfking-pick'
+  | 'sheriff-succession'  // P6-#F:警长死后传承
   | 'judge' | 'gameover';
 export type Personality =
   | 'strategist' | 'aggressive' | 'mysterious'

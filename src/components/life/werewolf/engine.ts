@@ -158,6 +158,22 @@ export interface GameState {
    * key = 玩家 ID,value = 标记文字(如"狼""守卫""预言家""存疑")
    */
   userMarks: Record<number, string>;
+  /**
+   * P6-#E:每轮投票历史(累积,用于右侧栏展示投票模式 → 看阵营)
+   * 数组每个元素:{round, votes, tally, exiled}
+   */
+  voteHistory: Array<{
+    round: number;
+    allVotes: { voterId: number; targetId: number }[];
+    tally: Record<number, number>;
+    exiled: number | null;
+  }>;
+  /**
+   * P6-#F:警长死后,等待警长选 pass/tear
+   * - null = 不需要处理(警长没死 / 已处理完)
+   * - number = 死掉的警长 ID,等 next() 跳到 sheriff-succession 阶段
+   */
+  pendingSheriffSuccession: number | null;
 }
 
 const defaultMemory = (): PrivateMemory => ({
@@ -211,6 +227,8 @@ export function initGame(boardId: BoardId, userName: string, lang: 'zh' | 'en' =
     claims: {},
     wolfkingVictim: null,
     userMarks: {},
+    voteHistory: [],
+    pendingSheriffSuccession: null,
   };
 }
 
@@ -468,12 +486,16 @@ export function applyLoversChain(state: GameState, newlyDead: number[]): { state
    ── 2) 清除 isSheriff(警长死后不再是警长)
    ── 3) 加 publicLog
    ── 4) 触发情侣殉情
+   ── 5) P6-#F:检测警长死亡 → 设置 pendingSheriffSuccession 触发传承选择
    ═══════════════════════════════════════════════════════════════════ */
 export function killPlayers(state: GameState, ids: number[], reason: string, killer: string): GameState {
   const dead = ids.filter(id => state.players[id].alive);
   if (dead.length === 0) return state;
+  // P6-#F:找出死亡者中谁是警长
+  const deadSheriffId = dead.find(id => state.players[id].privateMemory.isSheriff) ?? null;
   let s: GameState = {
     ...state,
+    pendingSheriffSuccession: deadSheriffId !== null ? deadSheriffId : state.pendingSheriffSuccession,
     players: state.players.map(p => {
       if (!dead.includes(p.id)) return p;
       // 死人:alive=false + 清 isSheriff
