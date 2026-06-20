@@ -28,7 +28,7 @@ import {
   applyKnightDuel, applyWolfSelfDestruct, canVote, killPlayers,
   sheriffVoteWeight, aggregateWolfVotes, parseAIDecisionToTargetId,
 } from './engine';
-import type { BoardDef } from './data';
+import type { BoardDef, Phase } from './data';
 import { canWitchSelfSave } from './data';
 import { PersonalityRender } from './Personalities';
 
@@ -354,6 +354,67 @@ function NoKeyWarn({ lang }: { lang: 'zh' | 'en' }) {
         <AlertTriangle size={18} />
         <div className="text-sm">{lang === 'zh' ? '请先在「设置 → API Key 配置」中添加至少一个 provider 的 API key。' : 'Add an API key in Settings → API Key first.'}</div>
       </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   死人观战面板 — P5 修复:死亡用户在所有 phase 都能看到当前阶段
+   ── 用户原话:"我死了以后游戏暂停了" —— 实际上游戏没暂停,但旧 UI 是静态的
+   ── 现在显示:phase 名 + 当前进展("AI X 正在投票/发言…")+ "你是鬼,看着就行"
+   ── 替换原本 DayVote 静态 "你已死亡" 面板
+   ═══════════════════════════════════════════════════════════════════ */
+function DeadSpectator({ state, lang, busyHint }: {
+  state: GameState; lang: 'zh' | 'en'; busyHint?: string;
+}) {
+  const phaseLabel: Record<Phase, { zh: string; en: string }> = {
+    setup: { zh: '初始化', en: 'Setup' },
+    'role-reveal': { zh: '身份公布', en: 'Role Reveal' },
+    night: { zh: '🌙 夜间行动', en: '🌙 Night' },
+    'night-resolve': { zh: '夜间结算', en: 'Night Resolve' },
+    'day-announce': { zh: '天亮了', en: 'Dawn' },
+    'sheriff-election': { zh: '⭐ 警长竞选', en: '⭐ Sheriff Election' },
+    'sheriff-pick-order': { zh: '警长选发言顺序', en: 'Sheriff Pick Order' },
+    'knight-duel': { zh: '⚔️ 骑士决斗', en: '⚔️ Knight Duel' },
+    'day-discuss': { zh: '🗣️ 白天讨论', en: '🗣️ Day Discussion' },
+    'day-vote': { zh: '🗳️ 投票放逐', en: '🗳️ Vote' },
+    'vote-results': { zh: '投票结果', en: 'Vote Results' },
+    'pk-speech': { zh: '⚔️ PK 发言', en: '⚔️ PK Speech' },
+    'pk-vote': { zh: 'PK 投票', en: 'PK Vote' },
+    'hunter-shoot': { zh: '🏹 猎人开枪', en: '🏹 Hunter Shoot' },
+    'idiot-flip': { zh: '🤪 白痴翻牌', en: '🤪 Idiot Flip' },
+    'last-words': { zh: '🕯️ 遗言', en: '🕯️ Last Words' },
+    'wolfking-pick': { zh: '👑 狼王带人', en: '👑 Wolf King Pick' },
+    judge: { zh: '法官', en: 'Judge' },
+    gameover: { zh: '🏆 游戏结束', en: '🏆 Game Over' },
+  };
+  const aliveCount = state.players.filter(p => p.alive).length;
+  const totalCount = state.players.length;
+  const currentPhase = phaseLabel[state.phase];
+  return (
+    <div className="p-4 rounded-xl text-center" style={{
+      background: 'rgba(107,114,128,0.12)',
+      border: '1px solid #6b7280',
+    }}>
+      <Skull size={20} className="mx-auto mb-2" style={{ color: '#9ca3af' }} />
+      <div className="font-semibold text-sm mb-1" style={{ color: '#9ca3af' }}>
+        {lang === 'zh' ? '💀 你已死亡' : '💀 You are dead'}
+      </div>
+      <div className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>
+        {lang === 'zh' ? `当前阶段:${currentPhase.zh}` : `Current phase: ${currentPhase.en}`}
+      </div>
+      <div className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+        {lang === 'zh' ? `存活 ${aliveCount}/${totalCount} 人 · 你是鬼,看着就行` : `Alive ${aliveCount}/${totalCount} · Spectate only`}
+      </div>
+      {busyHint && (
+        <div className="mt-2 text-[11px] px-2 py-1 rounded inline-block" style={{
+          background: 'rgba(99,102,241,0.15)',
+          color: '#a78bfa',
+          animation: 'pulse 2s infinite',
+        }}>
+          {busyHint}
+        </div>
+      )}
     </div>
   );
 }
@@ -1021,6 +1082,21 @@ function NightPanel({ state, setState, lang, aiSpeak, onActingChange }: {
   const cur = actions[actionIdx];
   // 用户是否在当前行动组(狼队或单人)
   const isUserActor = cur ? cur.playerIds.includes(state.userId) : false;
+
+  // P5 修复:死人不能夜间行动,显示观战面板(用户原话:"我死了以后游戏暂停了")
+  const userAliveNP = state.players[state.userId]?.alive;
+  if (!userAliveNP) {
+    const curHint = (() => {
+      if (!cur) return undefined;
+      if (scene === 'action') return lang === 'zh'
+        ? `${ROLES[cur.role].emoji} ${ROLES[cur.role].name.zh} 正在行动…`
+        : `${ROLES[cur.role].emoji} ${ROLES[cur.role].name.en} acting…`;
+      if (scene === 'intro') return lang === 'zh' ? '🌙 夜间开场…' : '🌙 Night intro…';
+      if (scene === 'outro') return lang === 'zh' ? '🌙 夜间收尾…' : '🌙 Night outro…';
+      return undefined;
+    })();
+    return <DeadSpectator state={state} lang={lang} busyHint={curHint} />;
+  }
 
   // 通知 GameRunner 当前行动玩家 —— P1-#11 修复:
   // 用户是当前行动者,或用户是狼(看到狼队回合),都点亮座位
@@ -2208,6 +2284,13 @@ function SheriffElection({ state, setState, lang, aiSpeak }: {
   const stateRef = useRef(state);
   stateRef.current = state;
 
+  // P5 修复:死人不能参与警长竞选(用户原话:"我已经上警为啥我还能投警徽票")
+  const userAlive = state.players[state.userId]?.alive;
+  if (!userAlive) {
+    return <DeadSpectator state={state} lang={lang}
+      busyHint={busy ? (lang === 'zh' ? '⭐ 警长竞选进行中…' : '⭐ Sheriff election in progress…') : undefined} />;
+  }
+
   /* 推导:候选人列表(已报名 - 已退水) */
   const candidates = election.registeredIds.filter(id => !election.withdrawnIds.includes(id));
   // 当前阶段的 speakers 列表(根据 step 推导)
@@ -2875,6 +2958,16 @@ function DayDiscuss({ state, setState, lang, aiSpeak }: {
   const cur = speakers[discussIdx];
   const isUserTurn = cur && cur.id === state.userId && !busy;
 
+  // P5 修复:死人不能发言,显示观战面板(可看到当前 speaker + 倒计时)
+  const userAlive = state.players[state.userId]?.alive;
+  if (!userAlive) {
+    return <DeadSpectator state={state} lang={lang}
+      busyHint={cur ? (lang === 'zh'
+        ? `🎤 ${cur.name} 正在发言(剩 ${timeLeft}s)…`
+        : `🎤 ${cur.name} speaking (${timeLeft}s)…`)
+        : undefined} />;
+  }
+
   // 推断:用户是否是狼(用于显示自爆按钮)
   const userP = state.players[state.userId];
   const userIsWolf = userP?.alive && userP.faction === 'wolf';
@@ -3263,19 +3356,11 @@ function DayVote({ state, setState, lang, aiSpeak }: {
   const [busy, setBusy] = useState(false);
 
   // P1-#B 修复:死人不能投票(规则上死亡玩家失去投票权);只可观战
+  // P5 增强:dead panel 显示当前阶段 + busy 提示,避免用户以为游戏暂停了
   const userAlive = state.players[state.userId]?.alive;
   if (!userAlive) {
-    return (
-      <div className="p-4 rounded-xl text-center" style={{ background: 'var(--color-card-bg)', border: '1px solid #6b7280' }}>
-        <Skull size={20} className="mx-auto mb-2" style={{ color: '#9ca3af' }} />
-        <h3 className="font-semibold mb-1" style={{ color: 'var(--color-text-muted)' }}>
-          {lang === 'zh' ? '💀 你已死亡' : '💀 You are dead'}
-        </h3>
-        <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
-          {lang === 'zh' ? '死亡玩家不能投票,只能观战。看 AI 玩家怎么斗智斗勇。' : 'Dead players cannot vote. Spectate only.'}
-        </p>
-      </div>
-    );
+    return <DeadSpectator state={state} lang={lang}
+      busyHint={busy ? (lang === 'zh' ? '🤔 AI 玩家正在投票…' : '🤔 AI players voting…') : undefined} />;
   }
 
   // P3-#42 修复:用户点「确认投票」→ 锁住 userTarget → 跑 AI 投票 → finalize
