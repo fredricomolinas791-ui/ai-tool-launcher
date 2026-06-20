@@ -1126,6 +1126,9 @@ function NightSceneDisplay({ scene, cur, state, lang, timeLeft, onUserAction, bu
     );
   }
   // action
+  // 修复(P0):用户是预言家时,在行动 UI 上方显示已查验结果(否则验完看不到)
+  const userIsSeerAction = cur.role === 'seer' && isMe;
+  const userSeerChecks = userIsSeerAction ? userP.privateMemory.seerChecks : [];
   return (
     <div>
       <div className="text-4xl mb-2">{role.emoji}</div>
@@ -1137,6 +1140,20 @@ function NightSceneDisplay({ scene, cur, state, lang, timeLeft, onUserAction, bu
       <div className="text-[10px] mb-3" style={{ color: timeLeft < 10 ? '#dc2626' : 'var(--color-text-muted)' }}>
         ⏱ {timeLeft.toFixed(1)}s {lang === 'zh' ? '后超时自动跳过' : 'timeout auto-skip'}
       </div>
+      {userIsSeerAction && userSeerChecks.length > 0 && (
+        <div className="mb-3 p-2 rounded text-left" style={{ background: 'var(--color-bg-deep)', border: '1px solid #6366f1' }}>
+          <p className="text-xs font-semibold mb-1" style={{ color: '#a78bfa' }}>
+            🔮 {lang === 'zh' ? '你已查验:' : 'Your checks:'}
+          </p>
+          {userSeerChecks.map((c, i) => (
+            <p key={i} className="text-[11px]" style={{ color: 'var(--color-text)' }}>
+              {lang === 'zh' ? `第 ${c.night} 晚` : `Night ${c.night}`}: {c.targetId + 1}{lang === 'zh' ? '号' : '#'} → {c.isWolf
+                ? (lang === 'zh' ? '🐺 狼人' : '🐺 Wolf')
+                : (lang === 'zh' ? '🛡️ 好人' : '🛡️ Good')}
+            </p>
+          ))}
+        </div>
+      )}
       {isMe ? (
         <UserNightActionUI role={cur.role} state={state} lang={lang} onConfirm={onUserAction} />
       ) : busy ? (
@@ -1598,7 +1615,11 @@ function applyNightAction(
    ──        跟标准规则的"两救抵消"完全相反
    ── 遗言规则:仅首夜夜间死亡的玩家有遗言;非首夜夜间死亡的玩家没有遗言 */
 function resolveNight(s: GameState, _lang: 'zh' | 'en'): GameState {
-  let dead = new Set<number>(s.deadThisNight);
+  // 修复(P0):只保留还活着的玩家进 dead set,过滤掉上一夜遗留的死亡
+  // 否则会出现"8号 在夜里倒下了"每夜重复 log 的 bug
+  let dead = new Set<number>(
+    s.deadThisNight.filter(id => id >= 0 && id < s.players.length && s.players[id]?.alive)
+  );
   const guard = s.players.find(p => p.alive && p.role === 'guard');
   const witch = s.players.find(p => p.alive && p.role === 'witch');
   const guardTarget = guard?.privateMemory.guardLastTargetId ?? null;
@@ -2207,8 +2228,8 @@ function SheriffElection({ state, setState, lang, aiSpeak }: {
   /* PK 发言:平票者按候选人列表中的逆序重新发言 */
   useEffect(() => {
     if (step !== 'pk-speech' || !tiedIds) return;
-    // 找出 tiedIds 在 candidates 中的位置,按逆序
-    const tiedInOrder = candidates.filter(c => tiedIds.includes(c));
+    // 修复(P0):必须与渲染时的 pkSpeakers 顺序一致(都是 reverse),否则用户找不到自己的发言轮
+    const tiedInOrder = candidates.filter(c => tiedIds.includes(c)).slice().reverse();
     // 简化:从 election.speechIdx 开始遍历 tiedInOrder
     const curSpeakerId = tiedInOrder[election.speechIdx];
     if (!curSpeakerId) {
