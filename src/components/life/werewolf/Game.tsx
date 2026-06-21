@@ -364,11 +364,13 @@ function NoKeyWarn({ lang }: { lang: 'zh' | 'en' }) {
    ── 现在显示:phase 名 + 当前进展("AI X 正在投票/发言…")+ "你是鬼,看着就行"
    ── 替换原本 DayVote 静态 "你已死亡" 面板
    ═══════════════════════════════════════════════════════════════════ */
-function DeadSpectator({ state, lang, busyHint, progress }: {
+function DeadSpectator({ state, lang, busyHint, progress, onExit }: {
   state: GameState; lang: 'zh' | 'en';
   busyHint?: string;
   /** P7-#B:可选进度(0-1),有的话显示进度条让用户看到游戏在动 */
   progress?: { current: number; total: number; label?: string };
+  /** P11-A:死者退出按钮 */
+  onExit?: () => void;
 }) {
   const phaseLabel: Record<Phase, { zh: string; en: string }> = {
     setup: { zh: '初始化', en: 'Setup' },
@@ -436,6 +438,22 @@ function DeadSpectator({ state, lang, busyHint, progress }: {
         }}>
           {busyHint}
         </div>
+      )}
+      {/* P11-A:死者可以提前退出本局(不再被迫看完一整局) */}
+      {onExit && state.phase !== 'gameover' && (
+        <button
+          onClick={() => {
+            if (typeof window !== 'undefined' && window.confirm(
+              lang === 'zh'
+                ? '你已死亡。确认退出本局吗?(游戏状态会清除)'
+                : 'You are dead. Exit this game? (State will be cleared)'
+            )) onExit();
+          }}
+          className="mt-3 px-3 py-1.5 rounded text-[11px] transition-all hover:scale-105"
+          style={{ background: 'rgba(107,114,128,0.25)', color: 'var(--color-text-muted)', border: '1px solid #6b7280' }}
+        >
+          {lang === 'zh' ? '🚪 退出本局' : '🚪 Leave game'}
+        </button>
       )}
     </div>
   );
@@ -633,12 +651,12 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
           </div>
           {/* 当前阶段 UI */}
           {state.phase === 'role-reveal' && <RoleRevealPanel state={state} lang={lang} onContinue={() => setState(s => ({ ...s, phase: 'night', round: s.round + 1 }))} />}
-          {state.phase === 'night' && <NightPanel state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} onActingChange={setActingPlayerIds} />}
+          {state.phase === 'night' && <NightPanel state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} onActingChange={setActingPlayerIds} onExit={onExit} />}
           {state.phase === 'last-words' && <LastWords state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
           {state.phase === 'day-announce' && <DayAnnounce state={state} setState={setState} lang={lang} />}
-          {state.phase === 'sheriff-election' && <SheriffElection state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
-          {state.phase === 'day-discuss' && <DayDiscuss state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
-          {state.phase === 'day-vote' && <DayVote state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
+          {state.phase === 'sheriff-election' && <SheriffElection state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} onExit={onExit} />}
+          {state.phase === 'day-discuss' && <DayDiscuss state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} onExit={onExit} />}
+          {state.phase === 'day-vote' && <DayVote state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} onExit={onExit} />}
           {state.phase === 'vote-results' && <VoteResults state={state} setState={setState} lang={lang} />}
           {state.phase === 'pk-speech' && <PKSpeech state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
           {state.phase === 'pk-vote' && <PKVote state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
@@ -1098,11 +1116,13 @@ const NIGHT_TIMEOUTS: Partial<Record<RoleId, number>> = {
 };
 function getNightTimeout(role: RoleId): number { return NIGHT_TIMEOUTS[role] ?? 30; }
 
-function NightPanel({ state, setState, lang, aiSpeak, onActingChange }: {
+function NightPanel({ state, setState, lang, aiSpeak, onActingChange, onExit }: {
   state: GameState; setState: (updater: (s: GameState) => GameState) => void;
   lang: 'zh' | 'en';
   aiSpeak: (playerId: number, system: string, user: string, silent?: boolean) => Promise<{ speech: string; target: number | null }>;
   onActingChange?: (playerIds: number[]) => void;
+  /** P11-A:死者退出按钮 */
+  onExit?: () => void;
 }) {
   // 行动队列(每个行动可能包含多个玩家 —— 狼队合并成一个行动,互相看到身份)
   const [actions, setActions] = useState<{ role: RoleId; playerIds: number[] }[]>([]);
@@ -1173,7 +1193,7 @@ function NightPanel({ state, setState, lang, aiSpeak, onActingChange }: {
       if (scene === 'outro') return lang === 'zh' ? '🌙 夜间收尾…' : '🌙 Night outro…';
       return undefined;
     })();
-    return <DeadSpectator state={state} lang={lang} busyHint={curHint} />;
+    return <DeadSpectator state={state} lang={lang} busyHint={curHint} onExit={onExit} />;
   }
 
   // 通知 GameRunner 当前行动玩家 —— P1-#11 修复:
@@ -2418,10 +2438,12 @@ function WolfKingPick({ state, setState, lang, aiSpeak }: {
 /* 警长竞选内部阶段(在 sheriff-election phase 内的子阶段) */
 type SheriffStep = 'register' | 'speech' | 'withdraw' | 'vote' | 'pk-speech' | 'pk-vote' | 'done';
 
-function SheriffElection({ state, setState, lang, aiSpeak }: {
+function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
   state: GameState; setState: (u: (s: GameState) => GameState) => void;
   lang: 'zh' | 'en';
   aiSpeak: (id: number, sys: string, usr: string, silent?: boolean, options?: { temperature?: number; maxTokens?: number }) => Promise<{ speech: string; target: number | null }>;
+  /** P11-A:死者退出按钮 */
+  onExit?: () => void;
 }) {
   const alivePlayers = state.players.filter(p => p.alive);
   // 初始化 sheriffElection(如果还没有)
@@ -2445,7 +2467,8 @@ function SheriffElection({ state, setState, lang, aiSpeak }: {
   const userAlive = state.players[state.userId]?.alive;
   if (!userAlive) {
     return <DeadSpectator state={state} lang={lang}
-      busyHint={busy ? (lang === 'zh' ? '⭐ 警长竞选进行中…' : '⭐ Sheriff election in progress…') : undefined} />;
+      busyHint={busy ? (lang === 'zh' ? '⭐ 警长竞选进行中…' : '⭐ Sheriff election in progress…') : undefined}
+      onExit={onExit} />;
   }
 
   /* 推导:候选人列表(已报名 - 已退水) */
@@ -2611,8 +2634,25 @@ function SheriffElection({ state, setState, lang, aiSpeak }: {
     });
   }, [step, candidates.length, state.userId, candidates, state.claims?.[state.round]?.seerClaims?.length]);
 
+  /* P11-B:防御性检查 —— 退水前必须确认所有候选人都发过言
+     规则:用户原话"上警玩家都发过言后才投警徽票"
+     检查:每个候选人必须有 phase='sheriff-speech' 的发言记录 */
+  const candidatesHaveSpoken = candidates.every(cid => {
+    return state.speeches.some(sp => sp.playerId === cid && sp.day === state.round && sp.phase === 'sheriff-speech');
+  });
+
   /* 用户退水确认 */
   const confirmWithdraw = () => {
+    // P11-B 防御性检查:必须所有候选人都发过言才能进投票
+    if (!candidatesHaveSpoken) {
+      const silentCandidates = candidates.filter(cid =>
+        !state.speeches.some(sp => sp.playerId === cid && sp.day === state.round && sp.phase === 'sheriff-speech')
+      ).map(cid => `${cid + 1}号`);
+      window.alert(lang === 'zh'
+        ? `⚠️ 还有候选人没发言: ${silentCandidates.join('、')}。\n必须所有候选人发过言后才能退水或投票。`
+        : `⚠️ Some candidates haven't spoken: ${silentCandidates.join(', ')}.\nAll candidates must speak before withdraw/vote.`);
+      return;
+    }
     setBusy(true);
     const withdrawn = [...election.withdrawnIds];
     if (userWithdrew === true) {
@@ -2903,11 +2943,19 @@ function SheriffElection({ state, setState, lang, aiSpeak }: {
             {lang === 'zh' ? '你未参与竞选,等待其他候选人决定…' : 'You are not a candidate, waiting…'}
           </p>
         )}
+        {/* P11-B:警告 —— 还有候选人没发言时显示红色提示 */}
+        {!candidatesHaveSpoken && (
+          <div className="mb-2 p-2 rounded text-[10px] text-center" style={{ background: 'rgba(220,38,38,0.15)', color: '#dc2626', border: '1px solid #dc2626' }}>
+            {lang === 'zh'
+              ? `⚠️ 还有候选人没发过言,必须全部发完才能投票`
+              : `⚠️ Some candidates haven't spoken yet — all must speak before voting`}
+          </div>
+        )}
         <p className="text-[10px] text-center mb-2" style={{ color: 'var(--color-text-muted)' }}>
           {lang === 'zh' ? `已退水(AI):${Object.values(aiDecisions).filter(d => d === 'withdraw').length} 人` : `AI withdrawn: ${Object.values(aiDecisions).filter(d => d === 'withdraw').length}`}
         </p>
         <div className="text-center mt-3">
-          <Button onClick={confirmWithdraw} disabled={candidates.includes(state.userId) ? userWithdrew === null : false}>
+          <Button onClick={confirmWithdraw} disabled={!candidatesHaveSpoken || (candidates.includes(state.userId) ? userWithdrew === null : false)}>
             {lang === 'zh' ? '下一步' : 'Next'} <ChevronRight size={14} className="ml-1" />
           </Button>
         </div>
@@ -3368,9 +3416,11 @@ function HunterShoot({ state, setState, lang, aiSpeak }: {
   );
 }
 
-function DayDiscuss({ state, setState, lang, aiSpeak }: {
+function DayDiscuss({ state, setState, lang, aiSpeak, onExit }: {
   state: GameState; setState: (u: (s: GameState) => GameState) => void;
   lang: 'zh' | 'en';
+  /** P11-A:死者退出按钮 */
+  onExit?: () => void;
   aiSpeak: (id: number, sys: string, usr: string, silent?: boolean, options?: { temperature?: number; maxTokens?: number }) => Promise<{ speech: string; target: number | null; useAntidote?: boolean }>;
 }) {
   const [discussIdx, setDiscussIdx] = useState(0);
@@ -3394,6 +3444,7 @@ function DayDiscuss({ state, setState, lang, aiSpeak }: {
         ? `🎤 ${cur.name} 正在发言(剩 ${timeLeft}s)…`
         : `🎤 ${cur.name} speaking (${timeLeft}s)…`)
         : undefined}
+      onExit={onExit}
       progress={cur ? {
         current: discussIdx + 1,
         total: speakers.length,
@@ -3852,9 +3903,11 @@ function DayDiscuss({ state, setState, lang, aiSpeak }: {
   );
 }
 
-function DayVote({ state, setState, lang, aiSpeak }: {
+function DayVote({ state, setState, lang, aiSpeak, onExit }: {
   state: GameState; setState: (u: (s: GameState) => GameState) => void;
   lang: 'zh' | 'en';
+  /** P11-A:死者退出按钮 */
+  onExit?: () => void;
   aiSpeak: (id: number, sys: string, usr: string, silent?: boolean, options?: { temperature?: number; maxTokens?: number }) => Promise<{ speech: string; target: number | null }>;
 }) {
   const alivePlayers = state.players.filter(p => p.alive);
@@ -3866,7 +3919,8 @@ function DayVote({ state, setState, lang, aiSpeak }: {
   const userAlive = state.players[state.userId]?.alive;
   if (!userAlive) {
     return <DeadSpectator state={state} lang={lang}
-      busyHint={busy ? (lang === 'zh' ? '🤔 AI 玩家正在投票…' : '🤔 AI players voting…') : undefined} />;
+      busyHint={busy ? (lang === 'zh' ? '🤔 AI 玩家正在投票…' : '🤔 AI players voting…') : undefined}
+      onExit={onExit} />;
   }
 
   // P3-#42 修复:用户点「确认投票」→ 锁住 userTarget → 跑 AI 投票 → finalize
