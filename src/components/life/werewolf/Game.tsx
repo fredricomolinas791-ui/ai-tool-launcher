@@ -2853,6 +2853,24 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
     }
   }, [step, election.speechIdx, candidates.length, pkSpeakers.length]);
 
+  // P17:观看模式下自动设置 userRegister/userWithdrew/userVote → 自动推进各阶段
+  useEffect(() => {
+    if (!state.spectatorMode) return;
+    // 报名阶段:用户不参加 → 不报名
+    if (step === 'register' && userRegister === null) {
+      setUserRegister(false);  // 用户不参与竞选
+    }
+    // 退水阶段:用户不是候选人 → 不需要选
+    // (组件代码已用 candidates.includes(state.userId) 判断,会显示等待)
+    // 投票阶段:用户非候选人 → 随机投一个候选人
+    if ((step === 'vote' || step === 'pk-vote') && userVote === null) {
+      const targetPool = step === 'pk-vote' && tiedIds ? tiedIds : candidates;
+      if (targetPool.length > 0) {
+        setUserVote(targetPool[Math.floor(Math.random() * targetPool.length)]);
+      }
+    }
+  }, [step, userRegister, userVote, candidates, tiedIds, state.spectatorMode]);
+
   /* 退水阶段:每个候选人决定退水还是刚警徽
      P6-#D 修复(用户反馈:非预言家不该刚警徽):
      - 首轮(没有 isSheriff)→ 非预言家候选人必须退水(只有预言家/悍跳预言家的狼能拿警徽)
@@ -4223,6 +4241,35 @@ function DayVote({ state, setState, lang, aiSpeak, onExit }: {
       onExit={onExit} />;
   }
 
+  // P17:观看模式下自动跑 AI 投票(用户不在场,等不到 confirm)
+  // 进入组件时如果还没跑过,自动触发一次
+  const autoVoteTriggeredRef = useRef(false);
+  useEffect(() => {
+    if (!state.spectatorMode || busy || autoVoteTriggeredRef.current) return;
+    autoVoteTriggeredRef.current = true;
+    setBusy(true);
+    (async () => {
+      const newAiVotes: Record<number, number> = {};
+      for (const p of alivePlayers) {
+        if (p.id === state.userId) continue;
+        if (!canVote(p)) continue;
+        const sys = buildVotePrompt(p, state, lang);
+        const usr = lang === 'zh' ? '用 JSON 格式输出:{"target":投票给某人的座位号(1-based)}' : 'Output JSON: {"target":target seat (1-based)}';
+        const { target } = await aiSpeak(p.id, sys, usr, true);
+        if (target !== null && target >= 0 && target < state.players.length && state.players[target].alive && target !== p.id) {
+          newAiVotes[p.id] = target;
+        } else {
+          const others = alivePlayers.filter(x => x.id !== p.id && canVote(x));
+          if (others.length === 0) continue;
+          newAiVotes[p.id] = others[Math.floor(Math.random() * others.length)].id;
+        }
+      }
+      setBusy(false);
+      setTimeout(() => finalizeWithVotes(newAiVotes, { voterId: state.userId, targetId: 0 }), 0);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // P3-#42 修复:用户点「确认投票」→ 锁住 userTarget → 跑 AI 投票 → finalize
   const confirmAndFinalize = async () => {
     if (userTarget === null) return;
@@ -4790,6 +4837,16 @@ function PKVote({ state, setState, lang, aiSpeak }: {
   };
 
   useEffect(() => { if (Object.keys(aiVotes).length === 0) runVotes(); /* eslint-disable-next-line */ }, []);
+
+  // P17:观看模式下,AI 投完票后自动 finalize(用户不在场等不到 confirm)
+  useEffect(() => {
+    if (!state.spectatorMode) return;
+    if (busy) return;
+    if (Object.keys(aiVotes).length === 0) return;  // 还在跑
+    const tid = window.setTimeout(() => finalize(), 300);
+    return () => clearTimeout(tid);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aiVotes, busy, state.spectatorMode]);
 
   const finalize = () => {
     const allVotes: { voterId: number; targetId: number }[] = [];
