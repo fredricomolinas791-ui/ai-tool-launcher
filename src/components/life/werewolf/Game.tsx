@@ -151,15 +151,19 @@ function PlayerSeat({ player, isYou, isSpeaking, isActing, lang, userMark, wolfT
 function SpeechBubble({ player, text, streaming, lang, phase, isCurrent }: {
   player: Player; text: string; streaming?: boolean; lang: 'zh' | 'en';
   phase?: 'night' | 'day' | 'pk' | 'last-words' | 'sheriff-speech';
-  isCurrent?: boolean;  // P3-#A:当前正在发言(高亮)
+  isCurrent?: boolean;
 }) {
-  // P3-#C:按 phase 加视觉前缀
   const phaseLabel =
-    phase === 'last-words' ? (lang === 'zh' ? '🕯️ 遗言' : '🕯️ Last Words')
+    phase === 'last-words' ? (lang === 'zh' ? '🕯️ 遗言' : '🕯️ Last')
     : phase === 'pk' ? (lang === 'zh' ? '⚔️ PK' : '⚔️ PK')
-    : phase === 'sheriff-speech' ? (lang === 'zh' ? '⭐ 警长竞选' : '⭐ Sheriff')
+    : phase === 'sheriff-speech' ? (lang === 'zh' ? '⭐ 竞选' : '⭐ Sheriff')
     : phase === 'night' ? (lang === 'zh' ? '🌙 夜' : '🌙 Night')
     : null;
+  // P12-B:长发言自动折叠,默认显示前 80 字 + "展开"按钮(防止气泡过高占用滚动条)
+  const [expanded, setExpanded] = useState(false);
+  const MAX_PREVIEW = 80;
+  const isLong = text.length > MAX_PREVIEW;
+  const displayText = !expanded && isLong ? text.slice(0, MAX_PREVIEW) + '…' : text;
   // P3-#A:当前发言用黄色脉冲边框 + 缩放
   const bubbleStyle: React.CSSProperties = isCurrent
     ? {
@@ -167,7 +171,7 @@ function SpeechBubble({ player, text, streaming, lang, phase, isCurrent }: {
         color: 'var(--color-text)',
         border: '2px solid #facc15',
         boxShadow: '0 0 12px rgba(250,204,21,0.4)',
-        transform: 'scale(1.02)',
+        transform: 'scale(1.01)',
         transition: 'all 0.2s',
       }
     : phase === 'last-words'
@@ -194,15 +198,14 @@ function SpeechBubble({ player, text, streaming, lang, phase, isCurrent }: {
               border: '1px solid var(--color-border-light)',
             };
   return (
-    <div className={`flex gap-2 mb-2 animate-fade-in ${isCurrent ? 'animate-pulse' : ''}`}>
-      <div className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-base"
+    <div className={`flex gap-1.5 mb-1.5 animate-fade-in ${isCurrent ? 'animate-pulse' : ''}`}>
+      <div className="shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-sm"
         style={{ background: 'var(--color-accent-glow)' }}>
-        {/* 严格隐藏:气泡里永远不显示身份 emoji,统一用 👤 */}
         👤
       </div>
       <div className="flex-1 min-w-0">
-        <div className="text-[11px] mb-0.5 flex items-center gap-1.5" style={{ color: 'var(--color-text-muted)' }}>
-          <span className="font-medium" style={{ color: 'var(--color-text)' }}>{player.id + 1}. {player.name}</span>
+        <div className="text-[10px] mb-0.5 flex items-center gap-1 flex-wrap" style={{ color: 'var(--color-text-muted)' }}>
+          <span className="font-semibold text-[11px]" style={{ color: 'var(--color-text)' }}>{player.id + 1}. {player.name}</span>
           <PersonalityRender id={player.personality} lang={lang} />
           {phaseLabel && (
             <span className="text-[9px] px-1 rounded" style={{
@@ -212,13 +215,24 @@ function SpeechBubble({ player, text, streaming, lang, phase, isCurrent }: {
           )}
           {isCurrent && (
             <span className="text-[9px] px-1 rounded animate-pulse" style={{ background: '#facc15', color: '#000' }}>
-              {lang === 'zh' ? '🎙️ 正在发言' : '🎙️ Speaking'}
+              🎙️ 发言中
             </span>
           )}
         </div>
-        <div className="rounded-lg p-2 text-sm" style={bubbleStyle}>
-          {text || (streaming ? <span style={{ color: 'var(--color-text-muted)' }}>...</span> : '')}
-          {streaming && <span className="inline-block ml-1 animate-pulse">▍</span>}
+        <div className="rounded-md px-2 py-1.5 text-[12px] leading-snug whitespace-pre-wrap" style={bubbleStyle}>
+          {displayText || (streaming ? <span style={{ color: 'var(--color-text-muted)' }}>...</span> : '')}
+          {streaming && <span className="inline-block ml-0.5 animate-pulse">▍</span>}
+          {isLong && (
+            <button
+              onClick={() => setExpanded(!expanded)}
+              className="ml-1 text-[10px] underline opacity-80 hover:opacity-100"
+              style={{ color: 'var(--color-accent)' }}
+            >
+              {expanded
+                ? (lang === 'zh' ? '收起' : 'collapse')
+                : (lang === 'zh' ? `展开全部 (${text.length}字)` : `expand (${text.length} chars)`)}
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -398,19 +412,25 @@ function DeadSpectator({ state, lang, busyHint, progress, onExit }: {
   const totalCount = state.players.length;
   const currentPhase = phaseLabel[state.phase];
   return (
-    <div className="p-4 rounded-xl text-center" style={{
-      background: 'rgba(107,114,128,0.12)',
-      border: '1px solid #6b7280',
-    }}>
-      <Skull size={20} className="mx-auto mb-2" style={{ color: '#9ca3af' }} />
-      <div className="font-semibold text-sm mb-1" style={{ color: '#9ca3af' }}>
-        {lang === 'zh' ? '💀 你已死亡' : '💀 You are dead'}
+    <div className="p-5 rounded-2xl text-center"
+      style={{
+        background: 'linear-gradient(135deg, rgba(107,114,128,0.18), rgba(107,114,128,0.06))',
+        border: '1px solid #6b7280',
+        boxShadow: 'inset 0 1px 4px rgba(0,0,0,0.2)',
+      }}>
+      <div className="text-5xl mb-2 opacity-80">💀</div>
+      <div className="font-bold text-base mb-1.5" style={{ color: '#9ca3af' }}>
+        {lang === 'zh' ? '你已死亡' : 'You are dead'}
       </div>
-      <div className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>
-        {lang === 'zh' ? `当前阶段:${currentPhase.zh}` : `Current phase: ${currentPhase.en}`}
+      <div className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium mb-2"
+        style={{ background: 'rgba(99,102,241,0.18)', color: '#a78bfa' }}>
+        {lang === 'zh' ? '📍 当前阶段' : '📍 Current'}：{currentPhase.zh}
       </div>
-      <div className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
-        {lang === 'zh' ? `存活 ${aliveCount}/${totalCount} 人 · 你是鬼,看着就行` : `Alive ${aliveCount}/${totalCount} · Spectate only`}
+      <div className="text-xs flex items-center justify-center gap-2 mb-1" style={{ color: 'var(--color-text-muted)' }}>
+        <span className="px-2 py-0.5 rounded" style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e' }}>
+          👥 {aliveCount}/{totalCount}
+        </span>
+        <span>{lang === 'zh' ? '你是鬼,看着就行' : 'Spectate only'}</span>
       </div>
       {/* P7-#B:进度条 —— 显示讨论/投票进度,让用户清楚游戏在动 */}
       {progress && (
@@ -597,23 +617,39 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
         </div>
       )}
 
-      {/* 顶部信息条 */}
-      <div className="flex items-center justify-between p-3 rounded-xl"
-        style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-border-light)' }}>
-        <div className="flex items-center gap-2">
-          <Drama size={18} style={{ color: 'var(--color-accent)' }} />
+      {/* 顶部信息条 —— P12-C:更醒目、更详细 */}
+      <div className="flex items-center justify-between p-3.5 rounded-xl"
+        style={{
+          background: 'linear-gradient(135deg, var(--color-card-bg) 0%, var(--color-bg-deep) 100%)',
+          border: '1px solid var(--color-accent)',
+          boxShadow: '0 2px 12px rgba(0,0,0,0.15)',
+        }}>
+        <div className="flex items-center gap-3">
+          <div className="shrink-0 w-10 h-10 rounded-xl flex items-center justify-center text-xl"
+            style={{ background: 'var(--color-accent-glow)' }}>
+            <Drama size={22} style={{ color: 'var(--color-accent)' }} />
+          </div>
           <div>
-            <div className="text-sm font-medium" style={{ color: 'var(--color-text)' }}>
-              {BOARDS[state.boardId].name[lang]} · {lang === 'zh' ? '第' : 'R'}{state.round}{lang === 'zh' ? '轮' : ''}
+            <div className="text-base font-bold flex items-center gap-2" style={{ color: 'var(--color-text)' }}>
+              {BOARDS[state.boardId].name[lang]}
+              <span className="text-xs px-1.5 py-0.5 rounded font-medium"
+                style={{ background: 'var(--color-accent)', color: '#fff' }}>
+                {lang === 'zh' ? `第 ${state.round} 轮` : `R${state.round}`}
+              </span>
             </div>
-            <div className="text-[10px]" style={{ color: 'var(--color-text-muted)' }}>
-              {lang === 'zh' ? '存活' : 'Alive'} {alivePlayers.length}/{state.players.length} ·{' '}
-              {ROLES[state.players[state.userId].role].emoji}
+            <div className="text-[11px] mt-0.5 flex items-center gap-2" style={{ color: 'var(--color-text-muted)' }}>
+              <span>👥 {lang === 'zh' ? '存活' : 'Alive'} {alivePlayers.length}/{state.players.length}</span>
+              <span style={{ color: 'var(--color-border-light)' }}>·</span>
+              <span>{ROLES[state.players[state.userId].role].emoji} {ROLES[state.players[state.userId].role].name[lang]}</span>
+              <span style={{ color: 'var(--color-border-light)' }}>·</span>
+              <span>{state.players[state.userId].name}</span>
             </div>
           </div>
         </div>
-        <button onClick={onExit} className="p-1.5 rounded-lg" style={{ background: 'var(--color-bg-deep)' }}>
-          <X size={14} style={{ color: 'var(--color-text-muted)' }} />
+        <button onClick={onExit} title={lang === 'zh' ? '退出游戏' : 'Exit game'}
+          className="shrink-0 p-2 rounded-lg transition-colors hover:bg-black/20"
+          style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-border-light)' }}>
+          <X size={16} style={{ color: 'var(--color-text-muted)' }} />
         </button>
       </div>
 
@@ -810,197 +846,59 @@ function InfoStream({ state, lang, streamingText }: {
   // P3-#A:当前正在发言的玩家 ID(用于高亮)
   const currentSpeakerId = streamingText?.playerId ?? null;
 
+  // P12-A:每个分区可折叠 —— 发言流默认展开,其他默认折叠以减少滚动
+  // 使用 useState 数组,每个 index 对应一个区
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>({
+    speeches: true,
+    system: true,
+    deaths: false,
+    exiles: false,
+    claims: false,
+    voteDetail: true,
+    voteHistory: false,
+  });
+  const toggleSection = (key: string) => setOpenSections(prev => ({ ...prev, [key]: !prev[key] }));
+
+  /* P12-A 通用分区组件:header 可点击切换展开/折叠 */
+  const Section = ({ id, icon, label, count, color, children, defaultOpen = false }: {
+    id: string; icon: string; label: string; count?: number;
+    color: string; children: React.ReactNode; defaultOpen?: boolean;
+  }) => {
+    const isOpen = openSections[id] ?? defaultOpen;
+    return (
+      <div className="rounded-lg overflow-hidden" style={{ background: 'var(--color-bg-deep)', border: '1px solid var(--color-border-light)' }}>
+        <button
+          onClick={() => toggleSection(id)}
+          className="w-full px-2.5 py-1.5 flex items-center justify-between text-left transition-colors hover:bg-black/10"
+        >
+          <span className="text-[11px] font-semibold flex items-center gap-1.5" style={{ color }}>
+            <span>{icon}</span>
+            <span>{label}</span>
+            {count !== undefined && count > 0 && (
+              <span className="text-[9px] px-1 rounded-full" style={{ background: 'rgba(255,255,255,0.15)' }}>
+                {count}
+              </span>
+            )}
+          </span>
+          <span className="text-[10px] transition-transform" style={{ transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)', color: 'var(--color-text-muted)' }}>
+            ▶
+          </span>
+        </button>
+        {isOpen && <div className="px-2 pb-2 pt-1 space-y-1">{children}</div>}
+      </div>
+    );
+  };
+
   return (
-    <div ref={ref} className="p-3 rounded-xl space-y-3 overflow-y-auto"
+    <div ref={ref} className="p-2.5 rounded-xl space-y-2 overflow-y-auto"
       style={{
         background: 'var(--color-card-bg)', border: '1px solid var(--color-border-light)',
-        maxHeight: 'calc(100vh - 200px)', minHeight: 400,
+        maxHeight: 'calc(100vh - 180px)', minHeight: 400,
       }}>
-      {/* 法官字幕(系统事件) */}
-      {systemEvents.length > 0 && (
-        <div>
-          <div className="text-[10px] mb-1.5 flex items-center gap-1 font-semibold" style={{ color: 'var(--color-accent)' }}>
-            ⚖️ {lang === 'zh' ? '法官信息' : 'Judge'}
-          </div>
-          {systemEvents.slice(-8).map((e, i) => (
-            <div key={i} className="text-[11px] py-1 px-2 rounded mb-1"
-              style={{ background: 'var(--color-bg-deep)', color: 'var(--color-text-muted)' }}>
-              {e.text}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* 死亡记录 */}
-      {deaths.length > 0 && (
-        <div>
-          <div className="text-[10px] mb-1.5 flex items-center gap-1 font-semibold" style={{ color: '#dc2626' }}>
-            💀 {lang === 'zh' ? '死亡记录' : 'Deaths'}
-          </div>
-          {deaths.slice(-8).map((e, i) => (
-            <div key={i} className="text-[11px] py-1 px-2 rounded mb-1 flex items-center gap-1.5"
-              style={{ background: 'rgba(220,38,38,0.08)', color: 'var(--color-text)' }}>
-              {e.text}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* 投票放逐 */}
-      {exiles.length > 0 && (
-        <div>
-          <div className="text-[10px] mb-1.5 flex items-center gap-1 font-semibold" style={{ color: '#a855f7' }}>
-            🗳️ {lang === 'zh' ? '投票放逐' : 'Exile'}
-          </div>
-          {exiles.slice(-5).map((e, i) => (
-            <div key={i} className="text-[11px] py-1 px-2 rounded mb-1"
-              style={{ background: 'rgba(168,85,247,0.08)', color: 'var(--color-text)' }}>
-              {e.text}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* P3-#B:最近一次投票详情(谁投了谁 + 票数 + 警长 1.5 票标记)
-         用户原话:"玩家发言和玩家投票信息可以在右边栏清晰查看" */}
-      {state.lastVoteData && state.lastVoteData.allVotes.length > 0 && (
-        <div>
-          <div className="text-[10px] mb-1.5 flex items-center gap-1 font-semibold" style={{ color: '#a855f7' }}>
-            📊 {lang === 'zh' ? '最近一次投票详情' : 'Latest vote details'}
-          </div>
-          <div className="space-y-0.5 mb-1">
-            {state.lastVoteData.allVotes.map((v, i) => {
-              const voter = state.players[v.voterId];
-              const target = state.players[v.targetId];
-              if (!voter || !target) return null;
-              const isUserVoter = v.voterId === state.userId;
-              const isSheriffVoter = voter.privateMemory.isSheriff;
-              const weight = isSheriffVoter ? 1.5 : 1;
-              return (
-                <div key={i} className="text-[11px] flex items-center gap-1 px-1.5 py-0.5 rounded"
-                  style={{ background: isUserVoter ? 'rgba(168,85,247,0.12)' : 'transparent' }}>
-                  <span style={{ color: isUserVoter ? '#a855f7' : 'var(--color-text)' }}>
-                    {voter.id + 1}.{voter.name}
-                  </span>
-                  <span style={{ color: 'var(--color-text-muted)' }}>→</span>
-                  <span style={{ color: '#a855f7' }}>{target.id + 1}.{target.name}</span>
-                  {isSheriffVoter && (
-                    <span className="text-[9px]" style={{ color: '#facc15' }} title={lang === 'zh' ? '警长 1.5 票' : 'Sheriff 1.5x'}>⭐</span>
-                  )}
-                  <span className="text-[9px] ml-auto" style={{ color: 'var(--color-text-muted)' }}>
-                    ({weight}{lang === 'zh' ? '票' : 'x'})
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-          {/* 票数统计 */}
-          <div className="text-[9px] flex flex-wrap gap-1.5 px-1">
-            {Object.entries(state.lastVoteData.tally).map(([id, count]) => {
-              const pid = parseInt(id, 10);
-              const target = state.players[pid];
-              if (!target) return null;
-              const isExiled = state.lastVoteData?.exiled === pid;
-              return (
-                <span key={id} className="px-1.5 py-0.5 rounded"
-                  style={{
-                    background: isExiled ? 'rgba(220,38,38,0.2)' : 'var(--color-bg-deep)',
-                    color: isExiled ? '#dc2626' : 'var(--color-text)',
-                    fontWeight: isExiled ? 'bold' : 'normal',
-                  }}>
-                  {target.name}: {count}{lang === 'zh' ? '票' : ' votes'}
-                </span>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* P6-#E:每轮投票历史
-         可以分上下 上边是对话信息 下边弄个每轮的投票信息
-         可以看出谁和谁可能是一个阵营" */}
-      {state.voteHistory && state.voteHistory.length > 0 && (
-        <div>
-          <div className="text-[10px] mb-1.5 flex items-center gap-1 font-semibold" style={{ color: '#a855f7' }}>
-            🗳️ {lang === 'zh' ? `每轮投票历史(${state.voteHistory.length} 轮)` : `Vote history (${state.voteHistory.length} rounds)`}
-          </div>
-          {state.voteHistory.slice(-8).map((round, idx) => {
-            // 找出每轮的"嫌疑阵营":投同一目标的玩家 → 可能是同阵营
-            const targetGroups: Record<number, number[]> = {};
-            round.allVotes.forEach(v => {
-              if (!targetGroups[v.targetId]) targetGroups[v.targetId] = [];
-              targetGroups[v.targetId].push(v.voterId);
-            });
-            const sortedGroups = Object.entries(targetGroups)
-              .map(([tid, voters]) => ({ targetId: parseInt(tid, 10), voters, count: voters.length }))
-              .sort((a, b) => b.count - a.count);
-            return (
-              <div key={idx} className="mb-2 p-2 rounded text-[10px]"
-                style={{ background: 'rgba(168,85,247,0.06)', border: '1px solid rgba(168,85,247,0.2)' }}>
-                <div className="flex items-center gap-1 mb-1 font-semibold" style={{ color: '#a78bfa' }}>
-                  {lang === 'zh' ? `第 ${round.round} 轮` : `Round ${round.round}`}
-                  {round.exiled !== null && state.players[round.exiled] && (
-                    <span className="ml-1 px-1 rounded" style={{ background: 'rgba(220,38,38,0.2)', color: '#dc2626' }}>
-                      💀 {state.players[round.exiled].id + 1}号 被投出
-                    </span>
-                  )}
-                </div>
-                {/* 按目标分组:投同一个人的玩家可能是同阵营 */}
-                <div className="space-y-0.5">
-                  {sortedGroups.map(g => {
-                    const target = state.players[g.targetId];
-                    if (!target) return null;
-                    const voterNames = g.voters.map(vid => {
-                      const voter = state.players[vid];
-                      const isSheriff = voter?.privateMemory.isSheriff;
-                      return `${vid + 1}号${isSheriff ? '⭐' : ''}`;
-                    }).join('+');
-                    return (
-                      <div key={g.targetId} className="flex items-center gap-1">
-                        <span style={{ color: 'var(--color-text-muted)' }}>→</span>
-                        <span className="font-semibold" style={{ color: 'var(--color-text)' }}>{target.id + 1}号</span>
-                        <span style={{ color: 'var(--color-text-muted)' }}>({g.count}{lang === 'zh' ? '票' : 'v'})</span>
-                        <span style={{ color: '#a78bfa' }}>← {voterNames}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* P1-#48 修复:今日 claim 面板(谁跳了预言家/守卫/女巫) */}
-      {todayClaims && (todayClaims.seerClaims.length > 0 || todayClaims.witchClaims.length > 0 || todayClaims.guardClaims.length > 0) && (
-        <div>
-          <div className="text-[10px] mb-1.5 flex items-center gap-1 font-semibold" style={{ color: '#a855f7' }}>
-            📜 {lang === 'zh' ? '今日身份声明' : 'Today\'s claims'}
-          </div>
-          {todayClaims.seerClaims.map(c => (
-            <div key={`seer-${c.playerId}`} className="text-[11px] py-1 px-2 rounded mb-1" style={{ background: 'rgba(99,102,241,0.1)', color: 'var(--color-text)' }}>
-              🔮 <b>{c.playerId + 1}号 {state.players[c.playerId].name}</b> {lang === 'zh' ? '跳预言家:' : 'claims seer:'} {c.checks.map(x => `${x.targetId + 1}号=${x.isWolf ? (lang === 'zh' ? '狼' : 'wolf') : (lang === 'zh' ? '好人' : 'good')}`).join('、')}
-            </div>
-          ))}
-          {todayClaims.witchClaims.map(c => (
-            <div key={`witch-${c.playerId}`} className="text-[11px] py-1 px-2 rounded mb-1" style={{ background: 'rgba(168,85,247,0.1)', color: 'var(--color-text)' }}>
-              💊 <b>{c.playerId + 1}号 {state.players[c.playerId].name}</b> {lang === 'zh' ? '跳女巫:' : 'claims witch:'} {c.savedId !== null ? `${lang === 'zh' ? '救了' : 'saved'} ${c.savedId + 1}号` : ''} {c.poisonedId !== null ? `${lang === 'zh' ? ', 毒了' : ', poisoned'} ${c.poisonedId + 1}号` : ''}
-            </div>
-          ))}
-          {todayClaims.guardClaims.map(c => (
-            <div key={`guard-${c.playerId}`} className="text-[11px] py-1 px-2 rounded mb-1" style={{ background: 'rgba(34,197,94,0.1)', color: 'var(--color-text)' }}>
-              🛡️ <b>{c.playerId + 1}号 {state.players[c.playerId].name}</b> {lang === 'zh' ? '跳守卫:' : 'claims guard:'} {c.guardedId !== null ? `${lang === 'zh' ? '守了' : 'guarded'} ${c.guardedId + 1}号` : (lang === 'zh' ? '空守' : 'no guard')}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* 发言流 */}
-      <div>
-        <div className="text-[10px] mb-1.5 flex items-center gap-1 font-semibold" style={{ color: 'var(--color-text-muted)' }}>
-          🗣️ {lang === 'zh' ? '发言' : 'Speeches'} ({state.speeches.length})
-        </div>
-        {state.speeches.slice(-15).map((sp, i) => {
+      {/* 发言流 —— 默认展开,玩家最关心 */}
+      <Section id="speeches" icon="🗣️" label={lang === 'zh' ? '发言' : 'Speeches'}
+        count={state.speeches.length} color="var(--color-text-muted)">
+        {state.speeches.slice(-20).map((sp, i) => {
           const p = state.players[sp.playerId];
           const isCurrent = currentSpeakerId === sp.playerId;
           return (
@@ -1023,7 +921,168 @@ function InfoStream({ state, lang, streamingText }: {
               isCurrent={true} />
           </div>
         )}
-      </div>
+      </Section>
+
+      {/* 法官字幕(系统事件) */}
+      {systemEvents.length > 0 && (
+        <Section id="system" icon="⚖️" label={lang === 'zh' ? '法官信息' : 'Judge'}
+          count={systemEvents.length} color="var(--color-accent)">
+          {systemEvents.slice(-10).map((e, i) => (
+            <div key={i} className="text-[11px] py-1 px-2 rounded text-[11px]"
+              style={{ background: 'var(--color-card-bg)', color: 'var(--color-text-muted)' }}>
+              {e.text}
+            </div>
+          ))}
+        </Section>
+      )}
+
+      {/* 死亡记录 */}
+      {deaths.length > 0 && (
+        <Section id="deaths" icon="💀" label={lang === 'zh' ? '死亡记录' : 'Deaths'}
+          count={deaths.length} color="#dc2626">
+          {deaths.slice(-10).map((e, i) => (
+            <div key={i} className="text-[11px] py-1 px-2 rounded flex items-center gap-1.5"
+              style={{ background: 'rgba(220,38,38,0.08)', color: 'var(--color-text)' }}>
+              {e.text}
+            </div>
+          ))}
+        </Section>
+      )}
+
+      {/* 投票放逐 */}
+      {exiles.length > 0 && (
+        <Section id="exiles" icon="🗳️" label={lang === 'zh' ? '投票放逐' : 'Exile'}
+          count={exiles.length} color="#a855f7">
+          {exiles.slice(-5).map((e, i) => (
+            <div key={i} className="text-[11px] py-1 px-2 rounded"
+              style={{ background: 'rgba(168,85,247,0.08)', color: 'var(--color-text)' }}>
+              {e.text}
+            </div>
+          ))}
+        </Section>
+      )}
+
+      {/* 今日身份声明 */}
+      {todayClaims && (todayClaims.seerClaims.length > 0 || todayClaims.witchClaims.length > 0 || todayClaims.guardClaims.length > 0) && (
+        <Section id="claims" icon="📜" label={lang === 'zh' ? '今日身份声明' : "Today's claims"}
+          count={(todayClaims.seerClaims?.length || 0) + (todayClaims.witchClaims?.length || 0) + (todayClaims.guardClaims?.length || 0)}
+          color="#a855f7">
+          {todayClaims.seerClaims?.map(c => (
+            <div key={`seer-${c.playerId}`} className="text-[11px] py-1 px-2 rounded" style={{ background: 'rgba(99,102,241,0.1)', color: 'var(--color-text)' }}>
+              🔮 <b>{c.playerId + 1}号 {state.players[c.playerId].name}</b> {lang === 'zh' ? '跳预言家:' : 'claims seer:'} {c.checks.map(x => `${x.targetId + 1}号=${x.isWolf ? (lang === 'zh' ? '狼' : 'wolf') : (lang === 'zh' ? '好人' : 'good')}`).join('、')}
+            </div>
+          ))}
+          {todayClaims.witchClaims?.map(c => (
+            <div key={`witch-${c.playerId}`} className="text-[11px] py-1 px-2 rounded" style={{ background: 'rgba(168,85,247,0.1)', color: 'var(--color-text)' }}>
+              💊 <b>{c.playerId + 1}号 {state.players[c.playerId].name}</b> {lang === 'zh' ? '跳女巫:' : 'claims witch:'} {c.savedId !== null ? `${lang === 'zh' ? '救了' : 'saved'} ${c.savedId + 1}号` : ''} {c.poisonedId !== null ? `${lang === 'zh' ? ', 毒了' : ', poisoned'} ${c.poisonedId + 1}号` : ''}
+            </div>
+          ))}
+          {todayClaims.guardClaims?.map(c => (
+            <div key={`guard-${c.playerId}`} className="text-[11px] py-1 px-2 rounded" style={{ background: 'rgba(34,197,94,0.1)', color: 'var(--color-text)' }}>
+              🛡️ <b>{c.playerId + 1}号 {state.players[c.playerId].name}</b> {lang === 'zh' ? '跳守卫:' : 'claims guard:'} {c.guardedId !== null ? `${lang === 'zh' ? '守了' : 'guarded'} ${c.guardedId + 1}号` : (lang === 'zh' ? '空守' : 'no guard')}
+            </div>
+          ))}
+        </Section>
+      )}
+
+      {/* 最近一次投票详情 */}
+      {state.lastVoteData && state.lastVoteData.allVotes.length > 0 && (
+        <Section id="voteDetail" icon="📊" label={lang === 'zh' ? '最近一次投票' : 'Latest vote'}
+          count={state.lastVoteData.allVotes.length} color="#a855f7">
+          {state.lastVoteData.allVotes.map((v, i) => {
+            const voter = state.players[v.voterId];
+            const target = state.players[v.targetId];
+            if (!voter || !target) return null;
+            const isUserVoter = v.voterId === state.userId;
+            const isSheriffVoter = voter.privateMemory.isSheriff;
+            const weight = isSheriffVoter ? 1.5 : 1;
+            return (
+              <div key={i} className="text-[11px] flex items-center gap-1 px-1.5 py-0.5 rounded"
+                style={{ background: isUserVoter ? 'rgba(168,85,247,0.12)' : 'transparent' }}>
+                <span style={{ color: isUserVoter ? '#a855f7' : 'var(--color-text)' }}>
+                  {voter.id + 1}.{voter.name}
+                </span>
+                <span style={{ color: 'var(--color-text-muted)' }}>→</span>
+                <span style={{ color: '#a855f7' }}>{target.id + 1}.{target.name}</span>
+                {isSheriffVoter && (
+                  <span className="text-[9px]" style={{ color: '#facc15' }} title={lang === 'zh' ? '警长 1.5 票' : 'Sheriff 1.5x'}>⭐</span>
+                )}
+                <span className="text-[9px] ml-auto" style={{ color: 'var(--color-text-muted)' }}>
+                  ({weight}{lang === 'zh' ? '票' : 'x'})
+                </span>
+              </div>
+            );
+          })}
+          {/* 票数统计 */}
+          <div className="text-[9px] flex flex-wrap gap-1.5 px-1 pt-1">
+            {Object.entries(state.lastVoteData.tally).map(([id, count]) => {
+              const pid = parseInt(id, 10);
+              const target = state.players[pid];
+              if (!target) return null;
+              const isExiled = state.lastVoteData?.exiled === pid;
+              return (
+                <span key={id} className="px-1.5 py-0.5 rounded"
+                  style={{
+                    background: isExiled ? 'rgba(220,38,38,0.2)' : 'var(--color-card-bg)',
+                    color: isExiled ? '#dc2626' : 'var(--color-text)',
+                    fontWeight: isExiled ? 'bold' : 'normal',
+                  }}>
+                  {target.name}: {count}{lang === 'zh' ? '票' : ' votes'}
+                </span>
+              );
+            })}
+          </div>
+        </Section>
+      )}
+
+      {/* 每轮投票历史 */}
+      {state.voteHistory && state.voteHistory.length > 0 && (
+        <Section id="voteHistory" icon="📈" label={lang === 'zh' ? `投票历史` : 'Vote history'}
+          count={state.voteHistory.length} color="#a855f7">
+          {state.voteHistory.slice(-5).map((round, idx) => {
+            const targetGroups: Record<number, number[]> = {};
+            round.allVotes.forEach(v => {
+              if (!targetGroups[v.targetId]) targetGroups[v.targetId] = [];
+              targetGroups[v.targetId].push(v.voterId);
+            });
+            const sortedGroups = Object.entries(targetGroups)
+              .map(([tid, voters]) => ({ targetId: parseInt(tid, 10), voters, count: voters.length }))
+              .sort((a, b) => b.count - a.count);
+            return (
+              <div key={idx} className="mb-2 p-2 rounded text-[10px]"
+                style={{ background: 'var(--color-card-bg)', border: '1px solid rgba(168,85,247,0.2)' }}>
+                <div className="flex items-center gap-1 mb-1 font-semibold" style={{ color: '#a78bfa' }}>
+                  {lang === 'zh' ? `第 ${round.round} 轮` : `Round ${round.round}`}
+                  {round.exiled !== null && state.players[round.exiled] && (
+                    <span className="ml-1 px-1 rounded" style={{ background: 'rgba(220,38,38,0.2)', color: '#dc2626' }}>
+                      💀 {state.players[round.exiled].id + 1}号 被投出
+                    </span>
+                  )}
+                </div>
+                <div className="space-y-0.5">
+                  {sortedGroups.map(g => {
+                    const target = state.players[g.targetId];
+                    if (!target) return null;
+                    const voterNames = g.voters.map(vid => {
+                      const voter = state.players[vid];
+                      const isSheriff = voter?.privateMemory.isSheriff;
+                      return `${vid + 1}号${isSheriff ? '⭐' : ''}`;
+                    }).join('+');
+                    return (
+                      <div key={g.targetId} className="flex items-center gap-1">
+                        <span style={{ color: 'var(--color-text-muted)' }}>→</span>
+                        <span className="font-semibold" style={{ color: 'var(--color-text)' }}>{target.id + 1}号</span>
+                        <span style={{ color: 'var(--color-text-muted)' }}>({g.count}{lang === 'zh' ? '票' : 'v'})</span>
+                        <span style={{ color: '#a78bfa' }}>← {voterNames}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </Section>
+      )}
     </div>
   );
 }
@@ -4596,39 +4655,65 @@ function GameOver({ state, winner, lang, onExit, onReplay }: {
     }
   };
 
+  const winnerColor = winner === 'good' ? '#22c55e' : winner === 'wolf' ? '#dc2626' : '#a855f7';
+  const winnerEmoji = winner === 'good' ? '🌟' : winner === 'wolf' ? '🐺' : '🎭';
+  const winnerBg = winner === 'good'
+    ? 'linear-gradient(135deg, rgba(34,197,94,0.12), rgba(34,197,94,0.04))'
+    : winner === 'wolf'
+      ? 'linear-gradient(135deg, rgba(220,38,38,0.12), rgba(220,38,38,0.04))'
+      : 'linear-gradient(135deg, rgba(168,85,247,0.12), rgba(168,85,247,0.04))';
+
   return (
-    <div className="p-6 rounded-xl text-center" style={{
-      background: 'var(--color-card-bg)',
-      border: `2px solid ${winner === 'good' ? '#22c55e' : winner === 'wolf' ? '#dc2626' : '#a855f7'}`,
-    }}>
-      <Crown size={48} className="mx-auto mb-2" style={{ color: winner === 'good' ? '#22c55e' : winner === 'wolf' ? '#dc2626' : '#a855f7' }} />
-      <h2 className="text-2xl font-bold mb-2" style={{ color: 'var(--color-text)' }}>{title}</h2>
-      <div className="text-xs mb-3 p-2 rounded" style={{ background: 'var(--color-bg-deep)', color: 'var(--color-text-muted)' }}>
+    <div className="p-5 rounded-2xl text-center"
+      style={{
+        background: winnerBg,
+        border: `2px solid ${winnerColor}`,
+        boxShadow: `0 0 24px ${winnerColor}33`,
+      }}>
+      {/* 大号胜利 emoji */}
+      <div className="text-7xl mb-2 animate-bounce inline-block">{winnerEmoji}</div>
+      <h2 className="text-3xl font-black mb-1" style={{ color: winnerColor }}>{title}</h2>
+      <div className="text-xs mb-4 px-4 py-1.5 rounded-full inline-block"
+        style={{ background: 'var(--color-bg-deep)', color: 'var(--color-text-muted)' }}>
         {lang === 'zh' ? '胜利原因' : 'Reason'}: {reason}
       </div>
-      <div className="text-xs space-y-1 mb-4 text-left max-w-md mx-auto" style={{ color: 'var(--color-text-muted)' }}>
-        {state.players.map(p => (
-          <div key={p.id} className="flex items-center gap-2">
-            <span>{p.alive ? '🟢' : '💀'}</span>
-            <span>{p.id + 1}. {p.name}</span>
-            <span className="ml-auto" style={{ color: ROLES[p.role].faction === 'wolf' ? '#dc2626' : ROLES[p.role].faction === 'good' ? '#22c55e' : '#a855f7' }}>
-              {ROLES[p.role].name[lang]}
-            </span>
-          </div>
-        ))}
+
+      {/* P12-D:角色分配用 grid 卡片展示,清晰列出每个人 + 阵营 */}
+      <div className="grid grid-cols-3 sm:grid-cols-4 gap-1.5 mb-4 text-left">
+        {state.players.map(p => {
+          const faction = ROLES[p.role].faction;
+          const factionColor = faction === 'wolf' ? '#dc2626' : faction === 'good' ? '#22c55e' : '#a855f7';
+          const factionBg = faction === 'wolf' ? 'rgba(220,38,38,0.15)' : faction === 'good' ? 'rgba(34,197,94,0.15)' : 'rgba(168,85,247,0.15)';
+          const factionEmoji = faction === 'wolf' ? '🐺' : faction === 'good' ? '🛡️' : '🎭';
+          return (
+            <div key={p.id} className="rounded-lg p-2 text-[11px] flex flex-col gap-0.5"
+              style={{ background: 'var(--color-bg-deep)', border: `1px solid ${factionColor}55` }}>
+              <div className="flex items-center gap-1">
+                <span className="text-base">{p.alive ? '🟢' : '💀'}</span>
+                <span className="font-semibold truncate" style={{ color: 'var(--color-text)' }}>
+                  {p.id + 1}.{p.name}{p.isUser ? ' ⭐' : ''}
+                </span>
+              </div>
+              <div className="text-[10px] truncate" style={{ color: 'var(--color-text-muted)' }}>
+                {ROLES[p.role].emoji} {ROLES[p.role].name[lang]}
+              </div>
+              <div className="text-[10px] inline-flex items-center gap-1 px-1.5 rounded w-fit" style={{ background: factionBg, color: factionColor }}>
+                {factionEmoji} {faction === 'wolf' ? (lang === 'zh' ? '狼' : 'Wolf') : faction === 'good' ? (lang === 'zh' ? '好人' : 'Good') : (lang === 'zh' ? '第三方' : 'Third')}
+              </div>
+            </div>
+          );
+        })}
       </div>
-      {/* P1-#22 修复:导出对话按钮(给 Claude 调试用) */}
-      <div className="mb-3">
+
+      {/* 复制对话 + 重玩 / 换板子 */}
+      <div className="flex flex-wrap items-center justify-center gap-2">
         <Button onClick={exportDialogue} variant="secondary" className="text-xs">
           {copied
-            ? (lang === 'zh' ? '✓ 已复制到剪贴板' : '✓ Copied')
-            : (lang === 'zh' ? '📋 复制对话日志(发回给 Claude 调试)' : '📋 Copy dialogue log (debug)')}
+            ? (lang === 'zh' ? '✓ 已复制' : '✓ Copied')
+            : (lang === 'zh' ? '📋 复制对话日志' : '📋 Copy dialogue log')}
         </Button>
-      </div>
-      {/* P3-#41 修复:重玩同板子 + 换板子 两个按钮 */}
-      <div className="space-x-2">
-        <Button onClick={onReplay}>{lang === 'zh' ? '重玩此板子' : 'Replay board'}</Button>
-        <Button onClick={onExit} variant="secondary">{lang === 'zh' ? '换板子' : 'Change board'}</Button>
+        <Button onClick={onReplay}>{lang === 'zh' ? '🔁 重玩此板子' : '🔁 Replay board'}</Button>
+        <Button onClick={onExit} variant="secondary">{lang === 'zh' ? '🔄 换板子' : '🔄 Change board'}</Button>
       </div>
     </div>
   );
