@@ -2047,27 +2047,17 @@ function applyWitchAction(s: GameState, witchId: number, useAntidote: boolean, p
   // P9:记录女巫用药操作,用于强制白天发言公开身份 + 操作
   const usedAntidote = newMem.witchAntidoteUsed && (newMem.witchSavedId !== null);
   const usedPoison = newMem.witchPoisonedId !== null;
+  // 修复(P0):女巫用药操作**完全私密**,不写 publicLog
+  // 之前写 publicLog 会让所有平民看到"女巫救/毒了谁",这是规则禁止的信息泄露
+  // 现在:只更新 state.lastWitchAction(女巫自己 + 系统强制公告逻辑能看到)
+  // 当女巫白天发言被强制公开时,公开逻辑会从 lastWitchAction 读数据并 log 公告
   const logEntries: { kind: 'system'; day: number; text: string }[] = [];
-  if (usedAntidote) {
-    const savedName = s.players[newMem.witchSavedId!]?.name ?? `?${newMem.witchSavedId}`;
-    logEntries.push({
-      kind: 'system', day: s.round,
-      text: `💊 女巫 ${witch.name} 解药救了 ${newMem.witchSavedId! + 1}号 ${savedName}(待天亮公布)`,
-    });
-  }
-  if (usedPoison) {
-    const poisonedName = s.players[newMem.witchPoisonedId!]?.name ?? `?${newMem.witchPoisonedId}`;
-    logEntries.push({
-      kind: 'system', day: s.round,
-      text: `☠️ 女巫 ${witch.name} 毒药杀了 ${newMem.witchPoisonedId! + 1}号 ${poisonedName}(待天亮公布)`,
-    });
-  }
 
   return {
     ...s,
     players: s.players.map(p => p.id === witchId ? { ...p, privateMemory: newMem } : p),
     deadThisNight: newDead,
-    publicLog: [...s.publicLog, ...logEntries],
+    publicLog: [...s.publicLog, ...logEntries],  // 空数组 → 不 log
     lastWitchAction: (usedAntidote || usedPoison)
       ? {
           savedId: usedAntidote ? newMem.witchSavedId : null,
