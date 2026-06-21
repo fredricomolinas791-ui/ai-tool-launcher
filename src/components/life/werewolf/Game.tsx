@@ -2750,7 +2750,12 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
      P13 修复(用户反馈"全退水导致游戏卡死"):
      - 跳预言家的候选人(真预 + 悍跳狼)必须刚警徽,**不允许退水**
      - 否则会出现所有候选人都退了,游戏卡在 withdraw 阶段等用户决定
-     - "全退水 → 警徽流失"作为兜底保留(只是正常情况下不会触发) */
+     - "全退水 → 警徽流失"作为兜底保留(只是正常情况下不会触发)
+
+     P14 修复(用户实测"预言家也没上警,全退水卡死"):
+     - 不依赖发言首句匹配正则识别预言家(AI 可能不用"我是预言家"开场)
+     - 直接查 player.role === 'seer' 识别真预言家 → 强制 stay
+     - 悍跳狼靠发言里的 claim 检测(原有逻辑) */
   useEffect(() => {
     if (step !== 'withdraw') return;
     const decisions: Record<number, 'withdraw' | 'stay'> = {};
@@ -2761,6 +2766,12 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
     for (const cid of candidates) {
       if (cid === state.userId) continue;
       const c = stateRef.current.players[cid];
+      // 修复(P0 强化):真预言家(角色是 seer)直接识别,无需靠发言正则
+      // AI 预言家经常不用"我是预言家"开场,导致 seerClaimerIds 检测失败
+      if (c.role === 'seer') {
+        decisions[cid] = 'stay';
+        continue;
+      }
       if (isFirstRound && !seerClaimerIds.has(cid)) {
         // 首轮 + 没跳预言家 → 强制退水(避免警徽落入非预言家手里)
         decisions[cid] = 'withdraw';
