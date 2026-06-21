@@ -18,7 +18,7 @@ if (typeof window !== 'undefined' && !window.__werewolfLog) {
   window.__werewolfLog = [];
 }
 
-import { useState, useEffect, useRef, useMemo, type Dispatch, type SetStateAction } from 'react';
+import { useState, useEffect, useRef, useMemo, Component, type ReactNode, type Dispatch, type SetStateAction } from 'react';
 import { Drama, Sparkles, Sun, ChevronRight, Crown, AlertTriangle, Play, X, Skull, Shield, Users, Swords } from 'lucide-react';
 import { Button } from '../../ui/Button';
 import { useI18n } from '../../../hooks/useI18n';
@@ -308,13 +308,15 @@ export function WerewolfGame() {
       }} />;
   }
   if (noKey || !aiConfig) return <NoKeyWarn lang={lang} />;
-  return <GameRunner
-    state={state}
-    setState={setState}
-    aiConfig={aiConfig}
-    lang={lang}
-    onExit={() => { setState(null); setPhase('select'); sessionStorage.removeItem(WEREWOLF_SAVE_KEY); }}
-    onReplay={() => replayLastBoard(state.boardId)} />;
+  return <WerewolfErrorBoundary lang={lang} onExit={() => { setState(null); setPhase('select'); sessionStorage.removeItem(WEREWOLF_SAVE_KEY); }}>
+    <GameRunner
+      state={state}
+      setState={setState}
+      aiConfig={aiConfig}
+      lang={lang}
+      onExit={() => { setState(null); setPhase('select'); sessionStorage.removeItem(WEREWOLF_SAVE_KEY); }}
+      onReplay={() => replayLastBoard(state.boardId)} />
+  </WerewolfErrorBoundary>;
 }
 
 function BoardSelect({ lang, noKey, onStart }: {
@@ -555,6 +557,52 @@ function DeadSpectator({ state, lang, busyHint, progress, onExit }: {
 /* ═══════════════════════════════════════════════════════════════════
    游戏运行器 —— 完整循环
    ═══════════════════════════════════════════════════════════════════ */
+
+/* P21:ErrorBoundary —— 防止游戏中某个 useEffect / render 抛错导致整个面板空白崩溃
+   之前:任何组件 throw 都会被 React 18 默认行为白屏
+   现在:捕获错误,显示堆栈(给 Claude 调试用),提供"重新开局"和"返回板子选择"按钮 */
+class WerewolfErrorBoundary extends Component<
+  { children: ReactNode; onExit: () => void; lang: 'zh' | 'en' },
+  { error: Error | null; stack: string | null }
+> {
+  state = { error: null as Error | null, stack: null as string | null };
+  static getDerivedStateFromError(error: Error) {
+    return { error, stack: error.stack ?? null };
+  }
+  componentDidCatch(error: Error, info: { componentStack: string }) {
+    // eslint-disable-next-line no-console
+    console.error('[Werewolf ErrorBoundary]', error, info);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="p-5 rounded-2xl" style={{ background: 'rgba(220,38,38,0.1)', border: '2px solid #dc2626' }}>
+          <h2 className="text-xl font-black mb-2 flex items-center gap-2" style={{ color: '#dc2626' }}>
+            💥 {this.props.lang === 'zh' ? '游戏崩溃' : 'Game Crashed'}
+          </h2>
+          <p className="text-sm mb-3" style={{ color: 'var(--color-text-muted)' }}>
+            {this.props.lang === 'zh'
+              ? '游戏过程中遇到了一个错误。请把下面的错误信息发给 Claude 以便修复。'
+              : 'An error occurred during gameplay. Please share the error below with Claude.'}
+          </p>
+          <div className="text-xs p-2 rounded mb-3 overflow-auto" style={{
+            background: 'var(--color-bg-deep)', color: '#dc2626',
+            maxHeight: 200, fontFamily: 'monospace', whiteSpace: 'pre-wrap',
+          }}>
+            <div className="font-bold mb-1">{this.state.error.message}</div>
+            {this.state.stack && <div className="text-[10px] opacity-80">{this.state.stack.slice(0, 1200)}</div>}
+          </div>
+          <div className="flex gap-2">
+            <Button onClick={this.props.onExit}>
+              {this.props.lang === 'zh' ? '返回板子选择' : 'Back to board'}
+            </Button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, onExit, onReplay }: {
   state: GameState;
