@@ -2559,6 +2559,29 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
       else if (['witch', 'hunter', 'guard', 'knight'].includes(p.role)) prob = 0.6;
       decisions[p.id] = Math.random() < prob ? 'register' : 'skip';
     }
+    // 修复(P0):真预言家上警后必须强制一只狼对跳(也上警)
+    // 之前:seer 100% 报名 + 狼只有 40% → 可能出现"真预 100% 上警,狼一只没上"
+    //       → 警徽直接落入真预口袋,狼阵营没翻盘机会,游戏不平衡
+    // 现在:检测到有真预报名(AI seer 100% 必报 或 用户是 seer 且 userRegister=true),
+    //       且没有任何狼报名 → 强制一只活着的 AI 狼报名(对跳)
+    const userIsSeer = state.players[state.userId]?.role === 'seer';
+    const userIsRegisteringAsSeer = userIsSeer && userRegister;
+    const seerRegistered = userIsRegisteringAsSeer
+      || Object.entries(decisions).some(([pid, dec]) =>
+        dec === 'register' && state.players[parseInt(pid, 10)]?.role === 'seer'
+      );
+    if (seerRegistered) {
+      const anyWolfRegistered = Object.entries(decisions).some(([pid, dec]) =>
+        dec === 'register' && state.players[parseInt(pid, 10)]?.faction === 'wolf'
+      );
+      if (!anyWolfRegistered) {
+        const wolvesAlive = alivePlayers.filter(p => p.faction === 'wolf' && p.id !== state.userId);
+        if (wolvesAlive.length > 0) {
+          const pickWolf = wolvesAlive[Math.floor(Math.random() * wolvesAlive.length)];
+          decisions[pickWolf.id] = 'register';
+        }
+      }
+    }
     setAiDecisions(prev => ({ ...prev, ...decisions }));
   }, [step, userRegister, alivePlayers.length, state.userId, aiDecisions]);
 
@@ -2664,7 +2687,12 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
      P6-#D 修复(用户反馈:非预言家不该刚警徽):
      - 首轮(没有 isSheriff)→ 非预言家候选人必须退水(只有预言家/悍跳预言家的狼能拿警徽)
      - 后续轮(已有 isSheriff)→ 普通规则
-     判定"是否有 claim":在今日 claims.seerClaims 里出现过 = 是预言家(真或假) */
+     判定"是否有 claim":在今日 claims.seerClaims 里出现过 = 是预言家(真或假)
+
+     P13 修复(用户反馈"全退水导致游戏卡死"):
+     - 跳预言家的候选人(真预 + 悍跳狼)必须刚警徽,**不允许退水**
+     - 否则会出现所有候选人都退了,游戏卡在 withdraw 阶段等用户决定
+     - "全退水 → 警徽流失"作为兜底保留(只是正常情况下不会触发) */
   useEffect(() => {
     if (step !== 'withdraw') return;
     const decisions: Record<number, 'withdraw' | 'stay'> = {};
@@ -2680,7 +2708,13 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
         decisions[cid] = 'withdraw';
         continue;
       }
-      // 跳了预言家(包括悍跳狼)/神职/狼:有 10-30% 概率退水
+      // 修复(P0):跳预言家的候选人(真预 + 悍跳狼)必须刚警徽,不允许退水
+      // 防止全退水导致游戏卡死,警徽必须落地
+      if (seerClaimerIds.has(cid)) {
+        decisions[cid] = 'stay';
+        continue;
+      }
+      // 跳了神职/狼(未跳预言家):有 10-30% 概率退水
       const probWithdraw = c.faction === 'wolf' ? 0.15
         : ['seer', 'witch', 'hunter', 'guard', 'knight'].includes(c.role) ? 0.1
         : 0.3;
