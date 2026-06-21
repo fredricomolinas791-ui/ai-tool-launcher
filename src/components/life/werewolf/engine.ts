@@ -212,6 +212,24 @@ export const defaultMemory = (): PrivateMemory => ({
   isSheriff: false, idiotFlipped: false,
 });
 
+/* P22+:sanitizeState —— 给 state.players 每个 player 强制补齐 privateMemory 缺失字段
+   任何引擎函数返回 state 前调用一次,保证下游访问永远拿到完整对象 */
+export function sanitizeState(state: GameState): GameState {
+  const def = defaultMemory();
+  return {
+    ...state,
+    players: state.players.map(p => {
+      if (!p.privateMemory) return { ...p, privateMemory: { ...def } };
+      const merged = { ...def, ...p.privateMemory };
+      if (!Array.isArray(merged.wolfTeammates)) merged.wolfTeammates = [];
+      if (!Array.isArray(merged.seerChecks)) merged.seerChecks = [];
+      if (!Array.isArray(merged.guardHistory)) merged.guardHistory = [];
+      if (!Array.isArray(merged.gargoyleChecks)) merged.gargoyleChecks = [];
+      return { ...p, privateMemory: merged };
+    }),
+  };
+}
+
 /* ─────────────────────────────────────────────
    初始化
    ───────────────────────────────────────────── */
