@@ -202,7 +202,7 @@ const BOARD_12_CLASSIC: BoardDef = {
 
 /** 12 人 · 狼王守卫局 */
 const BOARD_12_WOLFKING: BoardDef = {
-  id: 'p12-wolfking', playerCount: 12, variant: 'coming-soon',
+  id: 'p12-wolfking', playerCount: 12, variant: 'standard',
   name: { zh: '12 人 · 狼王守卫', en: '12-Player Wolf King Guard' },
   desc: { zh: '狼王 + 狼2 + 村3 + 预言家 + 女巫 + 猎人 + 守卫 + 白痴 + 村1', en: 'Wolf King · 2 wolves · 3 villagers · seer · witch · hunter · guard · idiot · villager' },
   feature: { zh: '狼阵营有「狼王」可带人,守卫能保人,逻辑链最长', en: 'Wolf King can take victims; guard protects — longest logic chain' },

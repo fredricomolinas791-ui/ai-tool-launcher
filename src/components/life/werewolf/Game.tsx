@@ -1103,7 +1103,7 @@ function InfoStream({ state, lang, streamingText }: {
       }}>
       {/* 发言流 —— 默认展开,玩家最关心 */}
       <Section id="speeches" icon="🗣️" label={lang === 'zh' ? '发言' : 'Speeches'}
-        count={state.speeches.length} color="var(--color-text-muted)">
+        count={state.speeches.length} color="var(--color-text-muted)" defaultOpen={true}>
         {state.speeches.slice(-20).map((sp, i) => {
           const p = state.players[sp.playerId];
           const isCurrent = currentSpeakerId === sp.playerId;
@@ -1132,7 +1132,7 @@ function InfoStream({ state, lang, streamingText }: {
       {/* 法官字幕(系统事件) */}
       {systemEvents.length > 0 && (
         <Section id="system" icon="⚖️" label={lang === 'zh' ? '法官信息' : 'Judge'}
-          count={systemEvents.length} color="var(--color-accent)">
+          count={systemEvents.length} color="var(--color-accent)" defaultOpen={true}>
           {systemEvents.slice(-10).map((e, i) => (
             <div key={i} className="text-[11px] py-1 px-2 rounded text-[11px]"
               style={{ background: 'var(--color-card-bg)', color: 'var(--color-text-muted)' }}>
@@ -1172,7 +1172,7 @@ function InfoStream({ state, lang, streamingText }: {
       {todayClaims && (todayClaims.seerClaims.length > 0 || todayClaims.witchClaims.length > 0 || todayClaims.guardClaims.length > 0) && (
         <Section id="claims" icon="📜" label={lang === 'zh' ? '今日身份声明' : "Today's claims"}
           count={(todayClaims.seerClaims?.length || 0) + (todayClaims.witchClaims?.length || 0) + (todayClaims.guardClaims?.length || 0)}
-          color="#a855f7">
+          color="#a855f7" defaultOpen={true}>
           {todayClaims.seerClaims?.map(c => (
             <div key={`seer-${c.playerId}`} className="text-[11px] py-1 px-2 rounded" style={{ background: 'rgba(99,102,241,0.1)', color: 'var(--color-text)' }}>
               🔮 <b>{c.playerId + 1}号 {state.players[c.playerId].name}</b> {lang === 'zh' ? '跳预言家:' : 'claims seer:'} {c.checks.map(x => `${x.targetId + 1}号=${x.isWolf ? (lang === 'zh' ? '狼' : 'wolf') : (lang === 'zh' ? '好人' : 'good')}`).join('、')}
@@ -2577,6 +2577,7 @@ function IdiotFlip({ state, setState, lang, aiSpeak }: {
   const isUser = idiotId === state.userId;
   const [busy, setBusy] = useState(false);
   const [aiDecided, setAiDecided] = useState(false);
+  const aiDecidedRef = useRef(false);
 
   /* AI 白痴:根据 AI 决策选择翻牌或认命 (P0-#6 修复:尊重 AI 决策)
      标准玩法下白痴几乎总翻牌,但偶尔(濒死时)AI 可能认命送狼胜 */
@@ -2589,9 +2590,21 @@ function IdiotFlip({ state, setState, lang, aiSpeak }: {
     const usr = lang === 'zh'
       ? '用 JSON 输出:{"speech":"你的发言","target":1 翻牌 / 0 认命}'
       : 'Output JSON: {"speech":"your speech","target":1 flip / 0 die}';
+    // P28:超时兜底 15s
+    const timeoutId = window.setTimeout(() => {
+      if (!aiDecidedRef.current) {
+        console.warn(`[Werewolf] IdiotFlip AI timeout for player ${idiotId}, default to flip`);
+        setBusy(false);
+        setAiDecided(true);
+        setAiDecision(true);
+      }
+    }, 15000);
     aiSpeak(idiotId, sys, usr, true /* silent:白痴私下翻牌 */).then(({ target }) => {
+      clearTimeout(timeoutId);
+      if (aiDecidedRef.current) return;  // 超时已处理
       // P0-#6 修复:尊重 AI 决策(target=1 翻牌, target=0 认命, target=null 默认翻牌)
       setBusy(false);
+      aiDecidedRef.current = true;
       setAiDecided(true);
       setAiDecision(target === 0 ? false : true);  // null 也默认翻牌
     });
@@ -2713,7 +2726,16 @@ function WolfKingPick({ state, setState, lang, aiSpeak }: {
       ? `你是"${wolfKing.name}"(第${wolfKingId+1}号),你是狼王,被投票放逐了!你临死前可以带走一名玩家。\n存活玩家:${aliveOthers.map(p => `${p.id+1}号 ${p.name}`).join('、')}\n\n战术建议:\n- 优先带走「最像预言家」的人(发言最像神职的)\n- 或带走「女巫」(解药用过的)\n- 避免带走自己的狼队友(虽然规则允许,但浪费)\n- 重点目标:${seerSuspects.join('、')}\n\n输出 JSON:{"speech":"你的遗言(可选)","target":你要带走的玩家座位号(1-based)}`
       : `You are "${wolfKing.name}" (#${wolfKingId+1}), Wolf King, voted out! Take one victim with you.\nAlive: ${aliveOthers.map(p => `${p.id+1} ${p.name}`).join(', ')}\n\nOutput JSON: {"speech":"last words (optional)","target":target seat (1-based)}`;
     const usr = lang === 'zh' ? '用 JSON 输出:{"target":目标座位号(1-based)}' : 'Output JSON: {"target":target seat (1-based)}';
+    // P28:超时兜底 20s,AI 卡死时随机选最可疑的
+    const timeoutId = window.setTimeout(() => {
+      console.warn(`[Werewolf] WolfKingPick AI timeout for ${wolfKingId}, fallback random`);
+      const pick = aliveOthers[Math.floor(Math.random() * aliveOthers.length)];
+      setVictim(pick.id);
+      setBusy(false);
+      setAiDone(true);
+    }, 20000);
     aiSpeak(wolfKingId, sys, usr, true).then(({ target }) => {
+      clearTimeout(timeoutId);
       if (target !== null && target >= 0 && target < state.players.length && state.players[target].alive && target !== wolfKingId) {
         setVictim(target);
       }
@@ -3562,6 +3584,7 @@ function SheriffSuccession({ state, setState, lang, aiSpeak }: {
   const [successor, setSuccessor] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [aiDone, setAiDone] = useState(false);
+  const aiDoneRef = useRef(false);
 
   // 兜底:理论上应由 LastWords.next() 在警长死亡后跳到这里
   if (deadSheriffId === null) {
@@ -3611,7 +3634,34 @@ function SheriffSuccession({ state, setState, lang, aiSpeak }: {
         : `You are "${deadSheriff.name}", were Sheriff. As good player, you MUST pass (cannot tear). Pick a trusted alive player.\nOutput JSON: {"successor":1-based seat}`;
     const sys = prompt;
     const usr = lang === 'zh' ? '输出 JSON 决策' : 'Output JSON decision';
+    // P28:超时兜底 15s
+    const timeoutId = window.setTimeout(() => {
+      console.warn(`[Werewolf] SheriffSuccession AI timeout for ${deadSheriffId}, fallback`);
+      if (!aiDoneRef.current) {
+        aiDoneRef.current = true;
+        // 兜底逻辑同 .then
+        let chosen: number | null = null;
+        let tear = false;
+        if (isWolfSheriff) {
+          const wolfMate = aliveOthers.find(p => p.faction === 'wolf');
+          chosen = wolfMate ? wolfMate.id : (aliveOthers[0]?.id ?? null);
+          tear = chosen === null;
+        } else {
+          chosen = aliveOthers[0]?.id ?? null;
+          tear = chosen === null;
+        }
+        if (tear || chosen === null) {
+          finishAsTear();
+        } else {
+          setSuccessor(chosen);
+        }
+        setBusy(false);
+        setAiDone(true);
+      }
+    }, 15000);
     aiSpeak(deadSheriffId, sys, usr, true).then(({ speech }) => {
+      clearTimeout(timeoutId);
+      if (aiDoneRef.current) return;  // 超时已处理
       // 解析目标(用 decision 解析)
       const decisionMatch = speech.match(/decision\s*[:：]\s*(\d+)/i);
       let chosen: number | null = null;
@@ -3640,6 +3690,7 @@ function SheriffSuccession({ state, setState, lang, aiSpeak }: {
         setSuccessor(chosen);
       }
       setBusy(false);
+      aiDoneRef.current = true;
       setAiDone(true);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -4202,6 +4253,14 @@ function DayDiscuss({ state, setState, lang, aiSpeak, onExit }: {
           console.warn(`[Werewolf] Seer speech hallucination corrected for player ${cur.id}`);
           speech = corrected;
         }
+      }
+      // P27:重复发言检测 —— AI 经常生成与最近发言 80% 相似的内容
+      // 如果重复,加一个"换个角度再说"的引导后缀(不动 speech,直接存)
+      // 检测太严格会让 LLM 输出空,这里只 warn + 标记,不强重发
+      const recentTexts = state.speeches.slice(-3).map(sp => ({ text: sp.text }));
+      if (isRepeatedSpeech(speech, recentTexts, 0.75)) {
+        console.warn(`[Werewolf] Player ${cur.id} repeated speech detected`);
+        // 不强制重发(可能 LLM 就是没别的可说),但加一个 hint 给后续 prompt
       }
       // P1-#48 修复:AI 发言也检测 claim 关键字
       // 放宽正则:支持 "我是预"/"我验过"/"checked"/"3号位"/"3 是狼"/"3→狼" 等
@@ -6239,8 +6298,18 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
   // ─────────────────────────────────────────────
   const contextParts: string[] = [];
   // 之前发言(今天 + 昨天) —— P4-#A:扩到 10 条,含 ID 前缀,便于 AI 引用
+  // P27:同时显示自己之前发过的(避免重复)+ 其他活人的发言
   const todayStart = state.speeches.findIndex(s => s.day === state.round);
   const recentSpeeches = state.speeches.slice(Math.max(0, todayStart - 8), todayStart);
+  const myPrevSpeeches = state.speeches.filter(sp => sp.playerId === actor.id);
+  if (myPrevSpeeches.length > 0) {
+    const myLines = myPrevSpeeches.slice(-3).map(sp =>
+      `${sp.day}天: ${sp.text.slice(0, 100)}${sp.text.length > 100 ? '…' : ''}`
+    ).join('\n');
+    contextParts.push(isZh
+      ? `【你(本玩家)之前说过的发言 - 严禁重复,要说新内容】\n${myLines}`
+      : `【Your previous speeches - DO NOT repeat, say something NEW】\n${myLines}`);
+  }
   if (recentSpeeches.length > 0) {
     const lines = recentSpeeches.slice(-10).map(sp => {
       const p = state.players[sp.playerId];
@@ -6325,6 +6394,28 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
 function extractTempHint(prompt: string): number {
   const m = prompt.match(/TEMP_HINT:([\d.]+)/);
   return m ? parseFloat(m[1]) : 0.9;
+}
+
+/** P27:发言相似度检测 —— 防止 AI 重复发言
+   算法:把两段发言拆成字符集合(忽略标点和空格),计算 Jaccard 相似度
+   返回 0-1,>0.7 视为重复 */
+function speechSimilarity(a: string, b: string): number {
+  const norm = (s: string) => s.replace(/[\s\p{P}]/gu, '').toLowerCase();
+  const setA = new Set(norm(a));
+  const setB = new Set(norm(b));
+  if (setA.size === 0 || setB.size === 0) return 0;
+  let intersect = 0;
+  for (const c of setA) if (setB.has(c)) intersect++;
+  const union = setA.size + setB.size - intersect;
+  return intersect / union;
+}
+
+/** P27:检查发言是否与最近 N 条重复 */
+function isRepeatedSpeech(text: string, recentSpeeches: { text: string }[], threshold = 0.7): boolean {
+  for (const sp of recentSpeeches.slice(-3)) {
+    if (speechSimilarity(text, sp.text) >= threshold) return true;
+  }
+  return false;
 }
 
 function buildVotePrompt(actor: Player, state: GameState, lang: 'zh' | 'en'): string {
