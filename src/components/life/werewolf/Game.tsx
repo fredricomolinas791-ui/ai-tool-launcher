@@ -1348,7 +1348,10 @@ function NightPanel({ state, setState, lang, aiSpeak, onActingChange, onExit }: 
       if (scene === 'outro') return lang === 'zh' ? '🌙 夜间收尾…' : '🌙 Night outro…';
       return undefined;
     })();
-    return <DeadSpectator state={state} lang={lang} busyHint={curHint} onExit={onExit} />;
+    // P16:观看模式下不显示 DeadSpectator(用户不是玩家,只是看 AI 行动)
+    if (!state.spectatorMode) {
+      return <DeadSpectator state={state} lang={lang} busyHint={curHint} onExit={onExit} />;
+    }
   }
 
   // 通知 GameRunner 当前行动玩家 —— P1-#11 修复:
@@ -2668,7 +2671,8 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
 
   // P5 修复:死人不能参与警长竞选(用户原话:"我已经上警为啥我还能投警徽票")
   const userAlive = state.players[state.userId]?.alive;
-  if (!userAlive) {
+  // P16:观看模式下用户不在游戏中,不需要 DeadSpectator
+  if (!state.spectatorMode && !userAlive) {
     return <DeadSpectator state={state} lang={lang}
       busyHint={busy ? (lang === 'zh' ? '⭐ 警长竞选进行中…' : '⭐ Sheriff election in progress…') : undefined}
       onExit={onExit} />;
@@ -3732,7 +3736,8 @@ function DayDiscuss({ state, setState, lang, aiSpeak, onExit }: {
 
   // P5 修复:死人不能发言,显示观战面板(可看到当前 speaker + 倒计时)
   const userAlive = state.players[state.userId]?.alive;
-  if (!userAlive) {
+  // P16:观看模式下用户不在游戏中,不需要 DeadSpectator
+  if (!state.spectatorMode && !userAlive) {
     return <DeadSpectator state={state} lang={lang}
       busyHint={cur ? (lang === 'zh'
         ? `🎤 ${cur.name} 正在发言(剩 ${timeLeft}s)…`
@@ -4211,7 +4216,8 @@ function DayVote({ state, setState, lang, aiSpeak, onExit }: {
   // P1-#B 修复:死人不能投票(规则上死亡玩家失去投票权);只可观战
   // P5 增强:dead panel 显示当前阶段 + busy 提示,避免用户以为游戏暂停了
   const userAlive = state.players[state.userId]?.alive;
-  if (!userAlive) {
+  // P16:观看模式下用户不在游戏中,不需要 DeadSpectator
+  if (!state.spectatorMode && !userAlive) {
     return <DeadSpectator state={state} lang={lang}
       busyHint={busy ? (lang === 'zh' ? '🤔 AI 玩家正在投票…' : '🤔 AI players voting…') : undefined}
       onExit={onExit} />;
