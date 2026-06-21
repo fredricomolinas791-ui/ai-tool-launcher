@@ -630,10 +630,42 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
   // 检测自爆事件(从 publicLog 增量里提取)
   const seenSelfDestructRef = useRef<number>(0);
   /* setState wrapper:把 (s:GameState) => GameState 形式适配到 prop 的 Dispatch<SetStateAction<GameState|null>>
-     —— 子组件里都假设 state 非 null,这里用 prev ? u(prev) : prev 兜底(理论上 prop 永远非 null) */
+     —— 子组件里都假设 state 非 null,这里用 prev ? u(prev) : prev 兜底(理论上 prop 永远非 null)
+     P22+:每次 setState 后强制 sanitize players 的 privateMemory(防止任何路径漏字段) */
+  const defMem = defaultMemory();
   const setState = (u: (s: GameState) => GameState) =>
-    setStateProp((prev) => (prev ? u(prev) : prev));
-  const state = initial;
+    setStateProp((prev) => {
+      if (!prev) return prev;
+      const next = u(prev);
+      // sanitize:每个 player 的 privateMemory 都补齐缺失字段
+      const sanitizedPlayers = next.players.map(p => {
+        if (!p.privateMemory) return { ...p, privateMemory: { ...defMem } };
+        // 用 spread merge 兜底所有缺失字段
+        const merged = { ...defMem, ...p.privateMemory };
+        // 数组字段如果缺失,用 [] 补
+        if (!Array.isArray(merged.wolfTeammates)) merged.wolfTeammates = [];
+        if (!Array.isArray(merged.seerChecks)) merged.seerChecks = [];
+        if (!Array.isArray(merged.guardHistory)) merged.guardHistory = [];
+        if (!Array.isArray(merged.gargoyleChecks)) merged.gargoyleChecks = [];
+        return { ...p, privateMemory: merged };
+      });
+      return { ...next, players: sanitizedPlayers };
+    });
+  // P22+:用 useMemo 在每次 render 时也兜底 sanitize(防止 setState 没经过 wrapper 的边界情况)
+  const defMemRender = defaultMemory();
+  const state = useMemo(() => {
+    if (!initial) return initial;
+    const sanitizedPlayers = initial.players.map(p => {
+      if (!p.privateMemory) return { ...p, privateMemory: { ...defMemRender } };
+      const merged = { ...defMemRender, ...p.privateMemory };
+      if (!Array.isArray(merged.wolfTeammates)) merged.wolfTeammates = [];
+      if (!Array.isArray(merged.seerChecks)) merged.seerChecks = [];
+      if (!Array.isArray(merged.guardHistory)) merged.guardHistory = [];
+      if (!Array.isArray(merged.gargoyleChecks)) merged.gargoyleChecks = [];
+      return { ...p, privateMemory: merged };
+    });
+    return { ...initial, players: sanitizedPlayers };
+  }, [initial]);
 
   const alivePlayers = state.players.filter(p => p.alive);
   const winner = checkWinner(state);
