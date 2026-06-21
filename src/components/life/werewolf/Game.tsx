@@ -103,7 +103,8 @@ function PlayerSeat({ player, isYou, isSpeaking, isActing, lang, userMark, wolfT
   const role = ROLES[player.role];
   // 严格隐藏:座位框里永远不显示角色名,只用 emoji(只对自己显示真实身份)
   const display = !player.alive ? '💀' : isYou ? role.emoji : '👤';
-  const isSheriff = player.privateMemory.isSheriff;
+  // P23:privateMemory 加可选链 + 默认值
+  const isSheriff = player.privateMemory?.isSheriff ?? false;
   // P1-#22 修复(用户反馈):狼人应该看到自己的队友
   const isMyWolfTeammate = !isYou && wolfTeammateSet?.has(player.id);
   return (
@@ -1252,7 +1253,7 @@ function InfoStream({ state, lang, streamingText }: {
                     if (!target) return null;
                     const voterNames = g.voters.map(vid => {
                       const voter = state.players[vid];
-                      const isSheriff = voter?.privateMemory.isSheriff;
+                      const isSheriff = voter?.privateMemory?.isSheriff ?? false;
                       return `${vid + 1}号${isSheriff ? '⭐' : ''}`;
                     }).join('+');
                     return (
@@ -1944,7 +1945,7 @@ function UserNightActionUI({ role, state, lang, onConfirm }: {
 
   // 守卫:不能连守同一人 + 上一夜空守则本夜必须守人(P0-#5 修复)
   if (role === 'guard') {
-    const lastTarget = userP.privateMemory.guardLastTargetId;
+    const lastTarget = userP?.privateMemory?.guardLastTargetId ?? null;
     const lastRoundSkipped = lastTarget === null;
     const mustGuardSomeone = lastRoundSkipped;
     return (
@@ -2465,7 +2466,7 @@ function resolveNight(s: GameState, _lang: 'zh' | 'en'): GameState {
   // 之前:resolveNight 立刻标死、log 死亡、进 last-words → 死亡玩家从一开始就看不到警徽竞选
   // 现在:round === 1 + 12+ 人 + 无警长 → 死亡存到 deferredDeaths,跳到 sheriff-election
   //      等警长竞选完成时(选举组件 setStep('done') 阶段)由 applyDeferredDeaths 应用
-  const needSheriff = s.players.length >= 12 && !s.players.some(p => p.privateMemory.isSheriff);
+  const needSheriff = s.players.length >= 12 && !s.players.some(p => p.privateMemory?.isSheriff);
   if (isFirstNight && needSheriff) {
     return {
       ...s,
@@ -3087,7 +3088,7 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
     if (step !== 'withdraw') return;
     const decisions: Record<number, 'withdraw' | 'stay'> = {};
     // 首轮判定:现在还没有 isSheriff
-    const isFirstRound = !state.players.some(p => p.privateMemory.isSheriff);
+    const isFirstRound = !state.players.some(p => p.privateMemory?.isSheriff);
     // 今日已跳预言家的人(claims.seerClaims 的 playerId)
     const seerClaimerIds = new Set((state.claims?.[state.round]?.seerClaims ?? []).map(c => c.playerId));
     for (const cid of candidates) {
@@ -4119,9 +4120,10 @@ function DayDiscuss({ state, setState, lang, aiSpeak, onExit }: {
             //      有这个 target 的记录,用实际记录覆盖 claim
             //      (悍跳的狼 → claim 保留,作为假情报)
             const speaker = s.players[cur.id];
-            const isRealSeer = speaker.role === 'seer';
-            if (isRealSeer && speaker.privateMemory.seerChecks.length > 0) {
-              const realChecks = speaker.privateMemory.seerChecks;
+            const isRealSeer = speaker?.role === 'seer';
+            const speakerChecks = speaker?.privateMemory?.seerChecks ?? [];
+            if (isRealSeer && speakerChecks.length > 0) {
+              const realChecks = speakerChecks;
               checks = checks.map(c => {
                 const realCheck = realChecks.find(rc => rc.targetId === c.targetId);
                 if (realCheck) {
@@ -4941,7 +4943,7 @@ function VoteResults({ state, setState, lang }: {
                 <span style={{ color: isUserVoter ? '#a855f7' : 'var(--color-text)' }}>{name(v.voterId)}</span>
                 <span style={{ color: 'var(--color-text-muted)' }}>→</span>
                 <span style={{ color: '#a855f7' }}>{name(v.targetId)}</span>
-                {state.players[v.voterId].privateMemory.isSheriff && <span style={{ color: '#facc15' }}>⭐</span>}
+                {state.players[v.voterId]?.privateMemory?.isSheriff && <span style={{ color: '#facc15' }}>⭐</span>}
               </div>
             );
           })}
@@ -4965,7 +4967,7 @@ function VoteResults({ state, setState, lang }: {
                   {player.name}
                 </span>
                 <span style={{ color: isExiled ? '#dc2626' : 'var(--color-text-muted)' }}>{count} {lang === 'zh' ? '票' : 'votes'}</span>
-                {player.privateMemory.isSheriff && <span style={{ color: '#facc15' }}>⭐{lang === 'zh' ? '警长' : 'sheriff'}</span>}
+                {player.privateMemory?.isSheriff && <span style={{ color: '#facc15' }}>⭐{lang === 'zh' ? '警长' : 'sheriff'}</span>}
                 {isExiled && <span className="ml-auto" style={{ color: '#dc2626' }}>💀 {lang === 'zh' ? '放逐' : 'exile'}</span>}
               </div>
             );
@@ -5331,10 +5333,12 @@ function SummaryReport({ state, lang }: { state: GameState; lang: 'zh' | 'en' })
   type PlayerOp = { id: number; ops: string[] };
   const playerOps: PlayerOp[] = [];
   for (const p of state.players) {
+    // P23 防御:p.privateMemory 万一缺失用 defaultMemory 兜底(理论上 useMemo 已 sanitize)
+    const pm = p.privateMemory ?? defaultMemory();
     const ops: string[] = [];
     // 预言家查验
     if (p.role === 'seer') {
-      for (const c of p.privateMemory.seerChecks) {
+      for (const c of (pm.seerChecks ?? [])) {
         const target = state.players[c.targetId];
         if (!target) continue;
         ops.push(L(
@@ -5345,18 +5349,18 @@ function SummaryReport({ state, lang }: { state: GameState; lang: 'zh' | 'en' })
     }
     // 女巫
     if (p.role === 'witch') {
-      if (p.privateMemory.witchSavedId !== null && p.privateMemory.witchSavedId !== undefined) {
-        const t = state.players[p.privateMemory.witchSavedId];
+      if (pm.witchSavedId !== null && pm.witchSavedId !== undefined) {
+        const t = state.players[pm.witchSavedId];
         if (t) ops.push(L(`💊 救了 ${t.id + 1}.${t.name}`, `💊 saved ${t.id + 1}.${t.name}`));
       }
-      if (p.privateMemory.witchPoisonedId !== null && p.privateMemory.witchPoisonedId !== undefined) {
-        const t = state.players[p.privateMemory.witchPoisonedId];
+      if (pm.witchPoisonedId !== null && pm.witchPoisonedId !== undefined) {
+        const t = state.players[pm.witchPoisonedId];
         if (t) ops.push(L(`☠️ 毒了 ${t.id + 1}.${t.name}`, `☠️ poisoned ${t.id + 1}.${t.name}`));
       }
     }
     // 守卫
-    if (p.role === 'guard' && p.privateMemory.guardLastTargetId !== null) {
-      const t = state.players[p.privateMemory.guardLastTargetId];
+    if (p.role === 'guard' && pm.guardLastTargetId !== null) {
+      const t = state.players[pm.guardLastTargetId];
       if (t) ops.push(L(`🛡️ 守了 ${t.id + 1}.${t.name}`, `🛡️ guarded ${t.id + 1}.${t.name}`));
     }
     if (ops.length > 0) playerOps.push({ id: p.id, ops });
@@ -5477,7 +5481,7 @@ function formatGameLog(state: GameState, lang: 'zh' | 'en'): string {
     const faction = ROLES[p.role].faction;
     const factionStr = faction === 'wolf' ? '🐺' : faction === 'good' ? '🛡️' : '🎭';
     const isUser = p.isUser ? ` ${L('(你)', '(You)')}` : '';
-    const isSheriff = p.privateMemory.isSheriff ? ` ⭐${L('警长', 'Sheriff')}` : '';
+    const isSheriff = p.privateMemory?.isSheriff ? ` ⭐${L('警长', 'Sheriff')}` : '';
     const alive = p.alive ? '🟢' : '💀';
     lines.push(`${alive} ${p.id + 1}. ${p.name} (${factionStr}${role}) [${personality}]${isSheriff}${isUser}`);
   }
@@ -5510,14 +5514,14 @@ function formatGameLog(state: GameState, lang: 'zh' | 'en'): string {
   const seerChecks: Array<{ playerId: number; targetId: number; isWolf: boolean; night: number }> = [];
   for (const p of state.players) {
     if (p.role === 'seer') {
-      for (const c of p.privateMemory.seerChecks) seerChecks.push({ playerId: p.id, ...c });
+      for (const c of (p.privateMemory?.seerChecks ?? [])) seerChecks.push({ playerId: p.id, ...c });
     }
   }
 
   // 守卫记录
   const guardHistory: Array<{ playerId: number; targetId: number | null; night: number }> = [];
   for (const p of state.players) {
-    if (p.role === 'guard' && p.privateMemory.guardLastTargetId !== null) {
+    if (p.role === 'guard' && p.privateMemory?.guardLastTargetId !== null && p.privateMemory?.guardLastTargetId !== undefined) {
       guardHistory.push({ playerId: p.id, targetId: p.privateMemory.guardLastTargetId, night: state.round });
     }
   }
@@ -5528,8 +5532,8 @@ function formatGameLog(state: GameState, lang: 'zh' | 'en'): string {
     if (p.role === 'witch') {
       witchHistory.push({
         playerId: p.id,
-        savedId: p.privateMemory.witchSavedId,
-        poisonedId: p.privateMemory.witchPoisonedId,
+        savedId: p.privateMemory?.witchSavedId ?? null,
+        poisonedId: p.privateMemory?.witchPoisonedId ?? null,
       });
     }
   }
@@ -5727,8 +5731,10 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
     // 关键:seer 永远在 seer 块里,**不**依赖 seerChecks.length
     // 之前用 `actor.role === 'seer' && seerChecks.length` 当 gate,
     //   → seer 没 checks 时会 fall through 到村民块,prompt 撒谎说"你是村民"
-    if (actor.privateMemory.seerChecks.length) {
-      const checks = actor.privateMemory.seerChecks.map(c => `${c.targetId + 1}号 → ${c.isWolf ? '狼' : '好人'}`).join('、');
+    // P23:用 ?? [] 兜底,防止 seerChecks 是 undefined
+    const seerChecksList = actor.privateMemory?.seerChecks ?? [];
+    if (seerChecksList.length) {
+      const checks = seerChecksList.map(c => `${c.targetId + 1}号 → ${c.isWolf ? '狼' : '好人'}`).join('、');
       roleBlock = isZh
         ? `【你的身份:预言家 🔮】\n你的查验结果(必须公开报给好人阵营):${checks}\n\n你是好人阵营的核心情报源。如果不报查验,好人无法利用你的信息,等于浪费预言家。`
         : `【Your role: Seer 🔮】\nYour checks (you MUST announce to the village): ${checks}\n\nYou are the village's main info source. Without announcing, your info is wasted.`;
@@ -5741,9 +5747,9 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
       ? `【输出格式 - 硬性约束,违反 = 发言无效】\n第 1 句(必含):"我是预言家"\n第 2 句(必含查验):"昨晚/前 N 晚我验了 X 号,他是 [狼/好人]"\n第 3 句起:30-80 字分析(谁可疑 / 该投谁 / 回应别人)\n\n不要 JSON 包装。不要解释,直接给发言。如果不知道"该说什么",哪怕只重复"我是预言家,昨晚验了 X 号是狼/好人"也行,不要输出空话。`
       : `【Output format - HARD constraint】\nSentence 1: "I am the Seer"\nSentence 2 (MUST include a check): "Last night I checked #X, he is [wolf/good]"\nThen 30-80 words analysis.\n\nNo JSON. No preamble. If unsure, just repeat "I am the Seer, I checked #X he is wolf/good".`;
     suggestedTemp = 0.3;
-  } else if (actor.faction === 'wolf' && actor.privateMemory.wolfTeammates.length) {
+  } else if (actor.faction === 'wolf' && (actor.privateMemory?.wolfTeammates ?? []).length) {
     // P0-#47 狼人悍跳策略(可选项)
-    const mates = actor.privateMemory.wolfTeammates.map(id => `${state.players[id].name}`).join('、');
+    const mates = (actor.privateMemory?.wolfTeammates ?? []).map(id => `${state.players[id]?.name ?? '?'}`).join('、');
     const realSeerAlive = state.players.some(p => p.alive && p.role === 'seer');
     const counterClaimAlready = (state.claims?.[state.round]?.seerClaims ?? []).some(c => state.players[c.playerId]?.faction !== 'wolf');
     const shouldCounterClaim = realSeerAlive && !counterClaimAlready && Math.random() < 0.5;
@@ -5929,12 +5935,15 @@ function extractTempHint(prompt: string): number {
 function buildVotePrompt(actor: Player, state: GameState, lang: 'zh' | 'en'): string {
   const alive = state.players.filter(x => x.alive).filter(x => x.id !== actor.id).map(x => `${x.name}`).join('、');
   let extra = '';
-  if (actor.faction === 'wolf' && actor.privateMemory.wolfTeammates.length) {
-    const mates = actor.privateMemory.wolfTeammates.map(id => `${state.players[id].name}`).join('、');
+  // P23:wolfTeammates 用可选链 + 兜底
+  const wolfMates = actor.privateMemory?.wolfTeammates ?? [];
+  if (actor.faction === 'wolf' && wolfMates.length) {
+    const mates = wolfMates.map(id => `${state.players[id]?.name ?? '?'}`).join('、');
     extra = lang === 'zh' ? `\n🐺 你是狼,队友:${mates}。要保护队友,把票投给一个好人(最好是发言最像神职的)。` : `\n🐺 You're a wolf. Pack: ${mates}. Protect them, vote for a good player.`;
   }
-  if (actor.role === 'seer' && actor.privateMemory.seerChecks.length) {
-    const last = actor.privateMemory.seerChecks[actor.privateMemory.seerChecks.length - 1];
+  const seerChecksList = actor.privateMemory?.seerChecks ?? [];
+  if (actor.role === 'seer' && seerChecksList.length) {
+    const last = seerChecksList[seerChecksList.length - 1];
     extra = lang === 'zh' ? `\n🔮 你最近验的人:${last.targetId + 1}号 → ${last.isWolf ? '狼' : '好人'}。投票给狼。` : `\n🔮 Your last check: ${last.targetId + 1} → ${last.isWolf ? 'wolf' : 'good'}. Vote them.`;
   }
   return lang === 'zh'
