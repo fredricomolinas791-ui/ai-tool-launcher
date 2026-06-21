@@ -2670,7 +2670,11 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
      最后一个候选人发言时,setState 返回 s 不改 speechIdx,导致 useEffect 重跑时
      currentSpeakerId 仍是同一个玩家 → 无限循环。
      修法:在 .then() 里同步推进 setStep(不依赖 listener useEffect),
-     并加 lastProcessedSpeakerRef 防止 setState 失败时的 race。 */
+     并加 lastProcessedSpeakerRef 防止 setState 失败时的 race。
+
+     P15 修复(用户反馈"5 候选人 4 退水还有 1 没发言,卡死"):
+     - 加 30 秒超时:AI 不返回就强制下一位 + 占位发言
+     - 避免 AI 卡死导致整个警长阶段僵住 */
   const lastProcessedSpeakerRef = useRef<number | null>(null);
   useEffect(() => {
     if (step !== 'speech' || !currentSpeakerId) return;
@@ -2684,10 +2688,19 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
       ? `你是"${speaker.name}"(第${speaker.id+1}号),你正在参加警长竞选!请发言拉票(30-80 字):\n- 说明你的身份/立场/逻辑(可不暴露真身份)\n- 表态你作为警长会做的事(带队、归票、坚守)\n- 可以攻击其他候选人\n\n只输出你的竞选发言,不要 JSON 包装。`
       : `You are "${speaker.name}", running for sheriff! Give a 30-80 word campaign speech explaining your stance and attacking other candidates. Output speech only.`;
     const usr = lang === 'zh' ? '请发言拉票' : 'Give campaign speech';
-    aiSpeak(speaker.id, sys, usr).then(({ speech }) => {
+
+    // P15:超时保护 — 30 秒没响应强制下一位(用占位发言)
+    let timeoutFired = false;
+    const timeoutId = window.setTimeout(() => {
+      timeoutFired = true;
+      advanceSpeech(currentSpeakerId, lang === 'zh'
+        ? `(AI 超时未响应,请等待系统强制)`
+        : `(AI timed out, system advancing)`);
+    }, 30000);
+
+    function advanceSpeech(speakerId: number, speech: string) {
       setBusy(false);
       // P6-#D 修复:警长竞选发言也检测 seer claim(否则退水时没人能留)
-      // 复用 DayDiscuss 里的 claim 检测正则
       setState(s => {
         const cur = s.sheriffElection!;
         const newClaims = { ...(s.claims || {}) };
@@ -2703,21 +2716,30 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
           }).filter(c => c.targetId >= 0 && c.targetId < s.players.length);
           // 候选人在警长发言里跳预 → 加入 seerClaims
           // 没具体查验的也允许(简化:加空 checks,但标记有 claim)
-          const existing = dayClaims.seerClaims.findIndex(c => c.playerId === speaker.id);
+          const existing = dayClaims.seerClaims.findIndex(c => c.playerId === speakerId);
           if (existing >= 0) {
-            dayClaims.seerClaims[existing] = { playerId: speaker.id, checks: checks.length ? checks : [{ targetId: -1, isWolf: false }] };
+            dayClaims.seerClaims[existing] = { playerId: speakerId, checks: checks.length ? checks : [{ targetId: -1, isWolf: false }] };
           } else if (dayClaims.seerClaims.length < 3) {
-            dayClaims.seerClaims.push({ playerId: speaker.id, checks: checks.length ? checks : [{ targetId: -1, isWolf: false }] });
+            dayClaims.seerClaims.push({ playerId: speakerId, checks: checks.length ? checks : [{ targetId: -1, isWolf: false }] });
           }
         }
+        // 把发言记入 state.speeches(占位或真发言都要记)
+        const newSpeechRecord = { playerId: speakerId, day: s.round, text: speech, phase: 'sheriff-speech' as const };
         const newIdx = cur.speechIdx + 1;
         const totalCands = cur.registeredIds.filter(id => !cur.withdrawnIds.includes(id)).length;
         if (newIdx >= totalCands) {
           setStep('withdraw');
-          return { ...s, claims: newClaims };
+          return { ...s, claims: newClaims, speeches: [...s.speeches, newSpeechRecord] };
         }
-        return { ...s, sheriffElection: { ...cur, speechIdx: newIdx }, claims: newClaims };
+        return { ...s, sheriffElection: { ...cur, speechIdx: newIdx }, claims: newClaims, speeches: [...s.speeches, newSpeechRecord] };
       });
+    }
+
+    // AI 真实返回 → 用真发言 + 清掉超时
+    aiSpeak(speaker.id, sys, usr).then(({ speech }) => {
+      if (timeoutFired) return;  // 已经超时走兜底了,不再覆盖
+      window.clearTimeout(timeoutId);
+      advanceSpeech(currentSpeakerId, speech);
     });
   }, [step, currentSpeakerId, state.userId, busy, aiSpeak, lang]);
 
