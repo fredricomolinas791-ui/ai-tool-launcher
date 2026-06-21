@@ -3850,15 +3850,61 @@ function HunterShoot({ state, setState, lang, aiSpeak }: {
     if (isUser || aiDone || busy || target !== null) return;
     if (aliveOthers.length === 0) { setAiDone(true); return; }
     setBusy(true);
+    // P25+:猎人必须开枪 —— 强制 prompt "必须选一个" + 狼队友排除
+    const todayClaims = state.claims?.[state.round];
+    const seerClaimers = (todayClaims?.seerClaims ?? []).map(c => c.playerId);
+    const seerClaimerStr = seerClaimers.length > 0
+      ? (lang === 'zh' ? `\n公开跳预言家的玩家:${seerClaimers.map(id => `${id+1}号 ${state.players[id].name}`).join('、')} → 大概率真预言家,不要开枪` : `\nSeer claimers: ${seerClaimers.map(id => `${id+1} ${state.players[id].name}`).join(', ')} → likely real seer, do not shoot`)
+      : '';
+    const wolfMatesStr = hunter.faction === 'wolf' && hunter.privateMemory?.wolfTeammates?.length
+      ? (lang === 'zh'
+        ? `\n你的狼队友:${hunter.privateMemory.wolfTeammates.map(id => `${id+1}号 ${state.players[id].name}`).join('、')} → 不要开枪自己人`
+        : `\nYour wolf pack: ${hunter.privateMemory.wolfTeammates.map(id => `${id+1} ${state.players[id].name}`).join(', ')} → do not shoot teammates`)
+      : '';
     const sys = lang === 'zh'
-      ? `你是"${hunter.name}"(第${hid+1}号),你已经死了。作为猎人你可以开枪带走一名玩家(也可以不开枪)。\n存活玩家(除你):${aliveOthers.map(p => `${p.id+1}号 ${p.name}`).join('、')}\n\n输出 JSON:{"speech":"你的遗言(可选)","target":你要带走的玩家座位号(1-based,不开枪填 0)}`
-      : `You are "${hunter.name}" (#${hid+1}), you died. As hunter, you can shoot one player (or skip).\nAlive (excl. you): ${aliveOthers.map(p => `${p.id+1} ${p.name}`).join(', ')}\n\nOutput JSON: {"speech":"last words (optional)","target":target seat (1-based, 0 if skip)}`;
+      ? `你是"${hunter.name}"(第${hid+1}号),你已经死了。作为猎人你必须开枪带走一名玩家。\n存活玩家(除你):${aliveOthers.map(p => `${p.id+1}号 ${p.name}`).join('、')}${seerClaimerStr}${wolfMatesStr}\n\n分析:谁最像狼人?\n- 跳预言家的是好人,不要开枪\n- 你的狼队友不要开枪(仅狼)\n- 其他人里发言最可疑 / 站狼队的优先\n\n【硬性约束】必须填一个目标(1-based 座位号),不允许填 0 不开枪。\n\n输出 JSON:{"speech":"你的遗言(可选)","target":目标座位号(1-based,必须填一个有效数字)}`
+      : `You are "${hunter.name}" (#${hid+1}), you died. As hunter, you MUST shoot one player.\nAlive (excl. you): ${aliveOthers.map(p => `${p.id+1} ${p.name}`).join(', ')}${seerClaimerStr}${wolfMatesStr}\n\nAnalysis: who looks most like a wolf? Seer claimers are good (don't shoot). Packmates (if wolf) don't shoot. Others: shoot the most suspicious.\n\n【HARD constraint】Must fill a valid target (1-based seat number). Do NOT fill 0 to skip.\n\nOutput JSON: {"speech":"last words (optional)","target":target seat (1-based, REQUIRED)}`;
     const usr = lang === 'zh'
-      ? '请用 JSON 格式输出:{"speech":"你的遗言","target":目标座位号(1-based,不开枪填 0)}'
-      : 'Output JSON: {"speech":"last words","target":target seat (1-based, 0 if skip)}';
+      ? '请用 JSON 格式输出:{"speech":"你的遗言","target":目标座位号(1-based,必须填一个有效数字)}'
+      : 'Output JSON: {"speech":"last words","target":target seat (1-based, REQUIRED)}';
+    // P25:超时兜底 20s,防止 AI 卡死
+    const timeoutId = window.setTimeout(() => {
+      // 超时:兜底随机选一个非狼非预言家的活人
+      const exclude = new Set<number>([
+        ...(seerClaimers ?? []),
+        ...(hunter.privateMemory?.wolfTeammates ?? []),
+      ]);
+      const candidates = aliveOthers.filter(p => !exclude.has(p.id));
+      const pick = (candidates.length > 0 ? candidates : aliveOthers)[0];
+      console.warn(`[Werewolf] Hunter ${hid} AI timeout, fallback to ${pick.id}`);
+      setTarget(pick.id);
+      setBusy(false);
+      setAiDone(true);
+    }, 20000);
     aiSpeak(hid, sys, usr, true /* silent:猎人私下选目标 */).then(({ target: aiT }) => {
+      clearTimeout(timeoutId);
       if (aiT !== null && aiT >= 0 && aiT < state.players.length && state.players[aiT].alive && aiT !== hid) {
+        // P25:再校验一次(防止 AI 选了不该选的)
+        if (seerClaimers.includes(aiT)) {
+          // AI 选了跳预言家的,改为选其他活人
+          const others = aliveOthers.filter(p => p.id !== aiT && !seerClaimers.includes(p.id));
+          if (others.length > 0) {
+            setTarget(others[0].id);
+            setBusy(false);
+            setAiDone(true);
+            return;
+          }
+        }
         setTarget(aiT);
+      } else {
+        // AI 没选 / 选错 → 兜底
+        const exclude = new Set<number>([
+          ...(seerClaimers ?? []),
+          ...(hunter.privateMemory?.wolfTeammates ?? []),
+        ]);
+        const candidates = aliveOthers.filter(p => !exclude.has(p.id));
+        const pick = (candidates.length > 0 ? candidates : aliveOthers)[0];
+        setTarget(pick.id);
       }
       setBusy(false);
       setAiDone(true);
@@ -3913,6 +3959,24 @@ function HunterShoot({ state, setState, lang, aiSpeak }: {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [aiDone, busy, target, isUser]);
+
+  // P25:用户死了 → 不再让用户点按钮(否则卡死),自动兜底随机选一个非狼非预言家的人
+  // 用户活着 + 用户是猎人:走主 UI(下面渲染);用户死了:显示 DeadSpectator
+  const hunterUserAlive = state.players[state.userId]?.alive;
+  if (!state.spectatorMode && hunterUserAlive === false && isUser) {
+    // 触发兜底选择(target 还没设置时)
+    if (target === null && aliveOthers.length > 0) {
+      const todayClaims = state.claims?.[state.round];
+      const seerClaimers = new Set((todayClaims?.seerClaims ?? []).map(c => c.playerId));
+      const wolfMates = new Set(hunter.privateMemory?.wolfTeammates ?? []);
+      const candidates = aliveOthers.filter(p => !seerClaimers.has(p.id) && !wolfMates.has(p.id));
+      const pick = (candidates.length > 0 ? candidates : aliveOthers)[0];
+      // 用 setTimeout 避免 render 中 setState
+      setTimeout(() => fire(pick.id), 0);
+    }
+    return <DeadSpectator state={state} lang={lang}
+      busyHint={lang === 'zh' ? '🏹 猎人技能触发中…' : '🏹 Hunter shooting…'} />;
+  }
 
   return (
     <div className="p-4 rounded-xl" style={{ background: 'var(--color-card-bg)', border: '1px solid #f97316' }}>
@@ -4112,6 +4176,32 @@ function DayDiscuss({ state, setState, lang, aiSpeak, onExit }: {
     }, speechTimeoutMs);
     aiSpeak(cur.id, sys, usr, false, { temperature: temp }).then(({ speech }) => {
       clearTimeout(timeoutId);
+      // P25+:真预言家的发言强制校正 —— LLM 经常幻觉把狼说成好人(或反过来)
+      // 校正策略:把发言里所有"X 号是狼/好人"的描述,基于真实 seerChecks 改写
+      if (cur.role === 'seer' && (cur.privateMemory?.seerChecks ?? []).length > 0) {
+        const realChecks = cur.privateMemory.seerChecks;
+        let corrected = speech;
+        // 匹配 "X 号是 [狼/好人/wolf/good]" 的所有描述,按真实结果替换
+        corrected = corrected.replace(
+          /(\d{1,2})\s*号\s*(?:是|=|为|就是|就是|乃|系|就是)\s*(狼|好人|坏人|神职|民|村民|预言家|女巫|守卫|猎人|骑士|白痴|狼人|wolf|good|bad|god|villager)/gi,
+          (m, numStr, label) => {
+            const num = parseInt(numStr, 10) - 1;
+            const realCheck = realChecks.find(c => c.targetId === num);
+            if (!realCheck) return m;  // 没验过,不替换
+            const isWolfLabel = /狼|wolf/i.test(label);
+            // 如果声称的与实际不符,替换为正确标签
+            if (realCheck.isWolf !== isWolfLabel) {
+              return `${numStr} 号是${realCheck.isWolf ? '🐺 狼人' : '🛡️ 好人'}`;
+            }
+            return m;
+          }
+        );
+        // 如果校正后文本不同,覆盖
+        if (corrected !== speech) {
+          console.warn(`[Werewolf] Seer speech hallucination corrected for player ${cur.id}`);
+          speech = corrected;
+        }
+      }
       // P1-#48 修复:AI 发言也检测 claim 关键字
       // 放宽正则:支持 "我是预"/"我验过"/"checked"/"3号位"/"3 是狼"/"3→狼" 等
       // P1-#22: 在 setState 内同步推进 discussIdx/phase(避免 setTimeout race)
@@ -4765,17 +4855,45 @@ function LastWords({ state, setState, lang, aiSpeak }: {
     setLwIdx(i => i + 1);
   };
 
+  // P25 修复:LastWords 加超时兜底 + lastProcessedSpeakerRef 防重入(AI 卡死时强制 next)
+  const lastProcessedLwRef = useRef<number | null>(null);
   useEffect(() => {
     if (!curPlayer) return;
-    if (curPlayer.id === state.userId) return;
+    if (curPlayer.id === state.userId) {
+      // 用户遗言阶段:跳过 AI useEffect,等用户点"说完"按钮
+      // P25:用户死了 → DeadSpectator 应该接管,这里不应该再 return 卡死
+      // 加超时:如果用户死了 / 没操作,30s 后自动 next
+      if (!state.players[state.userId]?.alive) {
+        const tid = window.setTimeout(() => {
+          setBusy(false);
+          setLwIdx(i => i + 1);
+        }, 100);
+        return () => clearTimeout(tid);
+      }
+      return;
+    }
     if (busy) return;
+    if (lastProcessedLwRef.current === curPlayer.id) return;
+    lastProcessedLwRef.current = curPlayer.id;
     setBusy(true);
     const isDay = state.pendingLastWords.length > 0 && state.deadThisNight.length === 0;
     const diedFrom = isDay ? '白天投票/技能' : '夜间';
     const sys = lang === 'zh'
       ? `你是"${curPlayer.name}"(第${curPlayer.id + 1}号),你因${diedFrom}被杀了!请留遗言(30-80 字):\n- 可以留自己的身份线索(也可不)\n- 可以留怀疑对象\n- 可以感谢/指责某人\n\n只输出你的遗言。`
       : `You are "${curPlayer.name}", you died. Leave last words (30-80 words). Output speech only.`;
+    // P25:超时兜底 30s,防止 aiSpeak 永远不返回时 busy 卡死
+    const timeoutId = window.setTimeout(() => {
+      if (lastProcessedLwRef.current === curPlayer.id) {
+        console.warn(`[Werewolf] LastWords AI timeout for player ${curPlayer.id}, forcing next`);
+        lastProcessedLwRef.current = null;
+        setBusy(false);
+        setTimeout(() => next(), 0);
+      }
+    }, 30000);
     aiSpeak(curPlayer.id, sys, lang === 'zh' ? '请留遗言(30-80 字)' : 'Leave last words (30-80 words)').then(({ speech }) => {
+      clearTimeout(timeoutId);
+      if (lastProcessedLwRef.current !== curPlayer.id) return;  // 超时已强制 next
+      lastProcessedLwRef.current = null;
       // P3-#C 修复:给 AI 遗言打 phase='last-words' 标签(否则右侧栏看不出是遗言)
       setState(s => ({
         ...s,
@@ -4811,6 +4929,16 @@ function LastWords({ state, setState, lang, aiSpeak }: {
       setState(s => ({ ...s, phase: 'day-announce', pendingLastWords: [] }));
     }, []);
     return null;
+  }
+
+  // P25:用户死后 → 显示 DeadSpectator(让游戏继续,不让卡死)
+  const lwUserAlive = state.players[state.userId]?.alive;
+  if (!state.spectatorMode && lwUserAlive === false) {
+    return <DeadSpectator state={state} lang={lang}
+      busyHint={lang === 'zh'
+        ? `🕯️ 遗言阶段(${lwIdx + 1}/${deadIds.length}) · AI 正在留遗言…`
+        : `🕯️ Last Words (${lwIdx + 1}/${deadIds.length}) · AI speaking…`}
+      progress={{ current: lwIdx + 1, total: deadIds.length, label: lang === 'zh' ? `🕯️ 遗言进度` : `🕯️ Last words progress` }} />;
   }
 
   return (
