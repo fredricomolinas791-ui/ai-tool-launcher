@@ -1188,6 +1188,48 @@ function InfoStream({ state, lang, streamingText }: {
    ═══════════════════════════════════════════════════════════════════ */
 
 function RoleRevealPanel({ state, lang, onContinue }: { state: GameState; lang: 'zh' | 'en'; onContinue: () => void }) {
+  // P17:观看模式(userId=-1)显示所有玩家角色,而不是崩溃
+  if (state.spectatorMode || state.userId < 0) {
+    return (
+      <div className="p-5 rounded-xl" style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-accent)' }}>
+        <div className="text-center mb-3">
+          <div className="text-2xl mb-1">👁️</div>
+          <h3 className="text-lg font-bold" style={{ color: 'var(--color-text)' }}>
+            {lang === 'zh' ? '观看模式 · 角色分配' : 'Spectator mode · Role assignment'}
+          </h3>
+          <p className="text-xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
+            {lang === 'zh' ? '所有 12 位 AI 的角色已揭晓' : 'All 12 AI roles revealed'}
+          </p>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 mb-3">
+          {state.players.map(p => {
+            const role = ROLES[p.role];
+            const factionColor = role.faction === 'wolf' ? '#dc2626' : role.faction === 'good' ? '#22c55e' : '#a855f7';
+            return (
+              <div key={p.id} className="rounded-lg p-2 text-xs flex items-center gap-1.5"
+                style={{ background: 'var(--color-bg-deep)', border: `1px solid ${factionColor}66` }}>
+                <span className="text-lg">{role.emoji}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="font-semibold truncate" style={{ color: 'var(--color-text)' }}>
+                    {p.id + 1}.{p.name}
+                  </div>
+                  <div className="text-[10px] truncate" style={{ color: factionColor }}>{role.name[lang]}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="text-center">
+          <button onClick={onContinue}
+            className="px-6 py-2.5 rounded-xl text-sm font-semibold flex items-center gap-2 transition-all hover:scale-105 mx-auto"
+            style={{ background: 'var(--color-accent)', color: '#fff', boxShadow: '0 0 0 3px var(--color-accent-glow), 0 4px 12px rgba(0,0,0,0.3)' }}>
+            <Play size={14} />{lang === 'zh' ? '开始观看 AI 博弈' : 'Start watching'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   const userP = state.players[state.userId];
   const role = ROLES[userP.role];
   // 狼人/狼王/狼美人/石像鬼 队友可见
