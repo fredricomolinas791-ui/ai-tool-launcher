@@ -301,8 +301,8 @@ export function WerewolfGame() {
 
   if (phase === 'select' || !state) {
     return <BoardSelect lang={lang} noKey={noKey}
-      onStart={(boardId) => {
-        const g = initGame(boardId, lang === 'zh' ? '你' : 'You', lang);
+      onStart={(boardId, spectatorMode) => {
+        const g = initGame(boardId, lang === 'zh' ? '你' : 'You', lang, spectatorMode);
         setState(g);
         setPhase('playing');
       }} />;
@@ -318,8 +318,10 @@ export function WerewolfGame() {
 }
 
 function BoardSelect({ lang, noKey, onStart }: {
-  lang: 'zh' | 'en'; noKey: boolean; onStart: (boardId: BoardId) => void;
+  lang: 'zh' | 'en'; noKey: boolean; onStart: (boardId: BoardId, spectatorMode: boolean) => void;
 }) {
+  // P16:全 AI 观看模式 toggle(默认 false = 用户加入)
+  const [spectatorMode, setSpectatorMode] = useState(false);
   return (
     <div className="space-y-4">
       <div className="rounded-xl p-4" style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-border-light)' }}>
@@ -339,6 +341,21 @@ function BoardSelect({ lang, noKey, onStart }: {
           </div>
         )}
       </div>
+      {/* P16:观看模式 toggle */}
+      <div className="rounded-xl p-3 flex items-center gap-3" style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-border-light)' }}>
+        <label className="flex items-center gap-2 cursor-pointer select-none flex-1">
+          <input
+            type="checkbox"
+            checked={spectatorMode}
+            onChange={e => setSpectatorMode(e.target.checked)}
+            style={{ width: 18, height: 18, accentColor: 'var(--color-accent)' }} />
+          <span className="text-sm" style={{ color: 'var(--color-text)' }}>
+            {lang === 'zh'
+              ? '👀 全 AI 对局,我只观看(我不参与游戏,所有玩家都是 AI)'
+              : '👀 AI-only match (spectator mode — all players are AI)'}
+          </span>
+        </label>
+      </div>
       <div className="space-y-2">
         <h3 className="text-sm font-medium flex items-center gap-1.5" style={{ color: 'var(--color-text)' }}>
           <Sparkles size={14} style={{ color: 'var(--color-accent)' }} />{lang === 'zh' ? '选择板子' : 'Pick a board'}
@@ -352,7 +369,7 @@ function BoardSelect({ lang, noKey, onStart }: {
                 disabledReason={!isPlayable
                   ? (lang === 'zh' ? '该板子暂存中(P1-#22 暂存 4 个特殊板子),先玩 9 人预女猎 / 12 人预女猎白' : 'Parked (P1-#22: 4 special boards), try 9P 预女猎 / 12P 预女猎白')
                   : undefined}
-                onSelect={() => onStart(b.id)} />
+                onSelect={() => onStart(b.id, spectatorMode)} />
             );
           })}
         </div>
@@ -432,6 +449,62 @@ function DeadSpectator({ state, lang, busyHint, progress, onExit }: {
         </span>
         <span>{lang === 'zh' ? '你是鬼,看着就行' : 'Spectate only'}</span>
       </div>
+      {/* P11 修复:死亡后显示死者的回忆(让观战有参与感) */}
+      {state.userId >= 0 && (() => {
+        const u = state.players[state.userId];
+        if (!u || u.alive) return null;
+        const mem = u.privateMemory;
+        const lines: string[] = [];
+        if (u.role === 'seer' && mem.seerChecks.length) {
+          lines.push(lang === 'zh'
+            ? `🔮 你之前验过: ${mem.seerChecks.map(c => `${c.targetId + 1}号 → ${c.isWolf ? '狼' : '好人'}`).join('、')}`
+            : `🔮 Your checks: ${mem.seerChecks.map(c => `#${c.targetId + 1} → ${c.isWolf ? 'wolf' : 'good'}`).join(', ')}`);
+        }
+        if (u.role === 'werewolf' || u.role === 'wolfking' || u.role === 'wolfbeauty') {
+          if (mem.wolfTeammates.length) {
+            lines.push(lang === 'zh'
+              ? `🐺 你的狼队友: ${mem.wolfTeammates.map(id => `${id + 1}号`).join('、')}`
+              : `🐺 Your pack: ${mem.wolfTeammates.map(id => `#${id + 1}`).join(', ')}`);
+          }
+        }
+        if (u.role === 'witch') {
+          if (mem.witchSavedId !== null) {
+            lines.push(lang === 'zh'
+              ? `💊 你用过解药救了 ${mem.witchSavedId + 1}号`
+              : `💊 You saved #${mem.witchSavedId + 1} with antidote`);
+          }
+          if (mem.witchPoisonedId !== null) {
+            lines.push(lang === 'zh'
+              ? `☠️ 你用过毒药杀了 ${mem.witchPoisonedId + 1}号`
+              : `☠️ You poisoned #${mem.witchPoisonedId + 1}`);
+          }
+        }
+        if (u.role === 'cupid' && mem.cupidLinkedIds) {
+          lines.push(lang === 'zh'
+            ? `💘 你连的情侣: ${mem.cupidLinkedIds.map(id => `${id + 1}号`).join(' 和 ')}`
+            : `💘 Lovers you linked: ${mem.cupidLinkedIds.map(id => `#${id + 1}`).join(' & ')}`);
+        }
+        if (u.role === 'guard' && mem.guardLastTargetId !== null) {
+          lines.push(lang === 'zh'
+            ? `🛡️ 你最后守了 ${mem.guardLastTargetId + 1}号`
+            : `🛡️ Last guarded: #${mem.guardLastTargetId + 1}`);
+        }
+        if (lines.length === 0) return null;
+        return (
+          <div className="mt-2 text-left max-w-xs mx-auto">
+            <div className="text-[10px] mb-1 font-medium" style={{ color: '#a78bfa' }}>
+              {lang === 'zh' ? '🧠 你的回忆(死前已知)' : '🧠 What you knew'}
+            </div>
+            <div className="text-[11px] space-y-0.5 px-2 py-1.5 rounded" style={{
+              background: 'rgba(99,102,241,0.08)',
+              border: '1px solid rgba(99,102,241,0.2)',
+              color: 'var(--color-text)',
+            }}>
+              {lines.map((l, i) => <div key={i}>{l}</div>)}
+            </div>
+          </div>
+        );
+      })()}
       {/* P7-#B:进度条 —— 显示讨论/投票进度,让用户清楚游戏在动 */}
       {progress && (
         <div className="mt-3 text-left">
@@ -594,6 +667,24 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
 
   return (
     <div className="space-y-3">
+      {/* P16:全 AI 观看模式 banner */}
+      {state.spectatorMode && (
+        <div
+          className="p-3 rounded-xl flex items-center justify-center gap-2"
+          style={{
+            background: 'linear-gradient(90deg, rgba(99,102,241,0.15), rgba(99,102,241,0.3), rgba(99,102,241,0.15))',
+            border: '2px solid var(--color-accent)',
+            boxShadow: '0 0 15px rgba(99,102,241,0.3)',
+          }}
+        >
+          <Drama size={18} style={{ color: 'var(--color-accent)' }} />
+          <span className="text-sm font-semibold" style={{ color: 'var(--color-text)' }}>
+            {lang === 'zh'
+              ? '👀 观看模式 · 你不在游戏中,所有玩家都是 AI'
+              : '👀 Spectator mode — you\'re not in the game, all players are AI'}
+          </span>
+        </div>
+      )}
       {/* P2-#C:自爆高亮 banner —— 进入夜间模式提示(用户原话"不然我都不知道狼人自爆了") */}
       {selfDestructBanner && (
         <div
@@ -639,10 +730,15 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
             </div>
             <div className="text-[11px] mt-0.5 flex items-center gap-2" style={{ color: 'var(--color-text-muted)' }}>
               <span>👥 {lang === 'zh' ? '存活' : 'Alive'} {alivePlayers.length}/{state.players.length}</span>
-              <span style={{ color: 'var(--color-border-light)' }}>·</span>
-              <span>{ROLES[state.players[state.userId].role].emoji} {ROLES[state.players[state.userId].role].name[lang]}</span>
-              <span style={{ color: 'var(--color-border-light)' }}>·</span>
-              <span>{state.players[state.userId].name}</span>
+              {/* P16:观看模式下不显示用户身份(没有用户) */}
+              {!state.spectatorMode && state.userId >= 0 && (
+                <>
+                  <span style={{ color: 'var(--color-border-light)' }}>·</span>
+                  <span>{ROLES[state.players[state.userId].role].emoji} {ROLES[state.players[state.userId].role].name[lang]}</span>
+                  <span style={{ color: 'var(--color-border-light)' }}>·</span>
+                  <span>{state.players[state.userId].name}</span>
+                </>
+              )}
             </div>
           </div>
         </div>

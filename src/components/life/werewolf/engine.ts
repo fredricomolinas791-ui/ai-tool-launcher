@@ -195,6 +195,13 @@ export interface GameState {
    *  - 用后清空(下一次死亡不被延后)
    */
   deferredDeaths: number[];
+  /**
+   * P16:全 AI 观看模式
+   *  - true:开局时 userId = -1,所有玩家都是 AI,用户不参与任何行动
+   *  - false:用户是其中一个玩家(默认行为)
+   *  - 用户需求:"游戏开始可选择加入还是只看 AI 对局"
+   */
+  spectatorMode: boolean;
 }
 
 const defaultMemory = (): PrivateMemory => ({
@@ -209,12 +216,12 @@ const defaultMemory = (): PrivateMemory => ({
    初始化
    ───────────────────────────────────────────── */
 
-export function initGame(boardId: BoardId, userName: string, lang: 'zh' | 'en' = 'zh'): GameState {
+export function initGame(boardId: BoardId, userName: string, lang: 'zh' | 'en' = 'zh', spectatorMode: boolean = false): GameState {
   const board = BOARDS[boardId];
   // 洗牌角色
   const shuffledRoles = [...board.roles].sort(() => Math.random() - 0.5);
-  // 玩家名字(用户位置随机)
-  const nameObjs = generatePlayerNamesLocal(board.playerCount, userName);
+  // 玩家名字(用户位置随机);观看模式下没有真人,全是 AI
+  const nameObjs = generatePlayerNamesLocal(board.playerCount, spectatorMode ? '' : userName);
   // 性格随机
   const players: Player[] = nameObjs.map((n, i) => {
     const role = shuffledRoles[i];
@@ -229,9 +236,8 @@ export function initGame(boardId: BoardId, userName: string, lang: 'zh' | 'en' =
       privateMemory: defaultMemory(),
     };
   });
-  // 找到用户 ID
-  const userId = players.find(p => p.isUser)!.id;
-  // 给狼人互知
+  // 找到用户 ID(观看模式下 userId 为 -1,表示无真人)
+  const userId = spectatorMode ? -1 : players.find(p => p.isUser)!.id;
   const wolfIds = players.filter(p => p.faction === 'wolf').map(p => p.id);
   players.forEach(p => {
     if (p.faction === 'wolf') p.privateMemory.wolfTeammates = wolfIds.filter(id => id !== p.id);
@@ -252,6 +258,7 @@ export function initGame(boardId: BoardId, userName: string, lang: 'zh' | 'en' =
     pendingSheriffSuccession: null,
     lastWitchAction: null,
     deferredDeaths: [],
+    spectatorMode,  // P16:全 AI 对局观看模式(true = 用户不参与,纯观看)
   };
 }
 
