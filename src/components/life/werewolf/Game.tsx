@@ -3844,6 +3844,28 @@ function DayDiscuss({ state, setState, lang, aiSpeak, onExit }: {
 
   // P5 修复:死人不能发言,显示观战面板(可看到当前 speaker + 倒计时)
   const userAlive = state.players[state.userId]?.alive;
+  // P20 修复:用户死了 → 自动跳过自己的发言,避免 phase 永远卡 day-discuss
+  const deadUserSkipRef = useRef(false);
+  useEffect(() => {
+    if (state.spectatorMode || userAlive || deadUserSkipRef.current) return;
+    deadUserSkipRef.current = true;
+    // 用户死后本轮:不参与发言,等下一轮 phase 自然推进
+    // 这里不做任何事 —— 发言 useEffect 检测 cur 是自己会自然 skip
+    // 但 discussIdx 永远指向自己(因为用户还在 speakers 列表里)——
+    // 所以要主动 reset discussIdx 到下一个活人(避免 60s 倒计时卡 cur=自己)
+    if (cur && cur.id === state.userId) {
+      const others = alivePlayers.filter(p => p.id !== state.userId);
+      const nextIdx = others.findIndex(p => speakers.indexOf(p) > discussIdx);
+      if (nextIdx >= 0) {
+        setDiscussIdx(speakers.indexOf(others[nextIdx]));
+        setTimeLeft(60);
+      } else {
+        // 没有下一个活人发言 → 直接进 day-vote
+        setState(s => ({ ...s, phase: 'day-vote' }));
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // P16:观看模式下用户不在游戏中,不需要 DeadSpectator
   if (!state.spectatorMode && !userAlive) {
     return <DeadSpectator state={state} lang={lang}
@@ -4341,7 +4363,36 @@ function DayVote({ state, setState, lang, aiSpeak, onExit }: {
   // P1-#B 修复:死人不能投票(规则上死亡玩家失去投票权);只可观战
   // P5 增强:dead panel 显示当前阶段 + busy 提示,避免用户以为游戏暂停了
   const userAlive = state.players[state.userId]?.alive;
-  // P16:观看模式下用户不在游戏中,不需要 DeadSpectator
+  // P20 修复:用户死后不能让 phase 永远卡在 day-vote —— 自动跑 AI 投票 + finalize
+  const deadUserAutoVoteRef = useRef(false);
+  useEffect(() => {
+    if (state.spectatorMode || userAlive || deadUserAutoVoteRef.current) return;
+    if (alivePlayers.length < 2) return;  // 不够 2 人投票
+    deadUserAutoVoteRef.current = true;
+    setBusy(true);
+    (async () => {
+      const newAiVotes: Record<number, number> = {};
+      for (const p of alivePlayers) {
+        if (!canVote(p)) continue;
+        const sys = buildVotePrompt(p, state, lang);
+        const usr = lang === 'zh'
+          ? '用 JSON 格式输出:{"target":投票给某人的座位号(1-based)}'
+          : 'Output JSON: {"target":target seat (1-based)}';
+        const { target } = await aiSpeak(p.id, sys, usr, true);
+        if (target !== null && target >= 0 && target < state.players.length && state.players[target].alive && target !== p.id) {
+          newAiVotes[p.id] = target;
+        } else {
+          const others = alivePlayers.filter(x => x.id !== p.id && canVote(x));
+          if (others.length === 0) continue;
+          newAiVotes[p.id] = others[Math.floor(Math.random() * others.length)].id;
+        }
+      }
+      setBusy(false);
+      // 用户已死 → 用 0 作占位(userVote 会被 canVote 过滤掉)
+      setTimeout(() => finalizeWithVotes(newAiVotes, { voterId: state.userId, targetId: 0 }), 0);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   if (!state.spectatorMode && !userAlive) {
     return <DeadSpectator state={state} lang={lang}
       busyHint={busy ? (lang === 'zh' ? '🤔 AI 玩家正在投票…' : '🤔 AI players voting…') : undefined}
