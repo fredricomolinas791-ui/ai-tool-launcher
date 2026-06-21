@@ -204,7 +204,7 @@ export interface GameState {
   spectatorMode: boolean;
 }
 
-const defaultMemory = (): PrivateMemory => ({
+export const defaultMemory = (): PrivateMemory => ({
   wolfTeammates: [], seerChecks: [], witchAntidoteUsed: false, witchPoisonUsed: false,
   witchSavedId: null, witchPoisonedId: null, guardLastTargetId: null, guardHistory: [],
   cupidLinkedIds: null, gargoyleChecks: [],

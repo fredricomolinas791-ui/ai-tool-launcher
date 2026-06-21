@@ -27,6 +27,7 @@ import {
   initGame, loadAIConfig, callAIStream, checkWinner, parseAIDecision, tryJsonExtract, applyLoversChain,
   applyKnightDuel, applyWolfSelfDestruct, canVote, killPlayers,
   sheriffVoteWeight, aggregateWolfVotes, parseAIDecisionToTargetId,
+  defaultMemory,
 } from './engine';
 import type { BoardDef, Phase } from './data';
 import { canWitchSelfSave } from './data';
@@ -251,14 +252,23 @@ export function WerewolfGame() {
   const { lang: iLang } = useI18n();
   const lang = (iLang === 'en' ? 'en' : 'zh') as 'zh' | 'en';
   const [phase, setPhase] = useState<'select' | 'playing'>('select');
-  /* 初始化时优先从 sessionStorage 恢复(避免关闭弹窗后状态全丢) */
+  /* 初始化时优先从 sessionStorage 恢复(避免关闭弹窗后状态全丢)
+     P22:补齐每个 player 的 privateMemory 字段(防止代码升级后旧存档字段缺失导致崩) */
   const [state, setState] = useState<GameState | null>(() => {
     try {
       const raw = sessionStorage.getItem(WEREWOLF_SAVE_KEY);
       if (raw) {
         const s = JSON.parse(raw) as GameState;
         // 简单健全性检查
-        if (s && s.boardId && Array.isArray(s.players) && s.players.length >= 5) return s;
+        if (s && s.boardId && Array.isArray(s.players) && s.players.length >= 5) {
+          // 修复:旧存档可能缺字段,合并 defaultMemory
+          const def = defaultMemory();
+          const fixedPlayers = s.players.map(p => ({
+            ...p,
+            privateMemory: p.privateMemory ? { ...def, ...p.privateMemory } : { ...def },
+          }));
+          return { ...s, players: fixedPlayers };
+        }
       }
     } catch { /* ignore */ }
     return null;
@@ -1138,7 +1148,8 @@ function InfoStream({ state, lang, streamingText }: {
             const target = state.players[v.targetId];
             if (!voter || !target) return null;
             const isUserVoter = v.voterId === state.userId;
-            const isSheriffVoter = voter.privateMemory.isSheriff;
+            // P22 防御:voter.privateMemory 可能缺失(sessionStorage 旧存档)
+            const isSheriffVoter = voter.privateMemory?.isSheriff ?? false;
             const weight = isSheriffVoter ? 1.5 : 1;
             return (
               <div key={i} className="text-[11px] flex items-center gap-1 px-1.5 py-0.5 rounded"
@@ -1279,16 +1290,18 @@ function RoleRevealPanel({ state, lang, onContinue }: { state: GameState; lang: 
   }
 
   const userP = state.players[state.userId];
+  // P22 防御:userP 可能为 undefined(理论上不会,但 sessionStorage 异常时可能)
+  if (!userP) return null;
   const role = ROLES[userP.role];
   // 狼人/狼王/狼美人/石像鬼 队友可见
   let extra = '';
-  if (userP.faction === 'wolf' && userP.privateMemory.wolfTeammates.length) {
-    const mates = userP.privateMemory.wolfTeammates.map(id => `${state.players[id].name}`).join('、');
+  const mem = userP.privateMemory ?? defaultMemory();
+  if (userP.faction === 'wolf' && mem.wolfTeammates?.length) {
+    const mates = mem.wolfTeammates.map(id => `${state.players[id]?.name ?? '?'}`).join('、');
     extra = lang === 'zh' ? `\n🐺 你的狼队友:${mates}` : `\n🐺 Your wolf pack: ${mates}`;
   }
   // P2-#32 修复:神职状态 HUD
   let statusHud = '';
-  const mem = userP.privateMemory;
   if (userP.role === 'witch') {
     statusHud = lang === 'zh'
       ? `\n💊 解药${mem.witchAntidoteUsed ? '已用' : '可用'} · ☠️ 毒药${mem.witchPoisonUsed ? '已用' : '可用'}`
