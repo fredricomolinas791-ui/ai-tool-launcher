@@ -1591,6 +1591,20 @@ function NightPanel({ state, setState, lang, aiSpeak, onActingChange, onExit }: 
         if (!handleWolfPackDone) {
           // 单个 AI 行动(非狼队)
           const actor = state.players[actorId];
+          // P21 防御:actor 不存在(action 来自上一轮的玩家但本轮已死/越界)
+          // → 跳过本轮,直接进下一阶段
+          if (!actor || !actor.alive || !actor.privateMemory) {
+            console.warn(`[Werewolf] NightPanel: actor ${actorId} missing or dead, skipping`);
+            setBusy(false);
+            if (actionIdx + 1 >= actions.length) {
+              setScene('done');
+              setState(s => resolveNight(s, lang));
+            } else {
+              setActionIdx(i => i + 1);
+              setScene('intro');
+            }
+            return;
+          }
           // P6-#C 修复:女巫超时兜底强制用解药 + 毒药(不能空过)
           // 规则:女巫是神职,几乎必须用道具 —— AI 思考过久或没给决策时强制使用
           // P8-#C 增强:即使 AI 返回了 decision(比如 useAntidote:false, poisonTarget:null),
@@ -1633,8 +1647,17 @@ function NightPanel({ state, setState, lang, aiSpeak, onActingChange, onExit }: 
             if (cancelled || aiDoneRef.current) return;
             aiDoneRef.current = true;
             if (cur.role === 'witch') {
+              // P21 防御:女巫可能因 race condition 在 AI 返回前死亡/消失
+              const witchRef = stateRef.current.players[actorId];
+              if (!witchRef || !witchRef.privateMemory) {
+                console.warn(`[Werewolf] Witch ${actorId} disappeared mid-action, skipping`);
+                setState(s => resolveNight(s, lang));
+                setBusy(false);
+                setScene('done');
+                return;
+              }
               // P8-#C:检查 AI 是否真的用了药 —— 如果两个都没用且都可用,强制使用
-              const mem = stateRef.current.players[actorId].privateMemory;
+              const mem = witchRef.privateMemory;
               const aiUsedAntidote = result.decision?.useAntidote ?? false;
               const aiUsedPoison = (result.decision?.poisonTarget ?? null) !== null;
               const antidoteAvail = !mem.witchAntidoteUsed;
@@ -1747,8 +1770,9 @@ function NightSceneDisplay({ scene, cur, state, lang, timeLeft, onUserAction, bu
   const isWolfPack = cur.playerIds.length > 1;
   // P1-#A 修复:把 userSeerChecks 提前声明,outro 块也需要用到
   const userP = state.players[state.userId];
-  const userIsSeerAction = cur.role === 'seer' && isMe;
-  const userSeerChecks = userIsSeerAction ? userP.privateMemory.seerChecks : [];
+  // P21 防御:userP 可能为 undefined(spectator 模式 userId=-1,或边界态),privateMemory 也可能缺失
+  const userIsSeerAction = cur.role === 'seer' && isMe && userP?.privateMemory;
+  const userSeerChecks = userIsSeerAction && userP ? userP.privateMemory.seerChecks : [];
   // 标准规则:夜间只有行动者(及其同阵营可见)能看到行动信息
   // 狼队回合:所有狼人可见(包括用户若为狼)
   // 其他角色回合:只有自己可见
@@ -5563,6 +5587,12 @@ function formatGameLog(state: GameState, lang: 'zh' | 'en'): string {
    ═══════════════════════════════════════════════════════════════════ */
 
 function buildNightPrompt(actor: Player, state: GameState, lang: 'zh' | 'en'): string {
+  // P21 防御:actor 可能因 race condition 变 undefined(夜行中有人死了导致 player 列表不同步)
+  if (!actor || !actor.privateMemory) {
+    return lang === 'zh'
+      ? `系统提示: 角色数据异常,请选择任意存活玩家作为目标。`
+      : `System: role data missing, pick any alive player as target.`;
+  }
   const role = ROLES[actor.role];
   const visible = actor.privateMemory;
   const alive = state.players.filter(x => x.alive).map(x => `${x.name}`).join('、');
