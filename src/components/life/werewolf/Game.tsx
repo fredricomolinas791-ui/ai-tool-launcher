@@ -95,10 +95,13 @@ function BoardCard({ board, onSelect, lang, disabled, disabledReason }: {
    玩家座位
    ═══════════════════════════════════════════════════════════════════ */
 
-function PlayerSeat({ player, isYou, isSpeaking, isActing, lang, userMark, wolfTeammateSet }: {
+function PlayerSeat({ player, isYou, isSpeaking, isActing, lang, userMark, wolfTeammateSet, onClick, isSelected }: {
   player: Player; isYou: boolean; isSpeaking?: boolean; isActing?: boolean; lang: 'zh' | 'en';
   userMark?: string;  // P1-#22: 用户手动标记(如"狼人/好人/守卫")
   wolfTeammateSet?: Set<number>;  // P1-#22: 用户的狼队友 ID 集合
+  // P24:点击玩家头像 → 显示该玩家的发言历史 + 操作日志
+  onClick?: () => void;
+  isSelected?: boolean;
 }) {
   const role = ROLES[player.role];
   // 严格隐藏:座位框里永远不显示角色名,只用 emoji(只对自己显示真实身份)
@@ -108,19 +111,24 @@ function PlayerSeat({ player, isYou, isSpeaking, isActing, lang, userMark, wolfT
   // P1-#22 修复(用户反馈):狼人应该看到自己的队友
   const isMyWolfTeammate = !isYou && wolfTeammateSet?.has(player.id);
   return (
-    <div className="relative flex flex-col items-center" style={{ width: 72 }}>
+    <div className="relative flex flex-col items-center cursor-pointer transition-transform hover:scale-105"
+      style={{ width: 72 }}
+      onClick={onClick}
+      title={lang === 'zh' ? '点击查看该玩家的发言' : 'Click to view this player\'s speeches'}>
       <div
         className={`w-14 h-14 rounded-full flex items-center justify-center text-2xl border-2 transition-all ${isActing ? 'animate-pulse' : ''}`}
         style={{
           background: player.alive
             ? (isActing ? 'rgba(250,204,21,0.25)' : (isSpeaking ? 'var(--color-accent-glow)' : 'var(--color-card-bg)'))
             : 'var(--color-bg-deep)',
-          borderColor: isYou ? 'var(--color-accent)'
+          borderColor: isSelected ? '#22c55e'
+            : isYou ? 'var(--color-accent)'
             : isActing ? '#facc15'
             : isSpeaking ? 'var(--color-accent)'
             : 'var(--color-border-light)',
           opacity: player.alive ? 1 : 0.4,
-          boxShadow: isActing
+          boxShadow: isSelected ? '0 0 0 4px rgba(34,197,94,0.4)'
+            : isActing
             ? '0 0 0 4px rgba(250,204,21,0.35), 0 0 16px rgba(250,204,21,0.5)'
             : (isSpeaking ? '0 0 0 4px var(--color-accent-glow)' : 'none'),
         }}
@@ -623,6 +631,8 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
 }) {
   // 内部 state 仅用于派生 UI(比如 streamingText),游戏 state 走 prop
   const [streamingText, setStreamingText] = useState<{ playerId: number; text: string } | null>(null);
+  // P24:点击玩家头像后,右侧/中央显示该玩家的完整发言历史
+  const [selectedPlayerId, setSelectedPlayerId] = useState<number | null>(null);
   /* 当前夜晚正在行动的玩家 IDs(用于座位高亮)—— 仅对行动者(及其队友,如狼队)可见,平民看不到 */
   const [actingPlayerIds, setActingPlayerIds] = useState<number[]>([]);
   /* P2-#C:自爆 banner 提示(进入夜间高亮通知,3 秒后自动消失)
@@ -855,7 +865,9 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
                     isActing={actingPlayerIds.includes(p.id)}
                     lang={lang}
                     userMark={state.userMarks?.[p.id]}
-                    wolfTeammateSet={userWolfTeammates} />
+                    wolfTeammateSet={userWolfTeammates}
+                    onClick={() => setSelectedPlayerId(selectedPlayerId === p.id ? null : p.id)}
+                    isSelected={selectedPlayerId === p.id} />
                 ))}
               </div>
               {/* 右列 */}
@@ -867,12 +879,19 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
                     isActing={actingPlayerIds.includes(p.id)}
                     lang={lang}
                     userMark={state.userMarks?.[p.id]}
-                    wolfTeammateSet={userWolfTeammates} />
+                    wolfTeammateSet={userWolfTeammates}
+                    onClick={() => setSelectedPlayerId(selectedPlayerId === p.id ? null : p.id)}
+                    isSelected={selectedPlayerId === p.id} />
                 ))}
               </div>
             </div>
           </div>
           {/* 当前阶段 UI */}
+          {/* P24:点击玩家头像后,显示该玩家的完整档案(发言历史 + 关键操作) */}
+          {selectedPlayerId !== null && state.players[selectedPlayerId] && (
+            <PlayerProfile state={state} playerId={selectedPlayerId} lang={lang}
+              onClose={() => setSelectedPlayerId(null)} />
+          )}
           {state.phase === 'role-reveal' && <RoleRevealPanel state={state} lang={lang} onContinue={() => setState(s => ({ ...s, phase: 'night', round: s.round + 1 }))} />}
           {state.phase === 'night' && <NightPanel state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} onActingChange={setActingPlayerIds} onExit={onExit} />}
           {state.phase === 'last-words' && <LastWords state={state} setState={setState} lang={lang} aiSpeak={aiSpeak} />}
@@ -5204,6 +5223,7 @@ function GameOver({ state, winner, lang, onExit, onReplay }: {
   onExit: () => void; onReplay: () => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const [copiedOps, setCopiedOps] = useState(false);
   const title = winner === 'good'
     ? (lang === 'zh' ? '🌟 好人胜利!' : '🌟 Good wins!')
     : winner === 'wolf'
@@ -5227,6 +5247,18 @@ function GameOver({ state, winner, lang, onExit, onReplay }: {
     } catch (e) {
       // 兜底:用 prompt 显示
       window.prompt(lang === 'zh' ? '复制下面的对话:' : 'Copy the dialogue below:', text);
+    }
+  };
+
+  // P24+:导出操作日志(不含对话)—— 用户想看纯操作流水
+  const exportOperations = async () => {
+    const text = formatOpsLog(state, lang);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedOps(true);
+      setTimeout(() => setCopiedOps(false), 2000);
+    } catch (e) {
+      window.prompt(lang === 'zh' ? '复制下面的操作日志:' : 'Copy the operation log below:', text);
     }
   };
 
@@ -5290,6 +5322,11 @@ function GameOver({ state, winner, lang, onExit, onReplay }: {
             ? (lang === 'zh' ? '✓ 已复制' : '✓ Copied')
             : (lang === 'zh' ? '📋 复制对话日志' : '📋 Copy dialogue log')}
         </Button>
+        <Button onClick={exportOperations} variant="secondary" className="text-xs">
+          {copiedOps
+            ? (lang === 'zh' ? '✓ 已复制' : '✓ Copied')
+            : (lang === 'zh' ? '⚡ 复制操作日志' : '⚡ Copy operation log')}
+        </Button>
         <Button onClick={onReplay}>{lang === 'zh' ? '🔁 重玩此板子' : '🔁 Replay board'}</Button>
         <Button onClick={onExit} variant="secondary">{lang === 'zh' ? '🔄 换板子' : '🔄 Change board'}</Button>
       </div>
@@ -5302,6 +5339,116 @@ function GameOver({ state, winner, lang, onExit, onReplay }: {
    · 每轮(夜 + 白天):谁死了(夜间死亡 + 白天放逐 + 技能带走 + 自爆)
    · 关键操作:谁预言了谁、女巫救人/毒人、猎人带走、守卫守人
    · 放逐明细:投票 → 谁被票出去 */
+/* P24:玩家档案 —— 点击头像后显示该玩家的完整发言 + 操作日志 */
+function PlayerProfile({ state, playerId, lang, onClose }: {
+  state: GameState; playerId: number; lang: 'zh' | 'en'; onClose: () => void;
+}) {
+  const L = (zh: string, en: string) => lang === 'zh' ? zh : en;
+  const p = state.players[playerId];
+  if (!p) return null;
+  const role = ROLES[p.role];
+  const factionColor = role.faction === 'wolf' ? '#dc2626' : role.faction === 'good' ? '#22c55e' : '#a855f7';
+  const factionBg = role.faction === 'wolf' ? 'rgba(220,38,38,0.15)' : role.faction === 'good' ? 'rgba(34,197,94,0.15)' : 'rgba(168,85,247,0.15)';
+  const factionLabel = role.faction === 'wolf' ? L('🐺 狼人', '🐺 Wolf') : role.faction === 'good' ? L('🛡️ 好人', '🛡️ Good') : L('🎭 第三方', '🎭 Third');
+  // 该玩家所有发言(按 round 分组)
+  const speeches = state.speeches.filter(sp => sp.playerId === playerId).sort((a, b) => a.day - b.day);
+  const speechesByDay = new Map<number, typeof speeches>();
+  for (const sp of speeches) {
+    if (!speechesByDay.has(sp.day)) speechesByDay.set(sp.day, []);
+    speechesByDay.get(sp.day)!.push(sp);
+  }
+  // 该玩家关键操作(从 publicLog 提取)
+  const myActions: { day: number; text: string }[] = [];
+  for (const e of state.publicLog) {
+    const t = e.text;
+    if (e.playerId === playerId) {
+      // 自家死亡/被放逐/技能带走
+      if (e.kind === 'death') myActions.push({ day: e.day, text: t });
+    } else {
+      // voteHistory/claim 涉及该玩家
+      if (t.includes(`${playerId + 1}号`) || t.includes(`${playerId + 1}.`)) {
+        if (e.kind === 'speech' || e.kind === 'death' || e.kind === 'system') {
+          myActions.push({ day: e.day, text: `→ ${t.slice(0, 60)}${t.length > 60 ? '…' : ''}` });
+        }
+      }
+    }
+  }
+  return (
+    <div className="p-4 rounded-2xl" style={{ background: 'var(--color-card-bg)', border: `2px solid ${factionColor}` }}>
+      {/* 头部:头像 + 角色 + 阵营 + 关闭按钮 */}
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <div className="text-2xl">{p.alive ? role.emoji : '💀'}</div>
+          <div>
+            <div className="font-bold text-base" style={{ color: 'var(--color-text)' }}>
+              {p.id + 1}. {p.name}{p.isUser ? ' ⭐' : ''}
+            </div>
+            <div className="text-[11px] flex items-center gap-1 mt-0.5">
+              <span className="px-1.5 rounded" style={{ background: factionBg, color: factionColor }}>
+                {role.emoji} {role.name[lang]}
+              </span>
+              <span style={{ color: 'var(--color-text-muted)' }}>{factionLabel}</span>
+              {p.privateMemory?.isSheriff && <span style={{ color: '#facc15' }}>⭐ {L('警长', 'Sheriff')}</span>}
+            </div>
+          </div>
+        </div>
+        <button onClick={onClose}
+          className="px-2 py-1 rounded text-xs hover:bg-black/20"
+          style={{ background: 'var(--color-bg-deep)', color: 'var(--color-text-muted)' }}>
+          ✕ {L('关闭', 'Close')}
+        </button>
+      </div>
+      {/* 操作日志 */}
+      <div className="mb-3">
+        <div className="text-xs font-semibold mb-1" style={{ color: factionColor }}>
+          ⚡ {L('操作记录', 'Actions')} ({myActions.length})
+        </div>
+        <div className="max-h-32 overflow-y-auto rounded p-1.5 text-[11px] space-y-0.5" style={{ background: 'var(--color-bg-deep)' }}>
+          {myActions.length === 0 ? (
+            <div style={{ color: 'var(--color-text-muted)' }}>—</div>
+          ) : myActions.slice(0, 15).map((a, i) => (
+            <div key={i} className="flex gap-1">
+              <span style={{ color: 'var(--color-text-muted)', minWidth: 36, flexShrink: 0 }}>
+                {L('第', 'Day ')}{a.day}{L('天', '')}
+              </span>
+              <span style={{ color: 'var(--color-text)' }} className="flex-1">{a.text}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+      {/* 发言历史(按天分组) */}
+      <div>
+        <div className="text-xs font-semibold mb-1" style={{ color: factionColor }}>
+          🗣️ {L('发言历史', 'Speeches')} ({speeches.length} {L('条', 'total')})
+        </div>
+        <div className="max-h-72 overflow-y-auto rounded p-1.5 space-y-1" style={{ background: 'var(--color-bg-deep)' }}>
+          {speeches.length === 0 ? (
+            <div style={{ color: 'var(--color-text-muted)' }} className="text-[11px]">—</div>
+          ) : Array.from(speechesByDay.entries()).sort((a, b) => a[0] - b[0]).map(([day, sps]) => (
+            <div key={day}>
+              <div className="text-[10px] font-bold mb-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                📅 {L('第', 'Day ')}{day}{L('天', '')}
+              </div>
+              {sps.map((sp, i) => (
+                <div key={i} className="text-[11px] mb-1 px-1.5 py-1 rounded" style={{
+                  background: sp.phase === 'last-words' ? 'rgba(107,114,128,0.15)' :
+                              sp.phase === 'pk' ? 'rgba(249,115,22,0.1)' :
+                              sp.phase === 'sheriff-speech' ? 'rgba(250,204,21,0.1)' :
+                              'rgba(99,102,241,0.06)',
+                  color: 'var(--color-text)',
+                }}>
+                  {sp.phase === 'last-words' ? '🕯️ ' : sp.phase === 'pk' ? '⚔️ ' : sp.phase === 'sheriff-speech' ? '⭐ ' : '💬 '}
+                  {sp.text}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SummaryReport({ state, lang }: { state: GameState; lang: 'zh' | 'en' }) {
   const L = (zh: string, en: string) => lang === 'zh' ? zh : en;
   const roleName = (id: number) => `${ROLES[state.players[id].role].emoji} ${id + 1}.${state.players[id].name}(${ROLES[state.players[id].role].name[lang]})`;
@@ -5627,6 +5774,107 @@ function formatGameLog(state: GameState, lang: 'zh' | 'en'): string {
   lines.push(L('【日志结束】', '【End of log】'));
   lines.push(`${L('导出时间', 'Exported at')}: ${new Date().toISOString()}`);
   lines.push(L('给 Claude:贴回这个对话 + 你认为有问题的部分', 'For Claude: paste this back + describe what looks wrong'));
+
+  return lines.join('\n');
+}
+
+/* P24+:操作日志(不含对话) —— 给用户导出"纯操作流水"
+   包含:夜间行动(谁查验/守/毒/杀)+ 投票放逐 + 警徽流转 + 死亡/技能记录
+   不包含:玩家发言文本 */
+function formatOpsLog(state: GameState, lang: 'zh' | 'en'): string {
+  const L = (zh: string, en: string) => lang === 'zh' ? zh : en;
+  const lines: string[] = [];
+  lines.push('═'.repeat(40));
+  lines.push(`⚡ ${L('狼人杀操作日志', 'Werewolf Operation Log')}`);
+  lines.push('═'.repeat(40));
+  lines.push(`${L('板子', 'Board')}: ${BOARDS[state.boardId].name[lang]}`);
+  lines.push(`${L('总轮数', 'Total rounds')}: ${state.round}`);
+  lines.push(`${L('结果', 'Result')}: ${state.winner ? (state.winner === 'good' ? L('好人胜', 'Good wins') : state.winner === 'wolf' ? L('狼人胜', 'Wolves win') : L('第三方胜', 'Third wins')) : L('进行中', 'In progress')}`);
+  lines.push('');
+
+  // 角色分配
+  lines.push(`── ${L('角色分配', 'Role Assignment')} ──`);
+  for (const p of state.players) {
+    const role = ROLES[p.role];
+    const faction = role.faction;
+    const factionStr = faction === 'wolf' ? '🐺' : faction === 'good' ? '🛡️' : '🎭';
+    const isUser = p.isUser ? ` ${L('(你)', '(You)')}` : '';
+    const isSheriff = p.privateMemory?.isSheriff ? ` ⭐${L('警长', 'Sheriff')}` : '';
+    const alive = p.alive ? '🟢' : '💀';
+    lines.push(`${alive} ${p.id + 1}. ${p.name} (${factionStr}${role.name[lang]})${isSheriff}${isUser}`);
+  }
+  lines.push('');
+
+  // 夜间行动(从 privateMemory 汇总)
+  lines.push(`── ${L('夜间行动', 'Night Actions')} ──`);
+  for (const p of state.players) {
+    const mem = p.privateMemory;
+    if (!mem) continue;
+    if (p.role === 'seer' && mem.seerChecks?.length) {
+      for (const c of mem.seerChecks) {
+        const target = state.players[c.targetId];
+        if (!target) continue;
+        lines.push(`  🔮 ${L('第', 'Night ')}${c.night}${L('夜', '')}: ${p.id + 1}.${p.name} ${L('查验', 'checked')} ${target.id + 1}.${target.name} → ${c.isWolf ? L('🐺狼人', '🐺wolf') : L('🛡️好人', '🛡️good')}`);
+      }
+    }
+    if (p.role === 'witch') {
+      if (mem.witchSavedId !== null && mem.witchSavedId !== undefined) {
+        const t = state.players[mem.witchSavedId];
+        if (t) lines.push(`  💊 ${L('第', 'Night ')}${state.round}${L('夜', '')}: ${p.id + 1}.${p.name} ${L('解药救了', 'saved')} ${t.id + 1}.${t.name}`);
+      }
+      if (mem.witchPoisonedId !== null && mem.witchPoisonedId !== undefined) {
+        const t = state.players[mem.witchPoisonedId];
+        if (t) lines.push(`  ☠️ ${L('第', 'Night ')}${state.round}${L('夜', '')}: ${p.id + 1}.${p.name} ${L('毒药杀了', 'poisoned')} ${t.id + 1}.${t.name}`);
+      }
+    }
+    if (p.role === 'guard' && mem.guardLastTargetId !== null && mem.guardLastTargetId !== undefined) {
+      const t = state.players[mem.guardLastTargetId];
+      if (t) lines.push(`  🛡️ ${L('守卫', 'Guard')}: ${p.id + 1}.${p.name} ${L('守了', 'guarded')} ${t.id + 1}.${t.name}`);
+    }
+    if (p.role === 'knight' && mem.knightUsed && mem.knightDuelTargetId !== null) {
+      const t = state.players[mem.knightDuelTargetId];
+      if (t) lines.push(`  ⚔️ ${L('骑士决斗', 'Knight duel')}: ${p.id + 1}.${p.name} ${L('挑战了', 'challenged')} ${t.id + 1}.${t.name}`);
+    }
+  }
+  lines.push('');
+
+  // 投票放逐(每轮最后一次投票)
+  if (state.voteHistory && state.voteHistory.length > 0) {
+    lines.push(`── ${L('投票放逐', 'Vote Exiles')} ──`);
+    for (const vh of state.voteHistory) {
+      if (vh.exiled === null) {
+        lines.push(`  ${L('第', 'Day ')}${vh.round}${L('天: 平安日,无人被投出', ': peaceful day')}`);
+        continue;
+      }
+      const ex = state.players[vh.exiled];
+      const tallyStr = Object.entries(vh.tally).sort((a, b) => (b[1] as number) - (a[1] as number))
+        .map(([tid, cnt]) => `${parseInt(tid, 10) + 1}.${state.players[parseInt(tid, 10)]?.name ?? '?'} ${cnt}${L('票', '')}`)
+        .join(', ');
+      lines.push(`  ${L('第', 'Day ')}${vh.round}${L('天: ', ': ')}${ex?.id !== undefined ? `${ex.id + 1}.${ex.name}` : '?'} ${L('被投出', 'exiled')} (${tallyStr})`);
+    }
+    lines.push('');
+  }
+
+  // 死亡/技能记录(从 publicLog 提取 death)
+  lines.push(`── ${L('死亡记录', 'Death Records')} ──`);
+  for (const e of state.publicLog) {
+    if (e.kind === 'death') {
+      lines.push(`  ${L('第', 'Day ')}${e.day}${L('天', '')}: ${e.text}`);
+    }
+  }
+  lines.push('');
+
+  // 警徽流转(从 publicLog 提取 system 涉及警徽/警长)
+  lines.push(`── ${L('警徽流转', 'Sheriff Transfer')} ──`);
+  for (const e of state.publicLog) {
+    if (e.kind === 'system' && /警|⭐/.test(e.text)) {
+      lines.push(`  ${L('第', 'Day ')}${e.day}${L('天', '')}: ${e.text}`);
+    }
+  }
+  lines.push('');
+
+  lines.push('═'.repeat(40));
+  lines.push(`${L('导出时间', 'Exported at')}: ${new Date().toISOString()}`);
 
   return lines.join('\n');
 }
