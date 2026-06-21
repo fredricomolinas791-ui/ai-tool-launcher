@@ -2909,10 +2909,16 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
   useEffect(() => {
     if (!isSpectator || busy) return;
     if (autoTriggeredRef.current === step) return;  // 本步骤已自动触发过
-    // register:等 AI decisions 覆盖完所有活人(扣除"用户"不存在,所以全活人)
+    // register:先 setUserRegister(false) 触发 AI 决策 useEffect,等 AI decisions 覆盖完所有活人
     if (step === 'register') {
+      if (userRegister === null) {
+        setUserRegister(false);  // 触发下方 AI 决策 useEffect 跑(它依赖 userRegister !== null)
+        return;
+      }
       const aiCount = Object.keys(aiDecisions).length;
-      if (aiCount >= alivePlayers.length) {
+      // AI 决策 useEffect 的停止条件是 `alivePlayers.length - 1`(扣掉用户占位),
+      // 所以这里同样阈值即可
+      if (aiCount >= alivePlayers.length - 1) {
         autoTriggeredRef.current = step;
         confirmRegister();
       }
