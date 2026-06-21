@@ -3164,7 +3164,8 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
     }
     setBusy(true);
     const withdrawn = [...election.withdrawnIds];
-    if (!isSpectator && userWithdrew === true) {
+    // P26:用户活着 + 选退水 → 加入退水名单(死了就不管了)
+    if (!isSpectator && userWithdrew === true && state.players[state.userId]?.alive) {
       if (!withdrawn.includes(state.userId)) withdrawn.push(state.userId);
     }
     for (const [pid, dec] of Object.entries(aiDecisions)) {
@@ -6092,11 +6093,25 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
   const actorIsClaimer = seerClaimsThisRound.some(c => c.playerId === actor.id);
 
   // 站边逻辑块(只要场上有人跳预言家,非跳预言家的所有人必须站边)
-  // 跳过:预言家本人、正在悍跳的狼(它们的"立场"是表演,不需要真正站边)
   const needStance = seerClaimed && !actorIsClaimer && actor.role !== 'seer';
+
+  // P26+:性格注入 —— 让 LLM 按 personality 说话(不再机械八股)
+  const personalityMap: Record<string, { zh: string; en: string; style: string }> = {
+    strategist: { zh: '老谋深算', en: 'strategist', style: isZh ? '分析型 — 喜欢用逻辑链推演,引用别人的话拆解,说话冷静不冲动' : 'analytical — uses logic chains, quotes others and deconstructs, calm' },
+    aggressive: { zh: '激进', en: 'aggressive', style: isZh ? '攻击型 — 直接指控,语气强硬,喜欢打断和施压' : 'aggressive — directly accuses, strong tone, pressures others' },
+    mysterious: { zh: '神秘', en: 'mysterious', style: isZh ? '隐晦型 — 话少留白,用反问和暗示引导' : 'cryptic — short, leaves blanks, uses rhetorical questions' },
+    loyal: { zh: '死忠', en: 'loyalist', style: isZh ? '从众型 — 跟主流意见,强调团结,不太独立思考' : 'follower — goes with majority, emphasizes unity, less independent' },
+    backstab: { zh: '反水', en: 'backstabber', style: isZh ? '投机型 — 看风使舵,会根据形势翻脸' : 'opportunist — switches sides based on power dynamics' },
+    cute: { zh: '萌新', en: 'newbie', style: isZh ? '新手型 — 不太确定,会问别人,有点天真' : 'newbie — uncertain, asks others, a bit naive' },
+  };
+  const persona = personalityMap[actor.personality] ?? personalityMap.strategist;
+  const personalityLine = isZh
+    ? `\n【你的性格】${persona.zh} — 说话风格:${persona.style}。你的发言要体现这个性格,不要变得跟别人一样。`
+    : `\n【Your personality】${persona.en} — Style: ${persona.style}. Your speech must reflect this, don't blend with others.`;
 
   // ─────────────────────────────────────────────
   // 1) 角色专属"必须/禁止"块(放最顶部,让 LLM 先看)
+  // P26:从机械八股改为对话引导 —— 像在跟玩家解释策略,而不是写八股文
   // ─────────────────────────────────────────────
   let roleBlock = '';
   let outputFormat = '';
@@ -6120,9 +6135,9 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
         : `【Your role: Seer 🔮】\nNo checks yet (unusual). Still claim "I am the Seer" and lead the good team.`;
     }
     outputFormat = isZh
-      ? `【输出格式 - 硬性约束,违反 = 发言无效】\n第 1 句(必含):"我是预言家"\n第 2 句(必含查验):"昨晚/前 N 晚我验了 X 号,他是 [狼/好人]"\n第 3 句起:30-80 字分析(谁可疑 / 该投谁 / 回应别人)\n\n不要 JSON 包装。不要解释,直接给发言。如果不知道"该说什么",哪怕只重复"我是预言家,昨晚验了 X 号是狼/好人"也行,不要输出空话。`
-      : `【Output format - HARD constraint】\nSentence 1: "I am the Seer"\nSentence 2 (MUST include a check): "Last night I checked #X, he is [wolf/good]"\nThen 30-80 words analysis.\n\nNo JSON. No preamble. If unsure, just repeat "I am the Seer, I checked #X he is wolf/good".`;
-    suggestedTemp = 0.3;
+      ? `【发言引导 - 不是八股】\n\n作为预言家,你今天的发言要让好人阵营信任你、跟着你投。\n\n可以这样组织:\n- 开场直接亮身份"我是预言家"\n- 紧接着报你昨晚的查验(必须!)\n- 然后**回应**最近几条发言(谁在质疑你 / 谁在挺你 / 你的查验和谁的观点冲突)\n- 给出你的投票建议(投谁)\n\n【硬约束】\n- 必须报查验(具体到"X 号是狼/好人")\n- 不要 JSON 包装,直接口语\n- 如果上一条发言是你的队友/挺你的人,可以感谢;如果是质疑你的,必须反驳\n- 30-100 字,像微信群聊天`
+      : `【Speech guidance - not robotic】\nAs Seer, you want villagers to trust and follow you.\n\nStructure your speech:\n- Open by claiming "I am the Seer"\n- Immediately announce your check\n- **Respond** to recent speeches (who questioned you, who backed you, how your check conflicts)\n- Recommend who to vote\n\nHard constraints:\n- MUST announce a check (specific "#X is wolf/good")\n- No JSON, plain speech\n- If someone backed you, thank them; if questioned, defend yourself\n- 30-100 words casual chat style`;
+    suggestedTemp = 0.4;
   } else if (actor.faction === 'wolf' && (actor.privateMemory?.wolfTeammates ?? []).length) {
     // P0-#47 狼人悍跳策略(可选项)
     const mates = (actor.privateMemory?.wolfTeammates ?? []).map(id => `${state.players[id]?.name ?? '?'}`).join('、');
@@ -6276,28 +6291,32 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
   const contextBlock = contextParts.length ? `\n${contextParts.join('\n\n')}\n` : '';
 
   // ─────────────────────────────────────────────
-  // 2.5) P4-#B:全局"反废话"约束(应用到所有角色)
+  // 2.5) P26:全局反八股约束(更自然)
   // ─────────────────────────────────────────────
   const commonRules = isZh
-    ? `\n【发言硬约束 - 违反 = 发言无效】
-- 第 1 句**必须**引用至少 1 个具体玩家(用"X 号"格式)或具体观点/查验/死因
-- 严禁通用开场白:"大家早上好""我觉得""咱们得团结"等空话开头
-- 严禁复述别人说过的话 —— 你要说新信息或新推理
-- 不要解释规则,不要输出 JSON 包装,直接给发言
-- 30-100 字口语化(像微信群聊天)`
-    : `\n【Hard constraints - violating = invalid speech】
-- Sentence 1 MUST reference at least 1 specific player (use "#X" format) or a specific argument/check/death
-- NO generic openings: "good morning everyone", "I think", "we should unite" etc.
-- NO repeating what others said — bring new info or new reasoning
-- No JSON wrapping, output speech directly
-- 30-100 words casual chat style`;
+    ? `\n【发言要像真人,不像机器人】
+- 不要复述别人刚说的话 —— 别人说过的内容你再说一遍就是废话
+- 如果有"近期发言摘要",**必须**引用至少 1 条(用"X 号说..."或"X 号提的..."开头)
+- 严禁"大家早上好 / 我觉得 / 咱们得团结"这种空话开头
+- 严禁只重复别人说过的观点 —— 要么补充新信息,要么反驳,要么换个角度
+- 不要解释规则,不要"作为预言家,我的看法是"这种套话,直接开口
+- 不要 JSON 包装,30-100 字口语化(像微信群)
+- 可以用语气词("嗯""啧""说实话")让你的发言更像人`
+    : `\n【Speak like a real person, not a robot】
+- Don't repeat what others just said — that wastes your turn
+- If "recent speeches" is provided, MUST reference at least 1 (e.g. "X said...")
+- NO generic openings: "good morning everyone", "I think", "we should unite"
+- NO repeating others' points — either add new info, refute, or change angle
+- Don't explain rules, don't say "as the seer, my view is" — just open your mouth
+- No JSON, 30-100 words casual chat
+- Use filler words like "well", "honestly" to feel more human`;
 
   // ─────────────────────────────────────────────
   // 3) 拼装
   // ─────────────────────────────────────────────
   return (isZh
-    ? `${roleBlock}\n${outputFormat}${commonRules}${contextBlock}${stanceBlock}\n【局势】\n昨晚死亡:${dead || '无(平安夜)'}\n存活玩家:${alive}\n现在是第 ${state.round} 轮白天讨论。`
-    : `${roleBlock}\n${outputFormat}${commonRules}${contextBlock}${stanceBlock}\n【Situation】\nLast night deaths: ${dead || 'none'}\nAlive: ${alive}\nRound ${state.round} day discussion.`)
+    ? `${roleBlock}\n${outputFormat}${commonRules}${personalityLine}${contextBlock}${stanceBlock}\n【局势】\n昨晚死亡:${dead || '无(平安夜)'}\n存活玩家:${alive}\n现在是第 ${state.round} 轮白天讨论。`
+    : `${roleBlock}\n${outputFormat}${commonRules}${personalityLine}${contextBlock}${stanceBlock}\n【Situation】\nLast night deaths: ${dead || 'none'}\nAlive: ${alive}\nRound ${state.round} day discussion.`)
     // 把 temperature hint 附在最后供调用方读取(解析时 grep TEMP_HINT)
     + `\n<!-- TEMP_HINT:${suggestedTemp ?? 0.9} -->`;
 }
