@@ -187,6 +187,14 @@ export interface GameState {
     byPlayerId: number;
     announced: boolean;
   } | null;
+  /**
+   * P13:延后结算的死亡(白天第一天的夜间死亡不立刻结算,等警徽落地后才公布)
+   *  - 目的:让第一天死亡的角色在警徽竞选阶段还能有游戏体验
+   *  - 流程:resolveNight 在 day 1 + needSheriff 时,把死亡存这里,跳到 sheriff-election
+   *  - 应用:警长竞选结束(警徽落地)时,applyDeferredDeaths 应用这些死亡
+   *  - 用后清空(下一次死亡不被延后)
+   */
+  deferredDeaths: number[];
 }
 
 const defaultMemory = (): PrivateMemory => ({
@@ -243,6 +251,7 @@ export function initGame(boardId: BoardId, userName: string, lang: 'zh' | 'en' =
     voteHistory: [],
     pendingSheriffSuccession: null,
     lastWitchAction: null,
+    deferredDeaths: [],
   };
 }
 

@@ -2212,6 +2212,25 @@ function resolveNight(s: GameState, _lang: 'zh' | 'en'): GameState {
   const deadList = Array.from(dead);
   // 遗言队列:仅首夜有
   const isFirstNight = s.round === 1;
+  // 修复(P0):第一天 12+ 人局,夜间死亡**延后结算**到警徽落地后
+  // 目的:第一天死亡的角色在警徽竞选阶段还能有游戏体验(还能上警、投票、看到游戏进展)
+  // 之前:resolveNight 立刻标死、log 死亡、进 last-words → 死亡玩家从一开始就看不到警徽竞选
+  // 现在:round === 1 + 12+ 人 + 无警长 → 死亡存到 deferredDeaths,跳到 sheriff-election
+  //      等警长竞选完成时(选举组件 setStep('done') 阶段)由 applyDeferredDeaths 应用
+  const needSheriff = s.players.length >= 12 && !s.players.some(p => p.privateMemory.isSheriff);
+  if (isFirstNight && needSheriff) {
+    return {
+      ...s,
+      // 不标死、不 log,只把死亡延后
+      deadThisNight: [],  // 暂时清空(避免后续误判)
+      deferredDeaths: deadList,  // 警徽落地后应用
+      publicLog: [...s.publicLog, {
+        kind: 'system' as const, day: s.round,
+        text: `🌙 第 1 夜结算延后,等待警徽竞选落地后公布`,
+      }],
+      phase: 'sheriff-election',
+    };
+  }
   const newState: GameState = {
     ...s,
     players: newPlayers,
@@ -2225,6 +2244,45 @@ function resolveNight(s: GameState, _lang: 'zh' | 'en'): GameState {
     phase: (deadList.length > 0 && isFirstNight) ? 'last-words' : 'day-announce',
   };
   return newState;
+}
+
+/* P13:应用延后结算的死亡(警徽落地后调用)
+   目的:让第一天夜间死亡的角色在警徽竞选阶段能有游戏体验
+   流程:
+   - 把 deferredDeaths 里的玩家标死
+   - 在 publicLog 补上"X 在夜里倒下了"日志
+   - 死亡列表追加到 pendingLastWords(首夜才有遗言)
+   - 进 last-words 阶段(如果有死亡)→ 否则进 day-discuss
+   - 清空 deferredDeaths(下一夜不会被延后)
+   - 同步 isSheriff 标记(死亡玩家如果有警徽会被清掉) */
+function applyDeferredDeaths(s: GameState): GameState {
+  const deadList = s.deferredDeaths;
+  if (deadList.length === 0) {
+    // 没有延后死亡 → 直接进 day-discuss
+    return { ...s, deferredDeaths: [], phase: 'day-discuss' };
+  }
+  // 标死 + 同步清 isSheriff(用 killPlayers helper)
+  // 这里手动处理避免循环 import(deferredDeaths 通常没有殉情链)
+  const newPlayers = s.players.map(p => deadList.includes(p.id)
+    ? { ...p, alive: false, privateMemory: { ...p.privateMemory, isSheriff: false } }
+    : p);
+  const isFirstNight = s.round === 1;
+  return {
+    ...s,
+    players: newPlayers,
+    deadThisNight: deadList,
+    deferredDeaths: [],  // 清空
+    publicLog: [...s.publicLog, ...deadList.map(id => ({
+      kind: 'death' as const, day: s.round, playerId: id,
+      text: `${s.players[id].name} 在夜里倒下了`,
+    })), {
+      kind: 'system' as const, day: s.round,
+      text: `💀 警徽落地后公布:昨夜 ${deadList.map(id => `${s.players[id].name}`).join('、')} 死亡`,
+    }],
+    // 首夜:有遗言 → 进 last-words 阶段
+    pendingLastWords: isFirstNight ? deadList : [],
+    phase: isFirstNight ? 'last-words' : 'day-discuss',
+  };
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -2759,25 +2817,37 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
     const remaining = election.registeredIds.filter(id => !withdrawn.includes(id));
     if (remaining.length === 0) {
       // 全退水 → 警徽流失
-      setState(s => ({
-        ...s,
-        sheriffElection: { ...election, withdrawnIds: withdrawn, pkRound: 0, speechIdx: 0 },
-        publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: '⭐ 所有候选人都退水了,警徽流失。' }],
-        phase: 'day-discuss',
-      }));
+      setState(s => {
+        const baseState: GameState = {
+          ...s,
+          sheriffElection: { ...election, withdrawnIds: withdrawn, pkRound: 0, speechIdx: 0 },
+          publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: '⭐ 所有候选人都退水了,警徽流失。' }],
+        };
+        // P13:应用延后结算的死亡(round === 1 时 12+ 人局会有 deferredDeaths)
+        if (s.deferredDeaths.length > 0) {
+          return applyDeferredDeaths(baseState);
+        }
+        return { ...baseState, phase: 'day-discuss' };
+      });
       setStep('done');
       return;
     }
     if (remaining.length === 1) {
       // 只剩一个 → 自动当选
       const winner = remaining[0];
-      setState(s => ({
-        ...s,
-        sheriffElection: { ...election, withdrawnIds: withdrawn, pkRound: 0, speechIdx: 0 },
-        players: s.players.map(p => p.id === winner ? { ...p, privateMemory: { ...p.privateMemory, isSheriff: true } } : p),
-        publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: `⭐ ${s.players[winner].name} 唯一未退水,自动当选警长(1.5 票)` }],
-        phase: 'day-discuss',
-      }));
+      setState(s => {
+        const baseState: GameState = {
+          ...s,
+          sheriffElection: { ...election, withdrawnIds: withdrawn, pkRound: 0, speechIdx: 0 },
+          players: s.players.map(p => p.id === winner ? { ...p, privateMemory: { ...p.privateMemory, isSheriff: true } } : p),
+          publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: `⭐ ${s.players[winner].name} 唯一未退水,自动当选警长(1.5 票)` }],
+        };
+        // P13:应用延后结算的死亡
+        if (s.deferredDeaths.length > 0) {
+          return applyDeferredDeaths(baseState);
+        }
+        return { ...baseState, phase: 'day-discuss' };
+      });
       setStep('done');
       return;
     }
@@ -2846,12 +2916,18 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
       const newPkRound = election.pkRound + 1;
       if (newPkRound > 1) {
         // 第二次 PK 还平 → 警徽流失
-        setState(s => ({
-          ...s,
-          sheriffElection: { ...election, pkRound: newPkRound, speechIdx: 0 },
-          publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: '⭐ PK 后仍平票,警徽流失!' }],
-          phase: 'day-discuss',
-        }));
+        setState(s => {
+          const baseState: GameState = {
+            ...s,
+            sheriffElection: { ...election, pkRound: newPkRound, speechIdx: 0 },
+            publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: '⭐ PK 后仍平票,警徽流失!' }],
+          };
+          // P13:应用延后结算的死亡
+          if (s.deferredDeaths.length > 0) {
+            return applyDeferredDeaths(baseState);
+          }
+          return { ...baseState, phase: 'day-discuss' };
+        });
         setStep('done');
         return;
       }
@@ -2874,13 +2950,19 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
     }
     // 有人胜出
     const winner = topTied[0];
-    setState(s => ({
-      ...s,
-      sheriffElection: { ...election, pkRound: election.pkRound + 1, speechIdx: 0 },
-      players: s.players.map(p => p.id === winner ? { ...p, privateMemory: { ...p.privateMemory, isSheriff: true } } : p),
-      publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: `⭐ ${s.players[winner].name} 当选警长(1.5 票投票权)` }],
-      phase: 'day-discuss',
-    }));
+    setState(s => {
+      const baseState: GameState = {
+        ...s,
+        sheriffElection: { ...election, pkRound: election.pkRound + 1, speechIdx: 0 },
+        players: s.players.map(p => p.id === winner ? { ...p, privateMemory: { ...p.privateMemory, isSheriff: true } } : p),
+        publicLog: [...s.publicLog, { kind: 'system', day: s.round, text: `⭐ ${s.players[winner].name} 当选警长(1.5 票投票权)` }],
+      };
+      // P13:应用延后结算的死亡
+      if (s.deferredDeaths.length > 0) {
+        return applyDeferredDeaths(baseState);
+      }
+      return { ...baseState, phase: 'day-discuss' };
+    });
     setStep('done');
   };
 
