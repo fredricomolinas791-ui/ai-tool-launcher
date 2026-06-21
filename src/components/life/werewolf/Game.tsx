@@ -2713,8 +2713,10 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
 
   // P5 修复:死人不能参与警长竞选(用户原话:"我已经上警为啥我还能投警徽票")
   const userAlive = state.players[state.userId]?.alive;
+  // P17-fix:观看模式标志 —— 全程自动跑,不渲染用户决策按钮
+  const isSpectator = state.spectatorMode;
   // P16:观看模式下用户不在游戏中,不需要 DeadSpectator
-  if (!state.spectatorMode && !userAlive) {
+  if (!isSpectator && !userAlive) {
     return <DeadSpectator state={state} lang={lang}
       busyHint={busy ? (lang === 'zh' ? '⭐ 警长竞选进行中…' : '⭐ Sheriff election in progress…') : undefined}
       onExit={onExit} />;
@@ -2779,7 +2781,7 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
   const confirmRegister = () => {
     setBusy(true);
     const registered = [...election.registeredIds];
-    if (userRegister) registered.push(state.userId);
+    if (!isSpectator && userRegister) registered.push(state.userId);
     for (const [pid, dec] of Object.entries(aiDecisions)) {
       if (dec === 'register' && !registered.includes(parseInt(pid, 10))) {
         registered.push(parseInt(pid, 10));
@@ -2895,23 +2897,53 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
     }
   }, [step, election.speechIdx, candidates.length, pkSpeakers.length]);
 
-  // P17:观看模式下自动设置 userRegister/userWithdrew/userVote → 自动推进各阶段
+  // P17-fix:观看模式下全程自动推进 ——
+  // 用户不在游戏中,不能依赖任何"点下一步"按钮。
+  // 策略:
+  //   register   → AI 决策齐了 → confirmRegister()
+  //   speech     → AI 发言跑完(由现有 useEffect 自动推到 withdraw)→ 进入下个 step
+  //   withdraw   → AI 决策齐了 → confirmWithdraw()(进入 vote 或 done)
+  //   vote/pk-vote → AI 投完 → confirmVote()
+  //   pk-speech  → AI 发言跑完 → 进入 pk-vote
+  const autoTriggeredRef = useRef<string | null>(null);  // 用 step 标识本步已触发
   useEffect(() => {
-    if (!state.spectatorMode) return;
-    // 报名阶段:用户不参加 → 不报名
-    if (step === 'register' && userRegister === null) {
-      setUserRegister(false);  // 用户不参与竞选
-    }
-    // 退水阶段:用户不是候选人 → 不需要选
-    // (组件代码已用 candidates.includes(state.userId) 判断,会显示等待)
-    // 投票阶段:用户非候选人 → 随机投一个候选人
-    if ((step === 'vote' || step === 'pk-vote') && userVote === null) {
-      const targetPool = step === 'pk-vote' && tiedIds ? tiedIds : candidates;
-      if (targetPool.length > 0) {
-        setUserVote(targetPool[Math.floor(Math.random() * targetPool.length)]);
+    if (!isSpectator || busy) return;
+    if (autoTriggeredRef.current === step) return;  // 本步骤已自动触发过
+    // register:等 AI decisions 覆盖完所有活人(扣除"用户"不存在,所以全活人)
+    if (step === 'register') {
+      const aiCount = Object.keys(aiDecisions).length;
+      if (aiCount >= alivePlayers.length) {
+        autoTriggeredRef.current = step;
+        confirmRegister();
       }
+      return;
     }
-  }, [step, userRegister, userVote, candidates, tiedIds, state.spectatorMode]);
+    // withdraw:等 AI decisions 覆盖完所有 candidates
+    if (step === 'withdraw') {
+      // candidates 不包含用户(观看模式 userId=-1)
+      const aiCountForCands = candidates.filter(cid => cid !== state.userId).length;
+      const decidedCount = candidates.filter(cid => cid !== state.userId && aiDecisions[cid] !== undefined).length;
+      if (aiCountForCands === 0 || decidedCount >= aiCountForCands) {
+        autoTriggeredRef.current = step;
+        confirmWithdraw();
+      }
+      return;
+    }
+    // vote / pk-vote:等 aiVotes 覆盖完所有非候选人活人
+    if (step === 'vote' || step === 'pk-vote') {
+      const targetPool = step === 'pk-vote' && tiedIds ? tiedIds : candidates;
+      const voters = step === 'pk-vote' && tiedIds
+        ? alivePlayers.filter(p => !tiedIds.includes(p.id) && p.id !== state.userId)
+        : alivePlayers.filter(p => !targetPool.includes(p.id) && p.id !== state.userId);
+      const votedCount = voters.filter(v => aiVotes[v.id] !== undefined).length;
+      if (voters.length === 0 || votedCount >= voters.length) {
+        autoTriggeredRef.current = step;
+        confirmVote();
+      }
+      return;
+    }
+    // speech / pk-speech:已由现有 useEffect 自动跑 AI,无需此处再触发
+  }, [step, busy, isSpectator, aiDecisions, aiVotes, candidates, tiedIds, alivePlayers, state.userId]);
 
   /* 退水阶段:每个候选人决定退水还是刚警徽
      P6-#D 修复(用户反馈:非预言家不该刚警徽):
@@ -2977,8 +3009,8 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
 
   /* 用户退水确认 */
   const confirmWithdraw = () => {
-    // P11-B 防御性检查:必须所有候选人都发过言才能进投票
-    if (!candidatesHaveSpoken) {
+    // P11-B 防御性检查:必须所有候选人都发过言才能进投票(观看模式跳过,因为我们也不会卡这个)
+    if (!isSpectator && !candidatesHaveSpoken) {
       const silentCandidates = candidates.filter(cid =>
         !state.speeches.some(sp => sp.playerId === cid && sp.day === state.round && sp.phase === 'sheriff-speech')
       ).map(cid => `${cid + 1}号`);
@@ -2989,7 +3021,7 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
     }
     setBusy(true);
     const withdrawn = [...election.withdrawnIds];
-    if (userWithdrew === true) {
+    if (!isSpectator && userWithdrew === true) {
       if (!withdrawn.includes(state.userId)) withdrawn.push(state.userId);
     }
     for (const [pid, dec] of Object.entries(aiDecisions)) {
@@ -3077,14 +3109,14 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
 
   /* 用户确认投票 → 统计 → 判定胜负或平票 PK */
   const confirmVote = () => {
-    if (userVote === null) return;
+    if (!isSpectator && userVote === null) return;
     const targetPool = step === 'pk-vote' && tiedIds ? tiedIds : candidates;
     // 收集所有票(AI + 用户)
     const allVotes: { voterId: number; targetId: number }[] = [];
     for (const [vid, tid] of Object.entries(aiVotes)) {
       allVotes.push({ voterId: parseInt(vid, 10), targetId: tid as number });
     }
-    if (userVote !== null && targetPool.includes(userVote)) {
+    if (!isSpectator && userVote !== null && targetPool.includes(userVote)) {
       allVotes.push({ voterId: state.userId, targetId: userVote });
     }
     // 计票
@@ -3188,27 +3220,37 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
         <p className="text-xs text-center mb-3" style={{ color: 'var(--color-text-muted)' }}>
           {lang === 'zh' ? '所有存活玩家选择是否参加警长竞选:' : 'All alive players choose whether to run:'}
         </p>
-        <p className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>
-          {lang === 'zh' ? '你:' : 'You:'}
-        </p>
-        <div className="flex gap-2 justify-center mb-3">
-          <Button onClick={() => setUserRegister(true)}
-            style={userRegister === true ? { background: '#facc15', color: '#000' } : undefined}>
-            {lang === 'zh' ? '✅ 参加' : '✅ Run'}
-          </Button>
-          <Button onClick={() => setUserRegister(false)}
-            style={userRegister === false ? { background: '#facc15', color: '#000' } : undefined}>
-            {lang === 'zh' ? '❌ 不参加' : '❌ Skip'}
-          </Button>
-        </div>
+        {isSpectator ? (
+          <p className="text-xs text-center mb-3 py-2" style={{ color: 'var(--color-text-muted)' }}>
+            👁️ {lang === 'zh' ? '观看模式:你不在游戏中,所有 AI 自行决定…' : 'Spectator: AI deciding…'}
+          </p>
+        ) : (
+          <>
+            <p className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>
+              {lang === 'zh' ? '你:' : 'You:'}
+            </p>
+            <div className="flex gap-2 justify-center mb-3">
+              <Button onClick={() => setUserRegister(true)}
+                style={userRegister === true ? { background: '#facc15', color: '#000' } : undefined}>
+                {lang === 'zh' ? '✅ 参加' : '✅ Run'}
+              </Button>
+              <Button onClick={() => setUserRegister(false)}
+                style={userRegister === false ? { background: '#facc15', color: '#000' } : undefined}>
+                {lang === 'zh' ? '❌ 不参加' : '❌ Skip'}
+              </Button>
+            </div>
+          </>
+        )}
         <p className="text-[10px] text-center mb-2" style={{ color: 'var(--color-text-muted)' }}>
           {lang === 'zh' ? `已报名(AI):${Object.values(aiDecisions).filter(d => d === 'register').length} 人` : `AI registered: ${Object.values(aiDecisions).filter(d => d === 'register').length}`}
         </p>
-        <div className="text-center mt-3">
-          <Button onClick={confirmRegister} disabled={userRegister === null}>
-            {lang === 'zh' ? '下一步' : 'Next'} <ChevronRight size={14} className="ml-1" />
-          </Button>
-        </div>
+        {!isSpectator && (
+          <div className="text-center mt-3">
+            <Button onClick={confirmRegister} disabled={userRegister === null}>
+              {lang === 'zh' ? '下一步' : 'Next'} <ChevronRight size={14} className="ml-1" />
+            </Button>
+          </div>
+        )}
       </div>
     );
   }
@@ -3827,9 +3869,26 @@ function DayDiscuss({ state, setState, lang, aiSpeak, onExit }: {
   };
 
   /* 60s 倒计时(超时自动跳过)
-     P7-#A 修复:即使 busy=true 也会检查 timeLeft<=0,强制跳过(防止 AI 卡住) */
+     P7-#A 修复:即使 busy=true 也会检查 timeLeft<=0,强制跳过(防止 AI 卡住)
+     P19 修复:cur 已死或越界(发言中途被狼杀/被带)→ 自动 nextSpeaker,防止卡死 */
   useEffect(() => {
-    if (!cur) return;
+    if (!cur || !cur.alive) {
+      // cur 已死(中途被杀)或越界 → 强制推进
+      if (cur === undefined && speakers.length === 0) {
+        // 全死/全没了:游戏结束
+        setState(s => ({ ...s, phase: 'gameover' }));
+        return;
+      }
+      // 还有活人 → 跳过当前,推进
+      setUserInput('');
+      if (discussIdx + 1 >= speakers.length) {
+        setState(s => ({ ...s, phase: 'day-vote' }));
+        return;
+      }
+      setDiscussIdx(i => i + 1);
+      setTimeLeft(60);
+      return;
+    }
     if (isUserTurn) {
       // 用户输入中,倒计时暂停
       return;
@@ -3863,7 +3922,7 @@ function DayDiscuss({ state, setState, lang, aiSpeak, onExit }: {
     lastProcessedSpeakerRef.current = null;
   }, [state.phase, state.round]);
   useEffect(() => {
-    if (!cur) return;
+    if (!cur || !cur.alive) return;  // P19:cur 已死 → 等 timeout useEffect 兜底推进
     if (cur.id === state.userId) return; // 用户自己,等用户输入
     if (busy) return;
     if (lastProcessedSpeakerRef.current === cur.id) return;  // 防止重复
@@ -5045,6 +5104,9 @@ function GameOver({ state, winner, lang, onExit, onReplay }: {
         })}
       </div>
 
+      {/* P19:游戏总结报告 —— 每轮发生了什么 + 谁被放逐/技能带走 */}
+      <SummaryReport state={state} lang={lang} />
+
       {/* 复制对话 + 重玩 / 换板子 */}
       <div className="flex flex-wrap items-center justify-center gap-2">
         <Button onClick={exportDialogue} variant="secondary" className="text-xs">
@@ -5059,7 +5121,167 @@ function GameOver({ state, winner, lang, onExit, onReplay }: {
   );
 }
 
-/* P1-#22: 导出对话日志(纯文本格式,方便发回给 Claude 调试) */
+/* P19:游戏总结报告 —— 直接在 GameOver 卡片里展示每轮关键事件
+   内容:
+   · 每轮(夜 + 白天):谁死了(夜间死亡 + 白天放逐 + 技能带走 + 自爆)
+   · 关键操作:谁预言了谁、女巫救人/毒人、猎人带走、守卫守人
+   · 放逐明细:投票 → 谁被票出去 */
+function SummaryReport({ state, lang }: { state: GameState; lang: 'zh' | 'en' }) {
+  const L = (zh: string, en: string) => lang === 'zh' ? zh : en;
+  const roleName = (id: number) => `${ROLES[state.players[id].role].emoji} ${id + 1}.${state.players[id].name}(${ROLES[state.players[id].role].name[lang]})`;
+
+  // 把 publicLog 按 round 分组
+  const byRound = new Map<number, typeof state.publicLog>();
+  for (const e of state.publicLog) {
+    if (!byRound.has(e.day)) byRound.set(e.day, []);
+    byRound.get(e.day)!.push(e);
+  }
+
+  // 提取关键事件
+  type KeyEv = { day: number; text: string; tone: 'death' | 'exile' | 'ability' | 'system' | 'vote' };
+  const events: KeyEv[] = [];
+  for (const e of state.publicLog) {
+    const t = e.text;
+    if (/死亡|被放逐|出局|走了|被带走|被毒|被猎|撕警徽/.test(t)) {
+      events.push({ day: e.day, text: t, tone: 'death' });
+    } else if (/放逐|票出|被票/.test(t)) {
+      events.push({ day: e.day, text: t, tone: 'exile' });
+    } else if (/验了|查验|救了|毒了|守了|自爆|撕警徽|警徽/.test(t)) {
+      events.push({ day: e.day, text: t, tone: 'ability' });
+    } else if (/投票/.test(t)) {
+      events.push({ day: e.day, text: t, tone: 'vote' });
+    }
+  }
+
+  // 玩家操作摘要(谁做了什么关键操作)
+  type PlayerOp = { id: number; ops: string[] };
+  const playerOps: PlayerOp[] = [];
+  for (const p of state.players) {
+    const ops: string[] = [];
+    // 预言家查验
+    if (p.role === 'seer') {
+      for (const c of p.privateMemory.seerChecks) {
+        const target = state.players[c.targetId];
+        if (!target) continue;
+        ops.push(L(
+          `🔮 第${c.night}夜 查验 ${target.id + 1}.${target.name} → ${c.isWolf ? '🐺狼人' : '🛡️好人'}`,
+          `🔮 Night ${c.night} checked ${target.id + 1}.${target.name} → ${c.isWolf ? 'wolf' : 'good'}`
+        ));
+      }
+    }
+    // 女巫
+    if (p.role === 'witch') {
+      if (p.privateMemory.witchSavedId !== null && p.privateMemory.witchSavedId !== undefined) {
+        const t = state.players[p.privateMemory.witchSavedId];
+        if (t) ops.push(L(`💊 救了 ${t.id + 1}.${t.name}`, `💊 saved ${t.id + 1}.${t.name}`));
+      }
+      if (p.privateMemory.witchPoisonedId !== null && p.privateMemory.witchPoisonedId !== undefined) {
+        const t = state.players[p.privateMemory.witchPoisonedId];
+        if (t) ops.push(L(`☠️ 毒了 ${t.id + 1}.${t.name}`, `☠️ poisoned ${t.id + 1}.${t.name}`));
+      }
+    }
+    // 守卫
+    if (p.role === 'guard' && p.privateMemory.guardLastTargetId !== null) {
+      const t = state.players[p.privateMemory.guardLastTargetId];
+      if (t) ops.push(L(`🛡️ 守了 ${t.id + 1}.${t.name}`, `🛡️ guarded ${t.id + 1}.${t.name}`));
+    }
+    if (ops.length > 0) playerOps.push({ id: p.id, ops });
+  }
+
+  return (
+    <div className="text-left mt-3 mb-4">
+      {/* 关键事件时间线 */}
+      <details open className="mb-3">
+        <summary className="cursor-pointer text-xs font-semibold mb-2 select-none"
+          style={{ color: 'var(--color-accent)' }}>
+          📜 {L('游戏事件时间线', 'Game Timeline')} ({events.length})
+        </summary>
+        <div className="rounded-lg p-2 text-[11px] space-y-1" style={{ background: 'var(--color-bg-deep)', border: '1px solid var(--color-border-light)' }}>
+          {events.length === 0 ? (
+            <div style={{ color: 'var(--color-text-muted)' }}>—</div>
+          ) : events.map((ev, i) => {
+            const color = ev.tone === 'death' ? '#dc2626' : ev.tone === 'exile' ? '#facc15' : ev.tone === 'ability' ? '#22c55e' : 'var(--color-text-muted)';
+            const icon = ev.tone === 'death' ? '💀' : ev.tone === 'exile' ? '⚖️' : ev.tone === 'ability' ? '⚡' : ev.tone === 'vote' ? '🗳️' : '📢';
+            return (
+              <div key={i} className="flex gap-1.5 items-start">
+                <span style={{ color: 'var(--color-text-muted)', minWidth: 30, flexShrink: 0 }}>
+                  {L('第', 'Day ')}{ev.day}{L('天', '')}
+                </span>
+                <span style={{ color }}>{icon}</span>
+                <span style={{ color: 'var(--color-text)' }} className="flex-1">{ev.text}</span>
+              </div>
+            );
+          })}
+        </div>
+      </details>
+
+      {/* 关键玩家操作 */}
+      <details className="mb-3">
+        <summary className="cursor-pointer text-xs font-semibold mb-2 select-none"
+          style={{ color: 'var(--color-accent)' }}>
+          ⚡ {L('关键玩家操作', 'Key Player Actions')} ({playerOps.length} {L('人', 'players')})
+        </summary>
+        <div className="rounded-lg p-2 text-[11px] space-y-2" style={{ background: 'var(--color-bg-deep)', border: '1px solid var(--color-border-light)' }}>
+          {playerOps.length === 0 ? (
+            <div style={{ color: 'var(--color-text-muted)' }}>—</div>
+          ) : playerOps.map(po => (
+            <div key={po.id}>
+              <div className="font-semibold mb-0.5" style={{ color: 'var(--color-text)' }}>{roleName(po.id)}</div>
+              <div className="pl-2 space-y-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                {po.ops.map((op, i) => <div key={i}>· {op}</div>)}
+              </div>
+            </div>
+          ))}
+        </div>
+      </details>
+
+      {/* 投票明细(每轮最后一次投票) */}
+      {state.voteHistory && state.voteHistory.length > 0 && (
+        <details>
+          <summary className="cursor-pointer text-xs font-semibold mb-2 select-none"
+            style={{ color: 'var(--color-accent)' }}>
+            🗳️ {L('投票明细', 'Vote Details')} ({state.voteHistory.length} {L('轮', 'rounds')})
+          </summary>
+          <div className="rounded-lg p-2 text-[11px] space-y-2" style={{ background: 'var(--color-bg-deep)', border: '1px solid var(--color-border-light)' }}>
+            {state.voteHistory.map((vh, i) => {
+              const tally = vh.tally || {};
+              const tallySorted = Object.entries(tally).sort((a, b) => (b[1] as number) - (a[1] as number));
+              const topVotes = Math.max(1, ...Object.values(tally).map(v => v as number));
+              return (
+                <div key={i}>
+                  <div className="font-semibold mb-0.5" style={{ color: 'var(--color-text)' }}>
+                    {L('第', 'Day ')}{vh.round}{L('天投票', ' vote')}
+                    {vh.exiled !== null && vh.exiled !== undefined && (
+                      <span className="ml-2 px-1.5 rounded text-[10px]"
+                        style={{ background: 'rgba(220,38,38,0.2)', color: '#dc2626' }}>
+                        ⚖️ {L('放逐', 'exile')}: {state.players[vh.exiled] ? `${vh.exiled + 1}.${state.players[vh.exiled].name}` : '?'}
+                      </span>
+                    )}
+                  </div>
+                  <div className="pl-2 space-y-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                    {tallySorted.map(([tid, cnt]) => {
+                      const isTop = (cnt as number) === topVotes;
+                      return (
+                        <div key={tid} className="flex items-center gap-1.5">
+                          <span style={{ color: isTop ? '#dc2626' : 'var(--color-text-muted)', minWidth: 16 }}>
+                            {isTop ? '🔴' : '⚪'}
+                          </span>
+                          <span>{state.players[parseInt(tid, 10)] ? `${parseInt(tid, 10) + 1}.${state.players[parseInt(tid, 10)].name}` : '?'}</span>
+                          <span className="text-[10px]">→ {cnt} {L('票', 'v')}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
 function formatGameLog(state: GameState, lang: 'zh' | 'en'): string {
   const lines: string[] = [];
   const L = (zh: string, en: string) => lang === 'zh' ? zh : en;
