@@ -2713,18 +2713,31 @@ function WolfKingPick({ state, setState, lang, aiSpeak }: {
   }
   const wolfKing = state.players[wolfKingId];
   const isUser = wolfKingId === state.userId;
-  const aliveOthers = state.players.filter(p => p.alive && p.id !== wolfKingId);
+  // P29 修复:狼王带人不能选自己的狼队友(规则禁止)
+  const wolfKingTeammates = new Set(
+    (wolfKing.privateMemory?.wolfTeammates ?? []).concat([wolfKingId])
+  );
+  // 候选目标:存活的非狼队友(不能选自己 + 不能选狼)
+  const aliveOthers = state.players.filter(p =>
+    p.alive && p.id !== wolfKingId && !wolfKingTeammates.has(p.id)
+  );
+  // 兜底:如果没有可带的人(只剩狼队友),就强制跳到 night
+  if (aliveOthers.length === 0) {
+    useEffect(() => {
+      setState(s => ({ ...s, phase: 'night', round: s.round + 1, wolfkingVictim: null }));
+    }, []);
+    return null;
+  }
 
-  /* AI 狼王:用 LLM 战略选 victim */
+  /* AI 狼王:用 LLM 战略选 victim(不能选狼队友) */
   useEffect(() => {
     if (isUser || aiDone || busy || victim !== null) return;
-    if (aliveOthers.length === 0) { setAiDone(true); return; }
     setBusy(true);
-    // 收集战略信息:已暴露的"预言家"(从 seerSuspects 算)
+    // 收集战略信息:已暴露的"预言家"
     const seerSuspects = state.players.filter(p => p.alive && p.role !== 'seer').slice(0, 3).map(p => `${p.id + 1}号 ${p.name}`);
     const sys = lang === 'zh'
-      ? `你是"${wolfKing.name}"(第${wolfKingId+1}号),你是狼王,被投票放逐了!你临死前可以带走一名玩家。\n存活玩家:${aliveOthers.map(p => `${p.id+1}号 ${p.name}`).join('、')}\n\n战术建议:\n- 优先带走「最像预言家」的人(发言最像神职的)\n- 或带走「女巫」(解药用过的)\n- 避免带走自己的狼队友(虽然规则允许,但浪费)\n- 重点目标:${seerSuspects.join('、')}\n\n输出 JSON:{"speech":"你的遗言(可选)","target":你要带走的玩家座位号(1-based)}`
-      : `You are "${wolfKing.name}" (#${wolfKingId+1}), Wolf King, voted out! Take one victim with you.\nAlive: ${aliveOthers.map(p => `${p.id+1} ${p.name}`).join(', ')}\n\nOutput JSON: {"speech":"last words (optional)","target":target seat (1-based)}`;
+      ? `你是"${wolfKing.name}"(第${wolfKingId+1}号),你是狼王,被投票放逐了!你临死前可以带走一名玩家。\n可带走的非狼队友:${aliveOthers.map(p => `${p.id+1}号 ${p.name}`).join('、')}\n\n战术建议(必须遵守规则):\n- **不能带自己的狼队友**(规则禁止,会浪费技能)\n- 优先带走「最像预言家」的(发言最像神职的)\n- 或带走「女巫」(解药用过的)\n- 重点目标:${seerSuspects.join('、')}\n\n输出 JSON:{"speech":"你的遗言(可选)","target":你要带走的玩家座位号(1-based)}`
+      : `You are "${wolfKing.name}" (#${wolfKingId+1}), Wolf King, voted out! Take one victim with you.\nValid non-wolf targets: ${aliveOthers.map(p => `${p.id+1} ${p.name}`).join(', ')}\n\nTactics:\n- **Cannot take wolf teammates** (rule forbids)\n- Prefer Seer (most god-like speech)\n- Or Witch (if antidote used)\n\nOutput JSON: {"speech":"last words (optional)","target":target seat (1-based)}`;
     const usr = lang === 'zh' ? '用 JSON 输出:{"target":目标座位号(1-based)}' : 'Output JSON: {"target":target seat (1-based)}';
     // P28:超时兜底 20s,AI 卡死时随机选最可疑的
     const timeoutId = window.setTimeout(() => {
@@ -2736,7 +2749,11 @@ function WolfKingPick({ state, setState, lang, aiSpeak }: {
     }, 20000);
     aiSpeak(wolfKingId, sys, usr, true).then(({ target }) => {
       clearTimeout(timeoutId);
-      if (target !== null && target >= 0 && target < state.players.length && state.players[target].alive && target !== wolfKingId) {
+      // 验证 target 是合法非狼队友
+      if (target !== null && target >= 0 && target < state.players.length
+          && state.players[target].alive
+          && target !== wolfKingId
+          && !wolfKingTeammates.has(target)) {
         setVictim(target);
       }
       setBusy(false);

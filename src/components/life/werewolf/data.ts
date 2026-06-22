@@ -200,15 +200,21 @@ const BOARD_12_CLASSIC: BoardDef = {
           'seer', 'witch', 'hunter', 'idiot'],
 };
 
-/** 12 人 · 狼王守卫局 */
+/** 12 人 · 狼王守卫局
+   规则:
+   - 守卫:每晚可守一人(不能连守同一人),可选空守但不能连续两夜空守
+     守卫+女巫解药同救一人 → 同守同救 → 狼刀有效
+   - 狼王:白天出局可带走一名玩家(不能是狼队友,优先带对狼队威胁最大的)
+     被女巫毒杀或自爆后 → 狼枪技能失效
+   - 猎人:被女巫毒杀 → 猎枪技能失效 */
 const BOARD_12_WOLFKING: BoardDef = {
   id: 'p12-wolfking', playerCount: 12, variant: 'standard',
   name: { zh: '12 人 · 狼王守卫', en: '12-Player Wolf King Guard' },
-  desc: { zh: '狼王 + 狼2 + 村3 + 预言家 + 女巫 + 猎人 + 守卫 + 白痴 + 村1', en: 'Wolf King · 2 wolves · 3 villagers · seer · witch · hunter · guard · idiot · villager' },
-  feature: { zh: '狼阵营有「狼王」可带人,守卫能保人,逻辑链最长', en: 'Wolf King can take victims; guard protects — longest logic chain' },
-  roles: ['wolfking', 'werewolf', 'werewolf',
-          'villager', 'villager', 'villager',
-          'seer', 'witch', 'hunter', 'guard', 'idiot', 'villager'],
+  desc: { zh: '狼王 + 狼3 + 村4 + 预言家 + 女巫 + 守卫 + 猎人', en: 'Wolf King · 3 wolves · 4 villagers · seer · witch · guard · hunter' },
+  feature: { zh: '狼阵营有「狼王」可带人,守卫能保人(同守同救失效),逻辑链最长', en: 'Wolf King can take victims; guard protects (same-guard-save cancels) — longest logic chain' },
+  roles: ['wolfking', 'werewolf', 'werewolf', 'werewolf',
+          'villager', 'villager', 'villager', 'villager',
+          'seer', 'witch', 'guard', 'hunter'],
 };
 
 /** 12 人 · 狼美骑士局 */
