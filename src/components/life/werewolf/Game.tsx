@@ -3189,17 +3189,26 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
 
      P15 修复(用户反馈"5 候选人 4 退水还有 1 没发言,卡死"):
      - 加 30 秒超时:AI 不返回就强制下一位 + 占位发言
-     - 避免 AI 卡死导致整个警长阶段僵住 */
-  const lastProcessedSpeakerRef = useRef<number | null>(null);
+     - 避免 AI 卡死导致整个警长阶段僵住
+
+     P43 修复(用户反馈"不上警也卡,上警也卡"):根本问题 — useEffect 依赖了
+     lastProcessedSpeakerRef.current,但 ref 不会触发 useEffect 重跑。
+     如果 React StrictMode 双跑 useEffect,或者 advanceSpeech 后 speechIdx 已变
+     但 ref 残留旧 ID → useEffect 看起来"重跑了"但立刻被 ref 守卫 return,
+     然后新 candidate 永远没被处理 → 卡死。
+     修法:删掉 ref 守卫,改用 sessionToken(每次 advanceSpeech 递增,作为 useEffect 依赖) */
+  const sessionTokenRef = useRef<number>(0);
+  const lastSessionTokenRef = useRef<number>(-1);
   useEffect(() => {
     if (step !== 'speech' || !currentSpeakerId) {
       console.log(`[SheriffElection.speech] skip: step=${step} currentSpeakerId=${currentSpeakerId}`);
       return;
     }
-    if (lastProcessedSpeakerRef.current === currentSpeakerId) {
-      console.log(`[SheriffElection.speech] skip: already processed ${currentSpeakerId}`);
-      return;  // 防止重复
+    if (lastSessionTokenRef.current === sessionTokenRef.current) {
+      console.log(`[SheriffElection.speech] skip: same session ${sessionTokenRef.current}`);
+      return;  // 当前 session 已处理
     }
+    lastSessionTokenRef.current = sessionTokenRef.current;
     const speaker = stateRef.current.players[currentSpeakerId];
     console.log(`[SheriffElection.speech] step=${step} speechIdx=${election.speechIdx} currentSpeakerId=${currentSpeakerId} speaker=${speaker?.name} userId=${state.userId} busy=${busy}`);
     if (!speaker) {
@@ -3215,7 +3224,6 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
       console.log(`[SheriffElection.speech] skip: busy=true`);
       return;
     }
-    lastProcessedSpeakerRef.current = currentSpeakerId;
     setBusy(true);
     // P32 强化(用户反馈"预言家必须报查验"):真预言家 + 悍跳预言家的狼必须在上警发言中报查验
     const isRealSeer = speaker.role === 'seer';
@@ -3255,6 +3263,8 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
     }, 25000);
 
     function advanceSpeech(speakerId: number, speech: string) {
+      // P43:每次 advance 都递增 session token,触发 useEffect 重跑(处理下一个 candidate)
+      sessionTokenRef.current += 1;
       setBusy(false);
       // P6-#D 修复:警长竞选发言也检测 seer claim(否则退水时没人能留)
       setState(s => {
@@ -3314,7 +3324,7 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
       window.clearTimeout(timeoutId);
       advanceSpeech(currentSpeakerId, speech);
     });
-  }, [step, currentSpeakerId, state.userId, busy, aiSpeak, lang]);
+  }, [step, currentSpeakerId, state.userId, busy, aiSpeak, lang, sessionTokenRef.current]);
 
   /* 监听:发言结束 → 退水阶段(普通)或 pk-vote(PK)
      P35 修复(用户反馈"4 个上警的没发言就卡死,直接跳退水"):
