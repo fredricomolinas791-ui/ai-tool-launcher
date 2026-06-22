@@ -3254,9 +3254,9 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
         : `(AI timed out, system advancing)`);
     }, 30000);
     // P41 修复:5s safetyNet 太激进, AI 网络慢时(4-10s 返回)会被误判卡死
-    // 改成 25s (比 30s 主超时略短), 让主超时接管; 同时只在 lastProcessedSpeakerRef 仍是当前 ID 时才触发
+    // 改成 25s (比 30s 主超时略短), 让主超时接管; P43 用 sessionToken 判定
     const safetyNetId = window.setTimeout(() => {
-      if (!timeoutFired && lastProcessedSpeakerRef.current === currentSpeakerId) {
+      if (!timeoutFired && lastSessionTokenRef.current === sessionTokenRef.current) {
         console.warn(`[SheriffElection] safety-net: 25s 内没推进,触发 advance (AI 网络可能慢)`);
         advanceSpeech(currentSpeakerId, lang === 'zh' ? '(AI 网络慢,系统占位)' : '(AI slow, system placeholder)');
       }
