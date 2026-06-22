@@ -2724,7 +2724,8 @@ function WolfKingPick({ state, setState, lang, aiSpeak }: {
     return null;
   }
   const wolfKing = state.players[wolfKingId];
-  const isUser = wolfKingId === state.userId;
+  // P33 修复(用户反馈"死亡后卡死"):用户是狼王但已死 → 不再等用户操作,改为自动 AI 决策路径
+  const isUser = wolfKingId === state.userId && wolfKing.alive;
   // P29 修复:狼王带人不能选自己的狼队友(规则禁止)
   const wolfKingTeammates = new Set(
     (wolfKing.privateMemory?.wolfTeammates ?? []).concat([wolfKingId])
@@ -2739,6 +2740,13 @@ function WolfKingPick({ state, setState, lang, aiSpeak }: {
       setState(s => ({ ...s, phase: 'night', round: s.round + 1, wolfkingVictim: null }));
     }, []);
     return null;
+  }
+  // P33:用户是狼王但已死 → 显示 DeadSpectator(让游戏继续推进,不卡死)
+  // isUser=false 走下面的 AI 决策路径,会自动选 victim
+  const userIsDeadWolfKing = wolfKingId === state.userId && !wolfKing.alive;
+  if (!state.spectatorMode && userIsDeadWolfKing) {
+    return <DeadSpectator state={state} lang={lang}
+      busyHint={lang === 'zh' ? '👑 狼王技能由 AI 自动决策…' : '👑 Wolf King AI auto-deciding…'} />;
   }
 
   /* AI 狼王:用 LLM 战略选 victim(不能选狼队友) */
@@ -3659,9 +3667,17 @@ function SheriffSuccession({ state, setState, lang, aiSpeak }: {
     return null;
   }
   const deadSheriff = state.players[deadSheriffId];
-  const isUserSheriff = deadSheriffId === state.userId;
+  // P33 修复(用户反馈"死亡后卡死"):用户是警长且**还活着**才能操作;死了 → 走 AI 路径
+  const isUserSheriff = deadSheriffId === state.userId && deadSheriff.alive;
   const isWolfSheriff = deadSheriff.faction === 'wolf';
   const aliveOthers = state.players.filter(p => p.alive && p.id !== deadSheriffId);
+  // P33:用户是死警长 → 显示 DeadSpectator(覆盖在面板上),AI 在后台跑决策
+  if (!state.spectatorMode && deadSheriffId === state.userId && !deadSheriff.alive) {
+    return <DeadSpectator state={state} lang={lang}
+      busyHint={lang === 'zh'
+        ? `⭐ 警徽由 AI 自动处理 (${isWolfSheriff ? '狼可撕/传' : '必须传'})…`
+        : `⭐ AI handling badge (${isWolfSheriff ? 'wolf: tear/pass' : 'must pass'})…`} />;
+  }
 
   /* AI 警长:狼可以选择撕/传,好人必须传
      ── 狼决策:随机选传(给队友) 或 撕;狼传队友的逻辑:概率高(80% 传)
