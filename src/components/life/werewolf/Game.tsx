@@ -3016,9 +3016,23 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
     if (busy) return;
     lastProcessedSpeakerRef.current = currentSpeakerId;
     setBusy(true);
+    // P32 强化(用户反馈"预言家必须报查验"):真预言家 + 悍跳预言家的狼必须在上警发言中报查验
+    const isRealSeer = speaker.role === 'seer';
+    const speakerChecks = (speaker.privateMemory?.seerChecks ?? []).slice(0, 2);  // 取最近 2 次
+    // 悍跳预言家的狼:不是真预言家 + 是狼(只能编造查验)
+    const isJumpingSeer = !isRealSeer && speaker.faction === 'wolf';
+    const seerExtra = isRealSeer
+      ? (lang === 'zh'
+          ? `\n\n【硬性要求 · 预言家报查验】你是真预言家,必须在上警发言中报出你的查验结果(至少 1 条):\n${speakerChecks.map(c => `${c.targetId+1}号 → ${c.isWolf ? '狼人' : '好人'}`).join('、')}\n格式参考:"我是预言家,昨晚验了 X 号,他是狼人/好人"。\n不报查验 = 你会自动被强制退水。`
+          : `\n\n[MANDATORY · Seer report] You are the real seer. You MUST report your checks (at least 1):\n${speakerChecks.map(c => `#${c.targetId+1} → ${c.isWolf ? 'wolf' : 'good'}`).join(', ')}\nFormat: "I am the seer, last night I checked #X, they are wolf/good".\nNo report = you will be forced to withdraw.`)
+      : isJumpingSeer
+      ? (lang === 'zh'
+          ? `\n\n【硬性要求 · 悍跳预言家】你作为狼人,必须在上警发言中假装预言家并报出"查验结果"(可编造):\n格式:"我是预言家,昨晚验了 X 号,他是狼人/好人"。至少报 1 条。\n不报 = 你会自动被强制退水。`
+          : `\n\n[MANDATORY · Wolf posing as seer] You must claim seer and report "checks" (can fabricate):\nFormat: "I am the seer, I checked #X, wolf/good". At least 1.\nNo claim = forced to withdraw.`)
+      : '';
     const sys = lang === 'zh'
-      ? `你是"${speaker.name}"(第${speaker.id+1}号),你正在参加警长竞选!请发言拉票(30-80 字):\n- 说明你的身份/立场/逻辑(可不暴露真身份)\n- 表态你作为警长会做的事(带队、归票、坚守)\n- 可以攻击其他候选人\n\n只输出你的竞选发言,不要 JSON 包装。`
-      : `You are "${speaker.name}", running for sheriff! Give a 30-80 word campaign speech explaining your stance and attacking other candidates. Output speech only.`;
+      ? `你是"${speaker.name}"(第${speaker.id+1}号),你正在参加警长竞选!请发言拉票(30-80 字):\n- 说明你的身份/立场/逻辑(可不暴露真身份)\n- 表态你作为警长会做的事(带队、归票、坚守)\n- 可以攻击其他候选人${seerExtra}\n\n只输出你的竞选发言,不要 JSON 包装。`
+      : `You are "${speaker.name}", running for sheriff! Give a 30-80 word campaign speech explaining your stance and attacking other candidates.${seerExtra} Output speech only.`;
     const usr = lang === 'zh' ? '请发言拉票' : 'Give campaign speech';
 
     // P15:超时保护 — 30 秒没响应强制下一位(用占位发言)
@@ -3153,7 +3167,13 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
      P14 修复(用户实测"预言家也没上警,全退水卡死"):
      - 不依赖发言首句匹配正则识别预言家(AI 可能不用"我是预言家"开场)
      - 直接查 player.role === 'seer' 识别真预言家 → 强制 stay
-     - 悍跳狼靠发言里的 claim 检测(原有逻辑) */
+     - 悍跳狼靠发言里的 claim 检测(原有逻辑)
+
+     P32 修复(用户反馈"规则细化"):
+     - 预言家 + 对跳预言家的狼: 不得退水(必须 stay)
+     - 其他 AI 候选人: 原则上自动退水(默认决策 = withdraw,不再随机)
+     - 神职/狼里**未跳预言家**的: 100% 退水
+     - 普通村民里**未跳预言家**的: 100% 退水 */
   useEffect(() => {
     if (step !== 'withdraw') return;
     const decisions: Record<number, 'withdraw' | 'stay'> = {};
@@ -3167,25 +3187,25 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
       // 修复(P0 强化):真预言家(角色是 seer)直接识别,无需靠发言正则
       // AI 预言家经常不用"我是预言家"开场,导致 seerClaimerIds 检测失败
       if (c.role === 'seer') {
-        decisions[cid] = 'stay';
+        decisions[cid] = 'stay';  // P32:真预言家不得退水(必须 stay)
         continue;
       }
-      if (isFirstRound && !seerClaimerIds.has(cid)) {
-        // 首轮 + 没跳预言家 → 强制退水(避免警徽落入非预言家手里)
+      // P32:对跳预言家的狼(在 seerClaimerIds 里且不是真预言家)也必须 stay
+      if (seerClaimerIds.has(cid)) {
+        decisions[cid] = 'stay';  // 对跳预言家的狼不得退水
+        continue;
+      }
+      // P32:其他候选人都强制退水(首轮非预言家 + 后续轮非预言家都不该拿警徽)
+      //      只保留 stay 的两类: 真预 + 对跳预言家的狼
+      if (isFirstRound) {
         decisions[cid] = 'withdraw';
         continue;
       }
-      // 修复(P0):跳预言家的候选人(真预 + 悍跳狼)必须刚警徽,不允许退水
-      // 防止全退水导致游戏卡死,警徽必须落地
-      if (seerClaimerIds.has(cid)) {
-        decisions[cid] = 'stay';
-        continue;
-      }
-      // 跳了神职/狼(未跳预言家):有 10-30% 概率退水
-      const probWithdraw = c.faction === 'wolf' ? 0.15
-        : ['seer', 'witch', 'hunter', 'guard', 'knight'].includes(c.role) ? 0.1
+      // 后续轮(已有 isSheriff 死亡触发传承)→ 概率退水,但概率更高(狼 50%,神职 60%,村民 70%)
+      const probStay = c.faction === 'wolf' ? 0.5
+        : ['seer', 'witch', 'hunter', 'guard', 'knight'].includes(c.role) ? 0.4
         : 0.3;
-      decisions[cid] = Math.random() < probWithdraw ? 'withdraw' : 'stay';
+      decisions[cid] = Math.random() < probStay ? 'stay' : 'withdraw';
     }
     setAiDecisions(prev => {
       const next = { ...prev };
