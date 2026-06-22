@@ -182,7 +182,7 @@ export interface BoardDef {
 const BOARD_9_CLASSIC: BoardDef = {
   id: 'p9-classic', playerCount: 9, variant: 'standard',
   name: { zh: '9 人 · 预女猎', en: '9-Player Classic' },
-  desc: { zh: '狼3 + 村3 + 预言家 + 女巫 + 猎人', en: '3 wolves · 3 villagers · seer · witch · hunter' },
+  desc: { zh: '狼人×3 + 村民×3 + 预言家 + 女巫 + 猎人', en: '3 werewolves · 3 villagers · seer · witch · hunter' },
   feature: { zh: '极简入门板,无白痴无守卫,节奏快', en: 'Minimal starter — no idiot/guard, fast pace' },
   roles: ['werewolf', 'werewolf', 'werewolf',
           'villager', 'villager', 'villager',
@@ -193,7 +193,7 @@ const BOARD_9_CLASSIC: BoardDef = {
 const BOARD_12_CLASSIC: BoardDef = {
   id: 'p12-classic', playerCount: 12, variant: 'standard',
   name: { zh: '12 人 · 预女猎白', en: '12-Player Classic' },
-  desc: { zh: '狼4 + 村4 + 预言家 + 女巫 + 猎人 + 白痴', en: '4 wolves · 4 villagers · seer · witch · hunter · idiot' },
+  desc: { zh: '狼人×4 + 村民×4 + 预言家 + 女巫 + 猎人 + 白痴', en: '4 werewolves · 4 villagers · seer · witch · hunter · idiot' },
   feature: { zh: '经典预女猎白,神职齐全,平衡度高', en: 'Classic seer+witch+hunter+idiot — balanced god roles' },
   roles: ['werewolf', 'werewolf', 'werewolf', 'werewolf',
           'villager', 'villager', 'villager', 'villager',
@@ -204,7 +204,7 @@ const BOARD_12_CLASSIC: BoardDef = {
 const BOARD_12_WOLFKING: BoardDef = {
   id: 'p12-wolfking', playerCount: 12, variant: 'standard',
   name: { zh: '12 人 · 狼王守卫', en: '12-Player Wolf King Guard' },
-  desc: { zh: '狼王 + 狼2 + 村3 + 预言家 + 女巫 + 猎人 + 守卫 + 白痴 + 村1', en: 'Wolf King · 2 wolves · 3 villagers · seer · witch · hunter · guard · idiot · villager' },
+  desc: { zh: '狼王 + 狼人×2 + 村民×3 + 预言家 + 女巫 + 猎人 + 守卫 + 白痴 + 村民', en: 'Wolf King · 2 werewolves · 3 villagers · seer · witch · hunter · guard · idiot · villager' },
   feature: { zh: '狼阵营有「狼王」可带人,守卫能保人,逻辑链最长', en: 'Wolf King can take victims; guard protects — longest logic chain' },
   roles: ['wolfking', 'werewolf', 'werewolf',
           'villager', 'villager', 'villager',
@@ -215,7 +215,7 @@ const BOARD_12_WOLFKING: BoardDef = {
 const BOARD_12_WOLFBEAUTY: BoardDef = {
   id: 'p12-wolfbeauty', playerCount: 12, variant: 'coming-soon',
   name: { zh: '12 人 · 狼美骑士', en: '12-Player Wolf Beauty Knight' },
-  desc: { zh: '狼美人 + 狼2 + 村3 + 预言家 + 女巫 + 猎人 + 骑士 + 守卫 + 白痴', en: 'Wolf Beauty · 2 wolves · 3 villagers · seer · witch · hunter · knight · guard · idiot' },
+  desc: { zh: '狼美人 + 狼人×2 + 村民×3 + 预言家 + 女巫 + 猎人 + 骑士 + 守卫 + 白痴', en: 'Wolf Beauty · 2 werewolves · 3 villagers · seer · witch · hunter · knight · guard · idiot' },
   feature: { zh: '狼美人可「殉情」,骑士可「决斗」,白天反杀机会多', en: 'Wolf Beauty can drag voter down; knight can duel — day has more counter-play' },
   roles: ['wolfbeauty', 'werewolf', 'werewolf',
           'villager', 'villager', 'villager',
@@ -226,7 +226,7 @@ const BOARD_12_WOLFBEAUTY: BoardDef = {
 const BOARD_12_GARGOYLE: BoardDef = {
   id: 'p12-gargoyle', playerCount: 12, variant: 'coming-soon',
   name: { zh: '12 人 · 石像鬼迷雾', en: '12-Player Gargoyle Fog' },
-  desc: { zh: '石像鬼 + 狼2 + 村3 + 预言家 + 女巫 + 猎人 + 守卫 + 白痴 + 长老', en: 'Gargoyle · 2 wolves · 3 villagers · seer · witch · hunter · guard · idiot · elder' },
+  desc: { zh: '石像鬼 + 狼人×2 + 村民×3 + 预言家 + 女巫 + 猎人 + 守卫 + 白痴 + 长老', en: 'Gargoyle · 2 werewolves · 3 villagers · seer · witch · hunter · guard · idiot · elder' },
   feature: { zh: '第三方「石像鬼」隐匿到终盘,场上永远充满迷雾', en: 'Third-party Gargoyle hides to endgame — fog of war throughout' },
   roles: ['gargoyle', 'werewolf', 'werewolf',
           'villager', 'villager', 'villager',
@@ -237,7 +237,7 @@ const BOARD_12_GARGOYLE: BoardDef = {
 const BOARD_12_CUPID: BoardDef = {
   id: 'p12-cupid', playerCount: 12, variant: 'coming-soon',
   name: { zh: '12 人 · 丘比特之恋', en: '12-Player Cupid\'s Love' },
-  desc: { zh: '丘比特 + 狼3 + 村2 + 预言家 + 女巫 + 猎人 + 守卫 + 白痴 + 村1', en: 'Cupid · 3 wolves · 2 villagers · seer · witch · hunter · guard · idiot · villager' },
+  desc: { zh: '丘比特 + 狼人×3 + 村民×2 + 预言家 + 女巫 + 猎人 + 守卫 + 白痴 + 村民', en: 'Cupid · 3 werewolves · 2 villagers · seer · witch · hunter · guard · idiot · villager' },
   feature: { zh: '首夜丘比特连「情侣」,殉情机制让局势瞬变', en: 'Cupid links lovers on night 1 — chain deaths reshape the game' },
   roles: ['cupid', 'werewolf', 'werewolf', 'werewolf',
           'villager', 'villager',

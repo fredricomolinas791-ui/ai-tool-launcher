@@ -749,6 +749,8 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
       const extracted = tryJsonExtract(text);
       speech = (extracted.speech || text || '').trim();
     }
+    // P29:统一 AI 输出格式 —— "1 号" → "1号"、"x 号" → "x号"(去掉中英文之间的空格)
+    speech = normalizeSpeechFormat(speech);
     if (!silent) {
       setStreamingText(null);
       setState(s => ({
@@ -6416,6 +6418,22 @@ function isRepeatedSpeech(text: string, recentSpeeches: { text: string }[], thre
     if (speechSimilarity(text, sp.text) >= threshold) return true;
   }
   return false;
+}
+
+/** P29:统一 AI 输出文本格式 —— LLM 输出经常有空格不规范,统一成无空格
+   - "1 号" → "1号"(数字 + 号)
+   - "第 1 天" → "第1天"(避免日期空格混乱)
+   - "你好 吗" → "你好 吗"(中文内部多空格不主动改,只改"X号"格式)
+   - "x 号是狼" → "x号是狼"
+   - "我是 预言家" → "我是预言家"(职业名前的多余空格去掉) */
+function normalizeSpeechFormat(text: string): string {
+  return text
+    // "1 号" / "12 号" / "x 号" → "1号" / "12号" / "x号"
+    .replace(/(\d+|[一二三四五六七八九十百]+)\s*号/g, '$1号')
+    // "第 N 夜/天" → "第N夜/天"
+    .replace(/第\s*(\d+|[一二三四五六七八九十百]+)\s*(夜|天)/g, '第$1$2')
+    // 角色名前多余空格:"我是 预言家" / "我是 守卫" → "我是预言家"
+    .replace(/(我是|我是\s+|身份是\s*)\s*(预言家|女巫|守卫|猎人|骑士|白痴|狼王|狼美人|狼人|村民|石像鬼|丘比特|好人|狼阵营|第三方)/g, '$1$2');
 }
 
 function buildVotePrompt(actor: Player, state: GameState, lang: 'zh' | 'en'): string {
