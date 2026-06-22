@@ -714,7 +714,6 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
   const lastSpeechCountRef = useRef<number>(state.speeches.length);
   const lastLogCountRef = useRef<number>(state.publicLog.length);
   const [watchdogStuckSeconds, setWatchdogStuckSeconds] = useState(0);
-  const [watchdogManualSkip, setWatchdogManualSkip] = useState(false);
   // 阶段切换 → 重置计时
   useEffect(() => {
     phaseEnteredAtRef.current = Date.now();
