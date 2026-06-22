@@ -4778,6 +4778,17 @@ function DayDiscuss({ state, setState, lang, aiSpeak, onExit }: {
           speech = corrected;
         }
       }
+      // P39:真预言家发言里没提到任何实际查验过的人 → 强制追加报查验后缀
+      // 防止 LLM 完全跳过报查验(只输出"我是预言家"然后开始八股)
+      if (cur.role === 'seer' && (cur.privateMemory?.seerChecks ?? []).length > 0) {
+        const realChecks = cur.privateMemory.seerChecks;
+        const mentionedAny = realChecks.some(c => speech.includes(`${c.targetId + 1}号`));
+        if (!mentionedAny) {
+          const appendStr = realChecks.map(c => `${c.targetId + 1}号是${c.isWolf ? '狼人' : '好人'}`).join(',');
+          console.warn(`[Werewolf] Seer ${cur.id} speech didn't mention any check - appending forced report`);
+          speech = `${speech}(必须报查验:${appendStr})`;
+        }
+      }
       // P27:重复发言检测 —— AI 经常生成与最近发言 80% 相似的内容
       // 如果重复,加一个"换个角度再说"的引导后缀(不动 speech,直接存)
       // 检测太严格会让 LLM 输出空,这里只 warn + 标记,不强重发
@@ -6725,21 +6736,23 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
     // 之前用 `actor.role === 'seer' && seerChecks.length` 当 gate,
     //   → seer 没 checks 时会 fall through 到村民块,prompt 撒谎说"你是村民"
     // P23:用 ?? [] 兜底,防止 seerChecks 是 undefined
+    // P39:强化"严禁说谎" + 给报查验模板(LLM 幻觉的根源是没硬约束)
     const seerChecksList = actor.privateMemory?.seerChecks ?? [];
     if (seerChecksList.length) {
-      const checks = seerChecksList.map(c => `${c.targetId + 1}号 → ${c.isWolf ? '狼' : '好人'}`).join('、');
+      const checks = seerChecksList.map(c => `${c.targetId + 1}号 → ${c.isWolf ? '🐺 狼人' : '🛡️ 好人'}`).join('、');
+      const checkPhrases = seerChecksList.map(c => `${c.targetId + 1}号${c.isWolf ? '是狼人' : '是好人'}`).join(';');
       roleBlock = isZh
-        ? `【你的身份:预言家 🔮】\n你的查验结果(必须公开报给好人阵营):${checks}\n\n你是好人阵营的核心情报源。如果不报查验,好人无法利用你的信息,等于浪费预言家。`
-        : `【Your role: Seer 🔮】\nYour checks (you MUST announce to the village): ${checks}\n\nYou are the village's main info source. Without announcing, your info is wasted.`;
+        ? `【你的身份:预言家 🔮】\n你的查验结果(必须公开报给好人阵营):${checks}\n\n你是好人阵营的核心情报源。如果不报查验,好人无法利用你的信息,等于浪费预言家。\n\n【🟥 铁律 · 严禁说谎】你是好人,**你的查验结果 100% 真实,绝对不能反转**。报"${checkPhrases}"——这是一条**硬约束**,不允许说反(不能说"狼"说成"好人",也不能说"好人"说成"狼")。即使你想表达"我不确定",也必须按真实结果报。`
+        : `【Your role: Seer 🔮】\nYour checks (you MUST announce to the village): ${checks}\n\nYou are the village's main info source. Without announcing, your info is wasted.\n\n【🟥 HARD RULE · TRUTH-ONLY】You are good, your checks are 100% REAL. NEVER invert. Report "${checkPhrases}" exactly. Don't say "wolf" as "good" or vice versa.`;
     } else {
       roleBlock = isZh
-        ? `【你的身份:预言家 🔮】\n你暂时还没查验(异常情况,首夜应该有 1 个查验)。\n仍然要明确报"我是预言家",引导好人阵营。`
-        : `【Your role: Seer 🔮】\nNo checks yet (unusual). Still claim "I am the Seer" and lead the good team.`;
+        ? `【你的身份:预言家 🔮】\n你暂时还没查验(异常情况,首夜应该有 1 个查验)。\n仍然要明确报"我是预言家",引导好人阵营。\n【🟥 严禁说谎】你没有查验时,只能说"今晚报"或"我首夜验过",绝对不能编一个查验结果。`
+        : `【Your role: Seer 🔮】\nNo checks yet (unusual). Still claim "I am the Seer" and lead the good team.\n【🟥 TRUTH-ONLY】If no checks, say "will report tonight" — never fabricate a check.`;
     }
     outputFormat = isZh
-      ? `【发言引导 - 不是八股】\n\n作为预言家,你今天的发言要让好人阵营信任你、跟着你投。\n\n可以这样组织:\n- 开场直接亮身份"我是预言家"\n- 紧接着报你昨晚的查验(必须!)\n- 然后**回应**最近几条发言(谁在质疑你 / 谁在挺你 / 你的查验和谁的观点冲突)\n- 给出你的投票建议(投谁)\n\n【硬约束】\n- 必须报查验(具体到"X 号是狼/好人")\n- 不要 JSON 包装,直接口语\n- 如果上一条发言是你的队友/挺你的人,可以感谢;如果是质疑你的,必须反驳\n- 30-100 字,像微信群聊天`
-      : `【Speech guidance - not robotic】\nAs Seer, you want villagers to trust and follow you.\n\nStructure your speech:\n- Open by claiming "I am the Seer"\n- Immediately announce your check\n- **Respond** to recent speeches (who questioned you, who backed you, how your check conflicts)\n- Recommend who to vote\n\nHard constraints:\n- MUST announce a check (specific "#X is wolf/good")\n- No JSON, plain speech\n- If someone backed you, thank them; if questioned, defend yourself\n- 30-100 words casual chat style`;
-    suggestedTemp = 0.4;
+      ? `【发言引导 - 不是八股】\n\n作为预言家,你今天的发言要让好人阵营信任你、跟着你投。\n\n可以这样组织:\n- 开场直接亮身份"我是预言家"\n- 紧接着报你昨晚的查验(必须!)→ ${seerChecksList.length > 0 ? `必须说"${seerChecksList.map(c => `${c.targetId + 1}号${c.isWolf ? '是狼人' : '是好人'}`).join(';')}",**一个字符都不许改**` : '说"今晚报"'}\n- 然后**回应**最近几条发言(谁在质疑你 / 谁在挺你 / 你的查验和谁的观点冲突)\n- 给出你的投票建议(投谁)\n\n【硬约束】\n- 必须报查验(具体到"X 号是狼/好人"),且**字符级精确**(防 LLM 幻觉反转)\n- 不要 JSON 包装,直接口语\n- 如果上一条发言是你的队友/挺你的人,可以感谢;如果是质疑你的,必须反驳\n- 30-100 字,像微信群聊天`
+      : `【Speech guidance - not robotic】\nAs Seer, you want villagers to trust and follow you.\n\nStructure your speech:\n- Open by claiming "I am the Seer"\n- Immediately announce your check → ${seerChecksList.length > 0 ? `must say "${seerChecksList.map(c => `#${c.targetId + 1} is ${c.isWolf ? 'wolf' : 'good'}`).join(';')}" exactly, character-by-character` : 'say "will report tonight"'}\n- **Respond** to recent speeches\n- Recommend who to vote\n\nHard constraints:\n- MUST announce a check (specific "#X is wolf/good"), character-by-character\n- No JSON, plain speech\n- 30-100 words casual chat style`;
+    suggestedTemp = 0.3;  // P39:降低温度减少幻觉
   } else if (actor.faction === 'wolf' && (actor.privateMemory?.wolfTeammates ?? []).length) {
     // P0-#47 狼人悍跳策略(可选项)
     const mates = (actor.privateMemory?.wolfTeammates ?? []).map(id => `${state.players[id]?.name ?? '?'}`).join('、');
