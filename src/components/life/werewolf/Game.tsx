@@ -3910,9 +3910,13 @@ function SheriffSuccession({ state, setState, lang, aiSpeak }: {
         : `⭐ AI handling badge (${isWolfSheriff ? 'wolf: tear/pass' : 'must pass'})…`} />;
   }
 
-  /* AI 警长:狼可以选择撕/传,好人必须传
+  /* AI 警长:狼可以选择撕/传,好人按优先级选传递对象
      ── 狼决策:随机选传(给队友) 或 撕;狼传队友的逻辑:概率高(80% 传)
-     ── 好人决策:必须传 */
+     ── 好人决策:**必须传**,按优先级选:
+       · P0:金水(警长自己验过的好人)
+       · P1:银水/跳神职玩家(预言家/守夜人/女巫等公开身份的)
+       · P2:发言像好人的玩家(投票/站边/分析都像好人的)
+       · 都找不到 → 撕徽(下轮重选) */
   useEffect(() => {
     if (isUserSheriff || aiDone || busy || successor !== null) return;
     if (aliveOthers.length === 0) {
@@ -3921,32 +3925,81 @@ function SheriffSuccession({ state, setState, lang, aiSpeak }: {
       return;
     }
     setBusy(true);
-    // P35 修复(用户反馈"6号好人警长传7号狼"):好人警长默认**撕警徽**(让警徽流失),
-    // 因为警长死时 AI 没有足够信息判断谁可信,随机传很容易传给狼。
-    // 例外:如果死警长有 seerChecks 验过的"已确认好人",可以传给他;否则撕。
-    let trustedGoodId: number | null = null;
+
+    // ========== P37:好人优先级选人 ==========
+    // P0:金水(警长自己验过的好人)
+    let p0GoldWater: number | null = null;
     if (!isWolfSheriff && deadSheriff.role === 'seer' && deadSheriff.privateMemory?.seerChecks) {
       const checks = deadSheriff.privateMemory.seerChecks;
-      // 找最近一次验出的"好人"且还活着的玩家
       for (let i = checks.length - 1; i >= 0; i--) {
         const c = checks[i];
         if (!c.isWolf && state.players[c.targetId]?.alive) {
-          trustedGoodId = c.targetId;
+          p0GoldWater = c.targetId;
           break;
         }
       }
     }
+    // P1:跳神职的玩家(声称自己是预言家/守夜人/女巫等)
+    // claims 是 state.claims[round].seerClaims / guardClaims / witchClaims
+    const claimedDeityMap = new Map<number, string>(); // playerId → claimedRole
+    if (!isWolfSheriff) {
+      // 合并所有 round 的 claim(因为警长可能在前几天就看到跳神职的人)
+      for (let r = 1; r <= state.round; r++) {
+        const day = state.claims?.[r];
+        if (!day) continue;
+        for (const c of (day.seerClaims ?? [])) {
+          if (c.playerId !== deadSheriffId && state.players[c.playerId]?.alive) {
+            claimedDeityMap.set(c.playerId, 'seer');
+          }
+        }
+        for (const c of (day.guardClaims ?? [])) {
+          if (c.playerId !== deadSheriffId && state.players[c.playerId]?.alive) {
+            claimedDeityMap.set(c.playerId, 'guard');
+          }
+        }
+        for (const c of (day.witchClaims ?? [])) {
+          if (c.playerId !== deadSheriffId && state.players[c.playerId]?.alive) {
+            claimedDeityMap.set(c.playerId, 'witch');
+          }
+        }
+      }
+    }
+    // P2:从 speeches 里分析"投票站边像好人"的玩家(简化:跟警长最后同票的玩家)
+    const p2GoodImpression: number[] = [];
+    if (!isWolfSheriff && state.lastVotedOut !== null) {
+      // 找最后投票记录中跟警长同票的玩家
+      const sheriffVote = state.voteHistory?.[state.voteHistory.length - 1]?.votes?.find(v => v.voterId === deadSheriffId);
+      if (sheriffVote) {
+        const target = sheriffVote.targetId;
+        for (const v of (state.voteHistory?.[state.voteHistory.length - 1]?.votes ?? [])) {
+          if (v.voterId !== deadSheriffId && v.targetId === target && state.players[v.voterId]?.alive) {
+            p2GoodImpression.push(v.voterId);
+          }
+        }
+      }
+    }
+    // 选最高优先级(且存活)的玩家
+    let trustedGoodId: number | null = null;
+    let trustLevel = 0; // 0=无,1=P2,2=P1,3=P0
+    if (p0GoldWater !== null) { trustedGoodId = p0GoldWater; trustLevel = 3; }
+    else if (claimedDeityMap.size > 0) {
+      // P1 里挑一个还活着的(优先级:预言家 > 守夜人 > 女巫)
+      const order = ['seer', 'guard', 'witch'];
+      for (const r of order) {
+        for (const [pid, role] of claimedDeityMap.entries()) {
+          if (role === r) { trustedGoodId = pid; trustLevel = 2; break; }
+        }
+        if (trustedGoodId !== null) break;
+      }
+    }
+    else if (p2GoodImpression.length > 0) { trustedGoodId = p2GoodImpression[0]; trustLevel = 1; }
     const prompt = isWolfSheriff
       ? lang === 'zh'
         ? `你是"${deadSheriff.name}",刚死,曾任警长。\n你是狼人!你可以:\nA) 撕警徽(让警徽流失,下一轮重新竞选)\nB) 把警徽传给你的狼队友(优先:队友 ID 列表中找)\n\n建议:若场上还有狼队友 → 80% 概率传给狼队友(保持警徽控制);否则撕。\n\n输出 JSON:{"tear":true/false,"successor":传给的玩家 1-based 座位号(撕则填 0)}`
         : `You are "${deadSheriff.name}", were Sheriff. You are a WOLF. Choose:\nA) Tear the badge (new election)\nB) Pass to a wolf teammate\nIf teammates alive: 80% pass. Else tear.\nOutput JSON: {"tear":true/false,"successor":1-based seat (0 if tear)}`
       : lang === 'zh'
-        ? `你是"${deadSheriff.name}",刚死,曾任警长。你是好人。\n【重要】死前你没有足够信息判断谁可信 —— 传错给狼等于送狼胜!${trustedGoodId !== null
-          ? `\n例外:你验过 ${trustedGoodId + 1}号 ${state.players[trustedGoodId]?.name} 是好人,你可以传给他。`
-          : `\n你没有验过的"已确认好人" —— 默认撕警徽(下轮重选更安全)。`}\n\n决策:\nA) 撕警徽(推荐,如果没验出可信好人) → 警徽流失,下轮重新竞选\nB) 把警徽传给你最信任的存活玩家(必须是确认好人,否则选 A)\n\n输出 JSON:{"tear":true/false,"successor":传给的玩家 1-based 座位号(撕则填 0)}`
-        : `You are "${deadSheriff.name}", were Sheriff. You are good.\nYou may not have enough info to trust anyone. ${trustedGoodId !== null
-          ? `You checked ${trustedGoodId + 1} ${state.players[trustedGoodId]?.name} as good - you may pass.`
-          : `You have no confirmed good player - DEFAULT TO TEAR (safer).`}\nA) Tear (re-election) or B) Pass to trusted good.\nOutput JSON: {"tear":true/false,"successor":1-based seat (0 if tear)}`;
+        ? `你是"${deadSheriff.name}",刚死,曾任警长。你是好人。\n【重要】死前你可以按优先级选一个可信好人传警徽(必须传!狼警长可以撕/传,好人警长只能传):\n优先级:\nP0 金水(你自己验过的好人):${p0GoldWater !== null ? `${p0GoldWater + 1}号 ${state.players[p0GoldWater]?.name}` : '无'}\nP1 跳神职玩家: ${claimedDeityMap.size > 0 ? Array.from(claimedDeityMap.entries()).map(([id, role]) => `${id + 1}号 ${state.players[id]?.name}(${role})`).join('、') : '无'}\nP2 跟你站边一致/投票一致: ${p2GoodImpression.length > 0 ? p2GoodImpression.map(id => `${id + 1}号 ${state.players[id]?.name}`).join('、') : '无'}\n\n决策:\n→ 有 P0 → 传给 P0\n→ 否则有 P1 → 传 P1 里最可信的(预言家 > 守夜人 > 女巫)\n→ 否则有 P2 → 传 P2\n→ 全无 → 撕警徽(下轮重选,让玩家重新表态)\n\n输出 JSON:{"tear":true/false,"successor":传给的玩家 1-based 座位号(撕则填 0)}`
+        : `You are "${deadSheriff.name}", were Sheriff. You are good.\nPass badge by priority:\nP0 Gold water (you checked): ${p0GoldWater !== null ? `#${p0GoldWater + 1}` : 'none'}\nP1 Claimed deity: ${claimedDeityMap.size > 0 ? Array.from(claimedDeityMap.keys()).map(id => `#${id + 1}`).join(',') : 'none'}\nP2 Aligned voters: ${p2GoodImpression.length > 0 ? p2GoodImpression.map(id => `#${id + 1}`).join(',') : 'none'}\nChoose highest available priority. Else tear.\nOutput JSON: {"tear":true/false,"successor":1-based seat (0 if tear)}`;
     const sys = prompt;
     const usr = lang === 'zh' ? '输出 JSON 决策' : 'Output JSON decision';
     // P28:超时兜底 15s
@@ -3962,7 +4015,7 @@ function SheriffSuccession({ state, setState, lang, aiSpeak }: {
           chosen = wolfMate ? wolfMate.id : (aliveOthers[0]?.id ?? null);
           tear = chosen === null;
         } else {
-          // P35:好人警长兜底默认撕(除非有 trustedGoodId)
+          // P37:好人警长兜底按优先级传(优先级已在前面算好)
           if (trustedGoodId !== null && state.players[trustedGoodId]?.alive) {
             chosen = trustedGoodId;
           } else {
@@ -3993,13 +4046,13 @@ function SheriffSuccession({ state, setState, lang, aiSpeak }: {
           chosen = num - 1;
         }
       }
-      // 兜底:狼若有狼队友必须传,否则随机活人;好人默认撕(P35)
+      // 兜底:狼若有狼队友必须传,否则随机活人;好人按优先级传(P37)
       if (!tear && chosen === null && aliveOthers.length > 0) {
         if (isWolfSheriff) {
           const wolfMate = aliveOthers.find(p => p.faction === 'wolf');
           chosen = wolfMate ? wolfMate.id : aliveOthers[Math.floor(Math.random() * aliveOthers.length)].id;
         } else {
-          // P35:好人有 trustedGoodId 传之,否则撕
+          // P37:好人按 P0/P1/P2 优先级传(前面算的 trustedGoodId)
           if (trustedGoodId !== null && state.players[trustedGoodId]?.alive) {
             chosen = trustedGoodId;
           } else {
