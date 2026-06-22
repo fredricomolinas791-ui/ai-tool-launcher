@@ -3230,8 +3230,8 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
           : `\n\n[MANDATORY · Seer report] You are the real seer. You MUST report your checks (at least 1):\n${speakerChecks.map(c => `#${c.targetId+1} → ${c.isWolf ? 'wolf' : 'good'}`).join(', ')}\nFormat: "I am the seer, last night I checked #X, they are wolf/good".\nNo report = you will be forced to withdraw.`)
       : isJumpingSeer
       ? (lang === 'zh'
-          ? `\n\n【硬性要求 · 悍跳预言家】你作为狼人,必须在上警发言中假装预言家并报出"查验结果"(可编造):\n格式:"我是预言家,昨晚验了 X 号,他是狼人/好人"。至少报 1 条。\n不报 = 你会自动被强制退水。`
-          : `\n\n[MANDATORY · Wolf posing as seer] You must claim seer and report "checks" (can fabricate):\nFormat: "I am the seer, I checked #X, wolf/good". At least 1.\nNo claim = forced to withdraw.`)
+          ? `\n\n【硬性要求 · 悍跳预言家】你作为狼人,必须在上警发言中假装预言家并报出"查验结果"(可编造):\n格式:"我是预言家,昨晚验了 X 号,他是狼人/好人"。至少报 1 条。\n不报 = 你会自动被强制退水。\n【禁】不能查自己(不能报"验了 ${speaker.id+1} 号")。候选目标:除你以外的其他活人。`
+          : `\n\n[MANDATORY · Wolf posing as seer] You must claim seer and report "checks" (can fabricate):\nFormat: "I am the seer, I checked #X, wolf/good". At least 1.\nNo claim = forced to withdraw.\n[FORBIDDEN] Cannot check yourself (do NOT say "I checked #${speaker.id+1}"). Targets: any alive player except yourself.`)
       : '';
     const sys = lang === 'zh'
       ? `你是"${speaker.name}"(第${speaker.id+1}号),你正在参加警长竞选!请发言拉票(30-80 字):\n- 说明你的身份/立场/逻辑(可不暴露真身份)\n- 表态你作为警长会做的事(带队、归票、坚守)\n- 可以攻击其他候选人${seerExtra}\n\n只输出你的竞选发言,不要 JSON 包装。`
@@ -4708,6 +4708,35 @@ function DayDiscuss({ state, setState, lang, aiSpeak, onExit }: {
     }, speechTimeoutMs);
     aiSpeak(cur.id, sys, usr, false, { temperature: temp }).then(({ speech }) => {
       clearTimeout(timeoutId);
+      // P38:任何"我是预言家"发言,先做基础幻觉拦截
+      // 1) 自验:任何"我验了 X 号"且 X === cur.id(自己) → 整段报查验重写/拦截
+      // 2) 超范围:座位号超出玩家总数 → 拦截
+      if (/^\s*(我是预言家|我是预|i\s*am\s*the\s*seer)/i.test(speech)) {
+        // 抓所有 "X 号 是 [狼/好人]" 片段,过滤掉自己 / 不存在的玩家
+        const selfCheckRe = /我(?:验了|查了?|查验了)\s*(\d{1,2})\s*号/gi;
+        let bad = false;
+        let m: RegExpExecArray | null;
+        const seen = new Set<string>();
+        while ((m = selfCheckRe.exec(speech)) !== null) {
+          const num = parseInt(m[1], 10) - 1;
+          const key = m[0];
+          if (seen.has(key)) continue;
+          seen.add(key);
+          if (num === cur.id) { bad = true; break; }  // 自验
+          if (num < 0 || num >= state.players.length) { bad = true; break; }  // 超界
+        }
+        if (bad) {
+          console.warn(`[Werewolf] Player ${cur.id} self-check or invalid seat in seer claim - sanitizing`);
+          // 移除所有 "我验了 X 号" 片段,改成模糊表态
+          speech = speech.replace(selfCheckRe, '').replace(/[,，。\s]{2,}/g, '。').trim();
+          // 如果整段被清空,给一个兜底
+          if (speech.length < 20 || !/验|查|身份|预言家/i.test(speech)) {
+            speech = lang === 'zh'
+              ? '我是预言家,昨夜的具体查验信息不便公开。我会尽快在合适时机给出关键线索,请大家保持耐心。'
+              : 'I am the seer. I will reveal my checks at the right time. Stay patient.';
+          }
+        }
+      }
       // P25+:真预言家的发言强制校正 —— LLM 经常幻觉把狼说成好人(或反过来)
       // P35 强化:放宽匹配,支持 "X号,结果是个狼人"/"X 号我验出来是好人"/"X号,他是狼" 等口语格式
       if (cur.role === 'seer' && (cur.privateMemory?.seerChecks ?? []).length > 0) {
@@ -6728,11 +6757,11 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
       suggestedTemp = 0.4;
     } else {
       roleBlock = isZh
-        ? `【你的身份:狼人 🐺】\n你的队友:${mates}。\n\n要隐藏身份、转移视线。如果有人跳预言家(尤其是悍跳的),可以咬回去(说对方是悍跳狼)。\n注意:你今天**不应主动跳预言家**——已经有人跳了,你再跳是"对跳",会暴露。`
-        : `【Your role: Werewolf 🐺】\nPack: ${mates}.\n\nHide, deflect. If someone claims seer, you can attack them. Do NOT claim seer yourself if someone already did—counter-counter-claims expose you.`;
+        ? `【你的身份:狼人 🐺】\n你的队友:${mates}。\n\n要隐藏身份、转移视线。如果有人跳预言家(尤其是悍跳的),可以咬回去(说对方是悍跳狼)。\n注意:你今天**不应主动跳预言家**——已经有人跳了,你再跳是"对跳",会暴露。\n\n【禁】不能报"我验了 X 号,他是..."——除非你的发言被标记为悍跳(系统会在 prompt 顶部告诉你)。否则报查验=自杀。`
+        : `【Your role: Werewolf 🐺】\nPack: ${mates}.\n\nHide, deflect. If someone claims seer, you can attack them. Do NOT claim seer yourself if someone already did—counter-counter-claims expose you.\n\n[FORBIDDEN] Do NOT say "I checked #X, he is..." unless this prompt explicitly labels you as a counter-claimer. Otherwise you'll be lynched.`;
       outputFormat = isZh
-        ? `【输出格式】\n30-100 字口语发言(像微信群)。可以怀疑/拉票/站队,但不要直接报"我是预言家"除非你想悍跳。`
-        : `【Output format】\n30-100 words casual speech. Suspect, lobby, take sides. Do NOT claim seer unless intentionally counter-claiming.`;
+        ? `【输出格式】\n30-100 字口语发言(像微信群)。可以怀疑/拉票/站队,但不要直接报"我是预言家"除非你想悍跳。\n【禁】不要谎报查验(编造"我验了 X 号"是自杀行为,真预言家立刻会纠错,全场站反你)。`
+        : `【Output format】\n30-100 words casual speech. Suspect, lobby, take sides. Do NOT claim seer unless intentionally counter-claiming.\n[FORBIDDEN] Do NOT fabricate "I checked #X" - the real seer will correct you immediately and you'll be lynched.`;
     }
   } else if (actor.role === 'witch') {
     const mem = actor.privateMemory;
@@ -6774,11 +6803,11 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
   } else {
     // 普通村民 / 猎人 / 白痴 / 骑士 / 石像鬼 / 丘比特
     roleBlock = isZh
-      ? `【你的身份:${role.name.zh} ${role.emoji}】\n阵营:${actor.faction === 'good' ? '好人' : actor.faction === 'wolf' ? '狼人' : '第三方'}。\n\n白天是发言+投票阶段。要主动站队/怀疑别人/分析局势。`
-      : `【Your role: ${role.name.en} ${role.emoji}】\nFaction: ${actor.faction}. Speak and vote. Take sides, analyze.`;
+      ? `【你的身份:${role.name.zh} ${role.emoji}】\n阵营:${actor.faction === 'good' ? '好人' : actor.faction === 'wolf' ? '狼人' : '第三方'}。\n\n白天是发言+投票阶段。要主动站队/怀疑别人/分析局势。\n\n【禁】你不是预言家/女巫/守卫,**绝对不能**在发言里说"我是预言家"或"我昨晚验了 X 号"!只有真预言家(或悍跳的狼)才能报查验,否则立刻暴露会被全场投死。`
+      : `【Your role: ${role.name.en} ${role.emoji}】\nFaction: ${actor.faction}. Speak and vote. Take sides, analyze.\n\n[FORBIDDEN] You are NOT the Seer/Witch/Guard. NEVER say "I am the Seer" or "I checked #X" - only the real Seer (or a wolf counter-claiming) reports checks. If you do, you'll be lynched immediately.`;
     outputFormat = isZh
-      ? `【输出格式】\n30-100 字口语发言(像微信群)。不要 JSON 包装。`
-      : `【Output format】\n30-100 words casual chat. No JSON.`;
+      ? `【输出格式】\n30-100 字口语发言(像微信群)。不要 JSON 包装。\n【禁】不能以"我是预言家/女巫/守卫"开头(你不是这些身份)。`
+      : `【Output format】\n30-100 words casual chat. No JSON. [FORBIDDEN] Do NOT start with "I am the Seer/Witch/Guard" - you are NOT those roles.`;
   }
 
   // ─────────────────────────────────────────────
