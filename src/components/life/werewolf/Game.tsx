@@ -976,12 +976,10 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
           stuckSeconds={watchdogStuckSeconds}
           onManualSkip={() => {
             console.warn(`[Watchdog] User manually skipping phase ${state.phase}`);
-            setWatchdogManualSkip(true);
             setState(s => forceAdvancePhase(s, lang));
             // 推进后立即重置 watchdog
             lastProgressRef.current = Date.now();
             setWatchdogStuckSeconds(0);
-            setTimeout(() => setWatchdogManualSkip(false), 500);
           }}
           lang={lang}
         />
@@ -3968,31 +3966,33 @@ function SheriffSuccession({ state, setState, lang, aiSpeak }: {
     const p2GoodImpression: number[] = [];
     if (!isWolfSheriff && state.lastVotedOut !== null) {
       // 找最后投票记录中跟警长同票的玩家
-      const sheriffVote = state.voteHistory?.[state.voteHistory.length - 1]?.votes?.find(v => v.voterId === deadSheriffId);
-      if (sheriffVote) {
-        const target = sheriffVote.targetId;
-        for (const v of (state.voteHistory?.[state.voteHistory.length - 1]?.votes ?? [])) {
-          if (v.voterId !== deadSheriffId && v.targetId === target && state.players[v.voterId]?.alive) {
-            p2GoodImpression.push(v.voterId);
+      const lastVote = state.voteHistory?.[state.voteHistory.length - 1];
+      if (lastVote) {
+        const sheriffVote = lastVote.allVotes.find(v => v.voterId === deadSheriffId);
+        if (sheriffVote) {
+          const target = sheriffVote.targetId;
+          for (const v of lastVote.allVotes) {
+            if (v.voterId !== deadSheriffId && v.targetId === target && state.players[v.voterId]?.alive) {
+              p2GoodImpression.push(v.voterId);
+            }
           }
         }
       }
     }
     // 选最高优先级(且存活)的玩家
     let trustedGoodId: number | null = null;
-    let trustLevel = 0; // 0=无,1=P2,2=P1,3=P0
-    if (p0GoldWater !== null) { trustedGoodId = p0GoldWater; trustLevel = 3; }
+    if (p0GoldWater !== null) { trustedGoodId = p0GoldWater; }
     else if (claimedDeityMap.size > 0) {
       // P1 里挑一个还活着的(优先级:预言家 > 守夜人 > 女巫)
       const order = ['seer', 'guard', 'witch'];
       for (const r of order) {
         for (const [pid, role] of claimedDeityMap.entries()) {
-          if (role === r) { trustedGoodId = pid; trustLevel = 2; break; }
+          if (role === r) { trustedGoodId = pid; break; }
         }
         if (trustedGoodId !== null) break;
       }
     }
-    else if (p2GoodImpression.length > 0) { trustedGoodId = p2GoodImpression[0]; trustLevel = 1; }
+    else if (p2GoodImpression.length > 0) { trustedGoodId = p2GoodImpression[0]; }
     const prompt = isWolfSheriff
       ? lang === 'zh'
         ? `你是"${deadSheriff.name}",刚死,曾任警长。\n你是狼人!你可以:\nA) 撕警徽(让警徽流失,下一轮重新竞选)\nB) 把警徽传给你的狼队友(优先:队友 ID 列表中找)\n\n建议:若场上还有狼队友 → 80% 概率传给狼队友(保持警徽控制);否则撕。\n\n输出 JSON:{"tear":true/false,"successor":传给的玩家 1-based 座位号(撕则填 0)}`
