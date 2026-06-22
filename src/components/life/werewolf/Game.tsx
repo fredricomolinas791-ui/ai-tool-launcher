@@ -6739,6 +6739,11 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
   const dead = state.deadThisNight.map(id => `${state.players[id].name}`).join('、');
   const isZh = lang === 'zh';
 
+  // P44:头部"事实声明" —— 告诉 LLM 当前真实状态(防止幻觉)
+  // LLM 之前会把"今天"说成"昨天",把"第 1 天"说成"第 2 天",把别人跳预言家说成自己跳
+  const headerFactsZh = `【P44 事实声明 · 你必须相信】\n当前:第 ${state.round} 天(白天讨论阶段)${state.round === 1 ? ' ← 第 1 天,没有"昨天",没有"昨晚"之前的发言' : ''}\n存活 ${state.players.filter(p => p.alive).length} 人\n昨夜死亡:${dead || '平安夜(无人死亡)'}\n你(本人)是${actor.id + 1}号 ${actor.name},**真实身份:${role.name.zh}${role.emoji}**\n\n【禁 · 防幻觉】\n1. 只能引用下方"最近发言"里**实际出现过**的内容,不能编造"X 号之前说过..."\n2. "今天/昨天" 必须严格按当前天数描述,不能混淆\n3. 你不是预言家时,绝对不能说"我是预言家/我验了 X 号"(否则立刻被全场投死)\n4. 别人跳预言家 ≠ 你也跳预言家,你只能是"质疑/站边/支持"其中一个`;
+  const headerFactsEn = `【P44 FACT DECLARATION】\nCurrent: Day ${state.round} (day discussion)${state.round === 1 ? ' ← Day 1, there is NO "yesterday"' : ''}\nAlive: ${state.players.filter(p => p.alive).length}\nLast night deaths: ${dead || 'Peaceful night (no deaths)'}\nYou are #${actor.id + 1} ${actor.name}, **TRUE role: ${role.name.en}${role.emoji}**\n\n[FORBIDDEN · Anti-hallucination]\n1. Only quote what actually appears in "Recent speeches" below — NEVER fabricate "X said earlier..."\n2. "today/yesterday" must strictly match current day — do NOT confuse\n3. If you are NOT the Seer, NEVER say "I am the Seer / I checked #X" (you'll be lynched)\n4. If someone else claimed Seer, you MUST take a stance (support/doubt) — you cannot also claim`;
+
   // 今日是否已有人跳预言家 / 对跳预言家
   const seerClaimsThisRound = state.claims?.[state.round]?.seerClaims ?? [];
   const seerClaimed = seerClaimsThisRound.length > 0;
@@ -7011,11 +7016,11 @@ No-info abstain: "I have no info, abstain."
 - Info density ≥ 1 specific action/reason/quote per 30 words${realExamples}`;
 
   // ─────────────────────────────────────────────
-  // 3) 拼装
+  // 3) 拼装 (P44:headerFacts 放在最前,让 LLM 第一眼看到"事实声明")
   // ─────────────────────────────────────────────
   return (isZh
-    ? `${roleBlock}\n${outputFormat}${commonRules}${personalityLine}${contextBlock}${stanceBlock}\n【局势】\n昨晚死亡:${dead || '无(平安夜)'}\n存活玩家:${alive}\n现在是第 ${state.round} 轮白天讨论。`
-    : `${roleBlock}\n${outputFormat}${commonRules}${personalityLine}${contextBlock}${stanceBlock}\n【Situation】\nLast night deaths: ${dead || 'none'}\nAlive: ${alive}\nRound ${state.round} day discussion.`)
+    ? `${headerFactsZh}\n\n${roleBlock}\n${outputFormat}${commonRules}${personalityLine}${contextBlock}${stanceBlock}\n【局势】\n昨晚死亡:${dead || '无(平安夜)'}\n存活玩家:${alive}\n现在是第 ${state.round} 轮白天讨论。`
+    : `${headerFactsEn}\n\n${roleBlock}\n${outputFormat}${commonRules}${personalityLine}${contextBlock}${stanceBlock}\n【Situation】\nLast night deaths: ${dead || 'none'}\nAlive: ${alive}\nRound ${state.round} day discussion.`)
     // 把 temperature hint 附在最后供调用方读取(解析时 grep TEMP_HINT)
     + `\n<!-- TEMP_HINT:${suggestedTemp ?? 0.9} -->`;
 }
