@@ -95,8 +95,11 @@ function BoardCard({ board, onSelect, lang, disabled, disabledReason }: {
    玩家座位
    ═══════════════════════════════════════════════════════════════════ */
 
-function PlayerSeat({ player, isYou, isSpeaking, isActing, lang, userMark, wolfTeammateSet, onClick, isSelected }: {
-  player: Player; isYou: boolean; isSpeaking?: boolean; isActing?: boolean; lang: 'zh' | 'en';
+function PlayerSeat({ player, isYou, isSpeaking, isActing, isNight, lang, userMark, wolfTeammateSet, onClick, isSelected }: {
+  player: Player; isYou: boolean; isSpeaking?: boolean; isActing?: boolean;
+  /** P30:当前阶段是否是夜间 —— 只有夜间才点亮行动者座位,白天不允许高亮(避免身份暴露) */
+  isNight?: boolean;
+  lang: 'zh' | 'en';
   userMark?: string;  // P1-#22: 用户手动标记(如"狼人/好人/守卫")
   wolfTeammateSet?: Set<number>;  // P1-#22: 用户的狼队友 ID 集合
   // P24:点击玩家头像 → 显示该玩家的发言历史 + 操作日志
@@ -104,37 +107,44 @@ function PlayerSeat({ player, isYou, isSpeaking, isActing, lang, userMark, wolfT
   isSelected?: boolean;
 }) {
   const role = ROLES[player.role];
-  // 严格隐藏:座位框里永远不显示角色名,只用 emoji(只对自己显示真实身份)
-  const display = !player.alive ? '💀' : isYou ? role.emoji : '👤';
+  // P30:头像一直保留到死亡;死亡才变 💀;不再用 isYou 暴露 role.emoji(用户的角色在「档案面板」单独显示)
+  const display = !player.alive ? '💀' : (player.avatar || '👤');
   // P23:privateMemory 加可选链 + 默认值
   const isSheriff = player.privateMemory?.isSheriff ?? false;
   // P1-#22 修复(用户反馈):狼人应该看到自己的队友
   const isMyWolfTeammate = !isYou && wolfTeammateSet?.has(player.id);
+  // P30 修复(用户反馈):白天不允许行动者高亮,只有夜间才点亮(避免身份暴露)
+  // isActing 仅在夜间作为行动者提示;白天 1 号被高亮的 bug 由此解决
+  const showActingHighlight = isNight && isActing;
   return (
     <div className="relative flex flex-col items-center cursor-pointer transition-transform hover:scale-105"
       style={{ width: 72 }}
       onClick={onClick}
       title={lang === 'zh' ? '点击查看该玩家的发言' : 'Click to view this player\'s speeches'}>
       <div
-        className={`w-14 h-14 rounded-full flex items-center justify-center text-2xl border-2 transition-all ${isActing ? 'animate-pulse' : ''}`}
+        className={`w-14 h-14 rounded-full flex items-center justify-center text-2xl border-2 transition-all ${showActingHighlight ? 'animate-pulse' : ''}`}
         style={{
           background: player.alive
-            ? (isActing ? 'rgba(250,204,21,0.25)' : (isSpeaking ? 'var(--color-accent-glow)' : 'var(--color-card-bg)'))
+            ? (showActingHighlight ? 'rgba(250,204,21,0.25)' : (isSpeaking ? 'var(--color-accent-glow)' : 'var(--color-card-bg)'))
             : 'var(--color-bg-deep)',
           borderColor: isSelected ? '#22c55e'
             : isYou ? 'var(--color-accent)'
-            : isActing ? '#facc15'
+            : showActingHighlight ? '#facc15'
             : isSpeaking ? 'var(--color-accent)'
             : 'var(--color-border-light)',
           opacity: player.alive ? 1 : 0.4,
           boxShadow: isSelected ? '0 0 0 4px rgba(34,197,94,0.4)'
-            : isActing
+            : showActingHighlight
             ? '0 0 0 4px rgba(250,204,21,0.35), 0 0 16px rgba(250,204,21,0.5)'
             : (isSpeaking ? '0 0 0 4px var(--color-accent-glow)' : 'none'),
         }}
       >{display}</div>
       <div className="mt-1 text-[10px] font-medium truncate w-full text-center" style={{ color: player.alive ? 'var(--color-text)' : 'var(--color-text-muted)' }}>
         {player.id + 1}. {player.name}
+        {/* P30:只对自己显示 role emoji(在名字右侧,极小字),不暴露给他人 */}
+        {isYou && player.alive && (
+          <span className="ml-0.5" title={role.name[lang]}>{role.emoji}</span>
+        )}
       </div>
       {isYou && <div className="text-[9px] mt-0.5" style={{ color: 'var(--color-accent)' }}>{lang === 'zh' ? '你' : 'You'}</div>}
       {isSheriff && player.alive && (
@@ -648,9 +658,9 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
     setStateProp((prev) => {
       if (!prev) return prev;
       const next = u(prev);
-      // sanitize:每个 player 的 privateMemory 都补齐缺失字段
+      // sanitize:每个 player 的 privateMemory + avatar 都补齐缺失字段
       const sanitizedPlayers = next.players.map(p => {
-        if (!p.privateMemory) return { ...p, privateMemory: { ...defMem } };
+        if (!p.privateMemory) return { ...p, privateMemory: { ...defMem }, avatar: p.avatar || '👤' };
         // 用 spread merge 兜底所有缺失字段
         const merged = { ...defMem, ...p.privateMemory };
         // 数组字段如果缺失,用 [] 补
@@ -658,7 +668,7 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
         if (!Array.isArray(merged.seerChecks)) merged.seerChecks = [];
         if (!Array.isArray(merged.guardHistory)) merged.guardHistory = [];
         if (!Array.isArray(merged.gargoyleChecks)) merged.gargoyleChecks = [];
-        return { ...p, privateMemory: merged };
+        return { ...p, privateMemory: merged, avatar: p.avatar || '👤' };
       });
       return { ...next, players: sanitizedPlayers };
     });
@@ -667,13 +677,13 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
   const state = useMemo(() => {
     if (!initial) return initial;
     const sanitizedPlayers = initial.players.map(p => {
-      if (!p.privateMemory) return { ...p, privateMemory: { ...defMemRender } };
+      if (!p.privateMemory) return { ...p, privateMemory: { ...defMemRender }, avatar: p.avatar || '👤' };
       const merged = { ...defMemRender, ...p.privateMemory };
       if (!Array.isArray(merged.wolfTeammates)) merged.wolfTeammates = [];
       if (!Array.isArray(merged.seerChecks)) merged.seerChecks = [];
       if (!Array.isArray(merged.guardHistory)) merged.guardHistory = [];
       if (!Array.isArray(merged.gargoyleChecks)) merged.gargoyleChecks = [];
-      return { ...p, privateMemory: merged };
+      return { ...p, privateMemory: merged, avatar: p.avatar || '👤' };
     });
     return { ...initial, players: sanitizedPlayers };
   }, [initial]);
@@ -863,6 +873,7 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
                     isYou={p.id === state.userId}
                     isSpeaking={streamingText?.playerId === p.id}
                     isActing={actingPlayerIds.includes(p.id)}
+                    isNight={state.phase === 'night'}  // P30:白天不高亮行动者
                     lang={lang}
                     userMark={state.userMarks?.[p.id]}
                     wolfTeammateSet={userWolfTeammates}
@@ -877,6 +888,7 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
                     isYou={p.id === state.userId}
                     isSpeaking={streamingText?.playerId === p.id}
                     isActing={actingPlayerIds.includes(p.id)}
+                    isNight={state.phase === 'night'}  // P30:白天不高亮行动者
                     lang={lang}
                     userMark={state.userMarks?.[p.id]}
                     wolfTeammateSet={userWolfTeammates}

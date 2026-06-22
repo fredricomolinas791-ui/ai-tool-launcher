@@ -23,9 +23,17 @@ export interface Player {
   faction: Faction;
   personality: Personality;
   alive: boolean;
+  /** P30:玩家个性化头像(12 个动物 emoji 之一),initGame 时随机分配;保持到死亡 → 💀 */
+  avatar: string;
   /** 该玩家看到的"私密信息"(如验人结果、队友身份) */
   privateMemory: PrivateMemory;
 }
+
+/** P30:12 个动物头像池(避开角色 emoji,不会混淆身份) */
+export const PLAYER_AVATARS: string[] = [
+  '🐶', '🐱', '🐰', '🐻', '🦊', '🐼',
+  '🐯', '🦁', '🐮', '🐷', '🐸', '🐵',
+];
 
 export interface PrivateMemory {
   /** 狼人知道的队友 ID 列表 */
@@ -240,6 +248,8 @@ export function initGame(boardId: BoardId, userName: string, lang: 'zh' | 'en' =
   const shuffledRoles = [...board.roles].sort(() => Math.random() - 0.5);
   // 玩家名字(用户位置随机);观看模式下没有真人,全是 AI
   const nameObjs = generatePlayerNamesLocal(board.playerCount, spectatorMode ? '' : userName);
+  // P30:给每个玩家随机分配一个动物头像(避免重复出现,12 人以内用 shuffle 前 N 个)
+  const avatarPool = [...PLAYER_AVATARS].sort(() => Math.random() - 0.5);
   // 性格随机
   const players: Player[] = nameObjs.map((n, i) => {
     const role = shuffledRoles[i];
@@ -251,6 +261,7 @@ export function initGame(boardId: BoardId, userName: string, lang: 'zh' | 'en' =
       faction: ROLES[role].faction,
       personality: pickPersonality(),
       alive: true,
+      avatar: avatarPool[i % avatarPool.length],  // P30:每个人一个头像,死亡前不变
       privateMemory: defaultMemory(),
     };
   });
