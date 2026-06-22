@@ -704,6 +704,48 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [winner]);
 
+  /* P35:卡死看门狗(全局)
+     ── 跟踪 phase 进入时间 + publicLog 增长 + 玩家发言数
+     ── 如果某个 phase 停留过久且游戏没进展(没新增 log/发言/state.speeches 也没变)
+     ── 60s 弹"卡死?强制推进"按钮;120s 自动跳到下一阶段
+     ── 这是兜底 —— 真正的 useEffect race bug 仍要修,但有这个保护游戏不会"完全卡死" */
+  const phaseEnteredAtRef = useRef<number>(Date.now());
+  const lastProgressRef = useRef<number>(Date.now());
+  const lastSpeechCountRef = useRef<number>(state.speeches.length);
+  const lastLogCountRef = useRef<number>(state.publicLog.length);
+  const [watchdogStuckSeconds, setWatchdogStuckSeconds] = useState(0);
+  const [watchdogManualSkip, setWatchdogManualSkip] = useState(false);
+  // 阶段切换 → 重置计时
+  useEffect(() => {
+    phaseEnteredAtRef.current = Date.now();
+    lastProgressRef.current = Date.now();
+    setWatchdogStuckSeconds(0);
+  }, [state.phase]);
+  // 任何"游戏进展"信号(发言数 / publicLog 数 / round 变)都更新最后进展时间
+  useEffect(() => {
+    if (state.speeches.length > lastSpeechCountRef.current || state.publicLog.length > lastLogCountRef.current) {
+      lastProgressRef.current = Date.now();
+      lastSpeechCountRef.current = state.speeches.length;
+      lastLogCountRef.current = state.publicLog.length;
+    }
+  }, [state.speeches.length, state.publicLog.length]);
+  // 1 秒更新一次"卡了多久"显示
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      const stuck = Math.floor((Date.now() - lastProgressRef.current) / 1000);
+      setWatchdogStuckSeconds(stuck);
+    }, 1000);
+    return () => clearInterval(id);
+  }, []);
+  // 120s 自动强制跳到下一阶段(在 gameover 时不跳)
+  useEffect(() => {
+    if (state.phase === 'gameover' || state.phase === 'role-reveal' || state.phase === 'setup') return;
+    if (watchdogStuckSeconds < 120) return;
+    console.warn(`[Watchdog] Phase ${state.phase} stuck for ${watchdogStuckSeconds}s, auto-advancing`);
+    setState(s => forceAdvancePhase(s, lang));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watchdogStuckSeconds]);
+
   /* P2-#C:检测最新自爆事件,在顶部 + InfoStream 顶部显示高亮 banner(3 秒后自动消失) */
   useEffect(() => {
     // 只看新增的 system 事件(从 seenSelfDestructRef 起)
@@ -928,6 +970,55 @@ function GameRunner({ state: initial, setState: setStateProp, aiConfig, lang, on
       </div>
 
       {state.phase === 'gameover' && winner && <GameOver state={state} winner={winner} lang={lang} onExit={onExit} onReplay={onReplay} />}
+
+      {/* P35:全局卡死看门狗 UI —— 60s 弹按钮,120s 自动跳过 */}
+      {state.phase !== 'gameover' && state.phase !== 'setup' && (
+        <WatchdogBar
+          stuckSeconds={watchdogStuckSeconds}
+          onManualSkip={() => {
+            console.warn(`[Watchdog] User manually skipping phase ${state.phase}`);
+            setWatchdogManualSkip(true);
+            setState(s => forceAdvancePhase(s, lang));
+            // 推进后立即重置 watchdog
+            lastProgressRef.current = Date.now();
+            setWatchdogStuckSeconds(0);
+            setTimeout(() => setWatchdogManualSkip(false), 500);
+          }}
+          lang={lang}
+        />
+      )}
+    </div>
+  );
+}
+
+/* P35:看门狗 UI 条 —— 显示当前阶段卡了多久,60s 后出现跳过按钮 */
+function WatchdogBar({ stuckSeconds, onManualSkip, lang }: {
+  stuckSeconds: number; onManualSkip: () => void; lang: 'zh' | 'en';
+}) {
+  // 颜色随时间变:0-30s 灰,30-60s 黄,60-120s 红,>120s 自动跳过(看不到)
+  const isYellow = stuckSeconds >= 30 && stuckSeconds < 60;
+  const isRed = stuckSeconds >= 60;
+  const bg = isRed
+    ? 'linear-gradient(90deg, rgba(220,38,38,0.9), rgba(220,38,38,0.7))'
+    : isYellow
+      ? 'linear-gradient(90deg, rgba(250,204,21,0.7), rgba(250,204,21,0.5))'
+      : 'linear-gradient(90deg, rgba(99,102,241,0.3), rgba(99,102,241,0.1))';
+  const text = isRed
+    ? (lang === 'zh' ? `⚠️ 阶段已卡 ${stuckSeconds} 秒,建议手动跳过` : `⚠️ Stuck for ${stuckSeconds}s, consider skipping`)
+    : isYellow
+      ? (lang === 'zh' ? `⏱️ 阶段停留 ${stuckSeconds} 秒(正常 < 30s)` : `⏱️ Phase held for ${stuckSeconds}s`)
+      : (lang === 'zh' ? `⏱️ 阶段停留 ${stuckSeconds} 秒` : `⏱️ Phase: ${stuckSeconds}s`);
+  return (
+    <div className="fixed bottom-2 right-2 z-50 px-3 py-1.5 rounded-lg text-[11px] flex items-center gap-2"
+      style={{ background: bg, color: '#fff', boxShadow: '0 2px 8px rgba(0,0,0,0.3)' }}>
+      <span>{text}</span>
+      {isRed && (
+        <button onClick={onManualSkip}
+          className="px-2 py-0.5 rounded text-[10px] font-bold animate-pulse"
+          style={{ background: '#fff', color: '#dc2626' }}>
+          {lang === 'zh' ? '🆘 强制跳过' : '🆘 FORCE SKIP'}
+        </button>
+      )}
     </div>
   );
 }
@@ -1077,6 +1168,29 @@ function InfoStream({ state, lang, streamingText }: {
   });
   const toggleSection = (key: string) => setOpenSections(prev => ({ ...prev, [key]: !prev[key] }));
 
+  // P35:"今日一眼摘要" —— 顶部固定信息条,玩家不用展开任何 section 就能看到
+  const phaseLabel = state.phase;  // 内联简短 phase 名(详细标签在 section header 里)
+  // 昨夜死亡(取最近 round 的死亡事件)
+  const lastNightDeaths = (() => {
+    const todaysDeaths = state.publicLog.filter(e => e.kind === 'death' && e.day === state.round - 1);
+    if (todaysDeaths.length === 0) {
+      // 如果是 round 1,看 round 1 死亡(如果还在第一夜)
+      return state.publicLog.filter(e => e.kind === 'death' && e.day === state.round);
+    }
+    return todaysDeaths;
+  })().map(e => {
+    const m = e.text.match(/(\d+)\s*号/);
+    return m ? `${m[1]}号` : '';
+  }).filter(Boolean).join('、');
+  // 今日跳预言家的玩家
+  const seerClaimsToday = (state.claims?.[state.round]?.seerClaims ?? [])
+    .map(c => `${c.playerId + 1}号`).join('+');
+  // 警长
+  const sheriffId = state.players.findIndex(p => p.privateMemory?.isSheriff);
+  // 存活
+  const aliveCount = state.players.filter(p => p.alive).length;
+  const totalCount = state.players.length;
+
   /* P12-A 通用分区组件:header 可点击切换展开/折叠 */
   const Section = ({ id, icon, label, count, color, children, defaultOpen = false }: {
     id: string; icon: string; label: string; count?: number;
@@ -1113,6 +1227,24 @@ function InfoStream({ state, lang, streamingText }: {
         background: 'var(--color-card-bg)', border: '1px solid var(--color-border-light)',
         maxHeight: 'calc(100vh - 180px)', minHeight: 400,
       }}>
+      {/* P35:顶部"今日一眼摘要" —— 固定信息条,玩家不用展开任何 section 就能看到关键信息 */}
+      <div className="px-2 py-1.5 rounded-lg text-[11px] flex flex-wrap gap-x-3 gap-y-0.5 items-center"
+        style={{ background: 'linear-gradient(90deg, rgba(168,85,247,0.15), rgba(59,130,246,0.1))', border: '1px solid rgba(168,85,247,0.3)' }}>
+        <span className="font-semibold" style={{ color: '#a78bfa' }}>📅 {lang === 'zh' ? `第${state.round}天` : `Day ${state.round}`}</span>
+        <span style={{ color: 'var(--color-text)' }}>🎯 {phaseLabel}</span>
+        <span style={{ color: 'var(--color-text-muted)' }}>
+          {lang === 'zh' ? `存活 ${aliveCount}/${totalCount}` : `alive ${aliveCount}/${totalCount}`}
+        </span>
+        {lastNightDeaths && (
+          <span style={{ color: '#dc2626' }}>💀 {lang === 'zh' ? `昨夜死:${lastNightDeaths}` : `Last night: ${lastNightDeaths}`}</span>
+        )}
+        {seerClaimsToday && (
+          <span style={{ color: '#facc15' }}>🔮 {lang === 'zh' ? `今日跳预:${seerClaimsToday}` : `Seer claim: ${seerClaimsToday}`}</span>
+        )}
+        {sheriffId >= 0 && (
+          <span style={{ color: '#facc15' }}>⭐ {lang === 'zh' ? `警长:${sheriffId + 1}号` : `Sheriff: #${sheriffId + 1}`}</span>
+        )}
+      </div>
       {/* 发言流 —— 默认展开,玩家最关心 */}
       <Section id="speeches" icon="🗣️" label={lang === 'zh' ? '发言' : 'Speeches'}
         count={state.speeches.length} color="var(--color-text-muted)" defaultOpen={true}>
@@ -1300,6 +1432,48 @@ function InfoStream({ state, lang, streamingText }: {
               </div>
             );
           })}
+        </Section>
+      )}
+
+      {/* P35:按天详情 —— "天 N: 夜死 X / 投出 Y" 一行看完,不展开任何 section */}
+      {state.voteHistory && state.voteHistory.length > 0 && (
+        <Section id="byDay" icon="📅" label={lang === 'zh' ? '按天详情' : 'By day summary'}
+          color="#22c55e" defaultOpen={true}>
+          <div className="space-y-1">
+            {state.voteHistory.map((round, idx) => {
+              // 这一夜死的(death events in round.round)
+              const nightDeaths = state.publicLog.filter(e => e.kind === 'death' && e.day === round.round && !e.text.startsWith('🗳️'));
+              const nightDeathStr = nightDeaths.map(e => {
+                const m = e.text.match(/(\d+)\s*号/);
+                return m ? `${m[1]}号` : '';
+              }).filter(Boolean).join('、') || (lang === 'zh' ? '平安' : 'peace');
+              // 这一轮的投票结果
+              const exiled = round.exiled !== null ? state.players[round.exiled] : null;
+              // 票数 top
+              const tallyStr = Object.entries(round.tally)
+                .map(([tid, c]) => `${parseInt(tid, 10) + 1}号(${c})`)
+                .join(' / ');
+              return (
+                <div key={idx} className="text-[10px] flex flex-wrap gap-x-2 gap-y-0.5 px-1.5 py-1 rounded"
+                  style={{ background: 'var(--color-bg-deep)', border: '1px solid var(--color-border-light)' }}>
+                  <span className="font-semibold" style={{ color: '#a78bfa' }}>第{round.round}天</span>
+                  <span style={{ color: '#dc2626' }}>🌙夜死: {nightDeathStr}</span>
+                  <span style={{ color: 'var(--color-text-muted)' }}>🗳️票数: {tallyStr || '无'}</span>
+                  {exiled && (
+                    <span style={{ color: '#dc2626', fontWeight: 'bold' }}>💀放逐: {exiled.id + 1}号 {exiled.name}</span>
+                  )}
+                </div>
+              );
+            })}
+            {/* 当前正在进行的轮(还没投出) */}
+            {state.phase !== 'gameover' && (
+              <div className="text-[10px] flex flex-wrap gap-x-2 gap-y-0.5 px-1.5 py-1 rounded"
+                style={{ background: 'var(--color-bg-deep)', border: '1px dashed var(--color-border-light)' }}>
+                <span className="font-semibold" style={{ color: '#22c55e' }}>第{state.round}天 · 进行中</span>
+                <span style={{ color: 'var(--color-text-muted)' }}>🎯 {phaseLabel}</span>
+              </div>
+            )}
+          </div>
         </Section>
       )}
     </div>
@@ -2993,9 +3167,13 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
       }));
       return;
     }
+    // P35 修复(用户反馈"4 个上警的没发言就卡死"):
+    // 之前:分开调用 setState 和 setStep,React 18 batching 之后顺序保证 → 但**重要**:
+    //   useEffect 跑在 commit 后,此时 step='speech' 已生效,sheriffElection 已填 → 没问题
+    // 真问题不是 batching,看下面的 console 调试
     setState(s => ({
       ...s,
-      sheriffElection: { ...election, registeredIds: registered, withdrawnIds: [], pkRound: 0, speechIdx: 0 },
+      sheriffElection: { ...(s.sheriffElection ?? election), registeredIds: registered, withdrawnIds: [], pkRound: 0, speechIdx: 0 },
       publicLog: [...s.publicLog, {
         kind: 'system', day: s.round,
         text: `⭐ 警长竞选报名:${registered.map(id => `${id+1}号 ${s.players[id].name}`).join('、')}(共 ${registered.length} 人)`,
@@ -3017,11 +3195,29 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
      - 避免 AI 卡死导致整个警长阶段僵住 */
   const lastProcessedSpeakerRef = useRef<number | null>(null);
   useEffect(() => {
-    if (step !== 'speech' || !currentSpeakerId) return;
-    if (lastProcessedSpeakerRef.current === currentSpeakerId) return;  // 防止重复
+    if (step !== 'speech' || !currentSpeakerId) {
+      console.log(`[SheriffElection.speech] skip: step=${step} currentSpeakerId=${currentSpeakerId}`);
+      return;
+    }
+    if (lastProcessedSpeakerRef.current === currentSpeakerId) {
+      console.log(`[SheriffElection.speech] skip: already processed ${currentSpeakerId}`);
+      return;  // 防止重复
+    }
     const speaker = stateRef.current.players[currentSpeakerId];
-    if (speaker.id === state.userId) return;  // 用户自己,等用户操作
-    if (busy) return;
+    console.log(`[SheriffElection.speech] step=${step} speechIdx=${election.speechIdx} currentSpeakerId=${currentSpeakerId} speaker=${speaker?.name} userId=${state.userId} busy=${busy}`);
+    if (!speaker) {
+      console.warn(`[SheriffElection.speech] speaker not found for id ${currentSpeakerId}, advancing`);
+      advanceSpeech(currentSpeakerId, '(发言跳过)');
+      return;
+    }
+    if (speaker.id === state.userId) {
+      console.log(`[SheriffElection.speech] skip: user turn (id=${state.userId})`);
+      return;  // 用户自己,等用户操作
+    }
+    if (busy) {
+      console.log(`[SheriffElection.speech] skip: busy=true`);
+      return;
+    }
     lastProcessedSpeakerRef.current = currentSpeakerId;
     setBusy(true);
     // P32 强化(用户反馈"预言家必须报查验"):真预言家 + 悍跳预言家的狼必须在上警发言中报查验
@@ -3047,10 +3243,18 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
     let timeoutFired = false;
     const timeoutId = window.setTimeout(() => {
       timeoutFired = true;
+      console.warn(`[SheriffElection] speech timeout for ${currentSpeakerId}, forcing advance`);
       advanceSpeech(currentSpeakerId, lang === 'zh'
         ? `(AI 超时未响应,请等待系统强制)`
         : `(AI timed out, system advancing)`);
     }, 30000);
+    // P35 兜底:如果 useEffect 跑了但没触发 aiSpeak(比如 speaker 找不到),定时器也保底推进
+    const safetyNetId = window.setTimeout(() => {
+      if (lastProcessedSpeakerRef.current === currentSpeakerId) {
+        console.warn(`[SheriffElection] safety-net: 5s 内没推进,强制 advance`);
+        advanceSpeech(currentSpeakerId, '(AI 跳过)');
+      }
+    }, 5000);
 
     function advanceSpeech(speakerId: number, speech: string) {
       setBusy(false);
@@ -3107,18 +3311,29 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
     // AI 真实返回 → 用真发言 + 清掉超时
     // P34 修复(用户反馈"6 号玩家重复发言"):silent=true,避免 aiSpeak 内部 push + advanceSpeech 内部 push 双重写入
     aiSpeak(speaker.id, sys, usr, true).then(({ speech }) => {
+      window.clearTimeout(safetyNetId);  // P35:AI 响应了,清掉兜底
       if (timeoutFired) return;  // 已经超时走兜底了,不再覆盖
       window.clearTimeout(timeoutId);
       advanceSpeech(currentSpeakerId, speech);
     });
   }, [step, currentSpeakerId, state.userId, busy, aiSpeak, lang]);
 
-  /* 监听:发言结束 → 退水阶段(普通)或 pk-vote(PK) */
+  /* 监听:发言结束 → 退水阶段(普通)或 pk-vote(PK)
+     P35 修复(用户反馈"4 个上警的没发言就卡死,直接跳退水"):
+     之前:只要 speechIdx >= candidates.length 就切到 withdraw,**但** speechIdx 初始是 0
+     而 candidates 长度可能是 4,理论上 0 < 4 不该切。问题:**candidates.length 在第一次渲染时
+     还没拿到(registeredIds 刚 setState 但 UI 上没渲染完)** → useEffect 跑时 candidates=0,
+     后续 candidates 变 4 触发 useEffect 重跑,但此时 step 还是 speech(没变),election.speechIdx=0
+     → 触发 `0 >= 0`(可能)或更早就 race。
+     修法:加更多守卫 —— speechIdx > 0 时才允许切(避免"还没发言就切"误判)
+     + 加 console 调试 */
   useEffect(() => {
-    if (step === 'speech' && candidates.length > 0 && election.speechIdx >= candidates.length) {
+    // P35 防御:发言至少要有人发过(speechIdx > 0)才允许切退水
+    if (step === 'speech' && candidates.length > 0 && election.speechIdx >= candidates.length && election.speechIdx > 0) {
+      console.log(`[SheriffElection] All ${candidates.length} candidates have spoken, advancing to withdraw`);
       setStep('withdraw');
     }
-    if (step === 'pk-speech' && pkSpeakers.length > 0 && election.speechIdx >= pkSpeakers.length) {
+    if (step === 'pk-speech' && pkSpeakers.length > 0 && election.speechIdx >= pkSpeakers.length && election.speechIdx > 0) {
       setStep('pk-vote');
     }
   }, [step, election.speechIdx, candidates.length, pkSpeakers.length]);
@@ -3670,8 +3885,9 @@ function SheriffSuccession({ state, setState, lang, aiSpeak }: {
         if (s.lastVotedOut !== null && s.players[s.lastVotedOut]?.role === 'idiot' && s.players[s.lastVotedOut]?.alive) {
           return { ...s, phase: 'idiot-flip', pendingSheriffSuccession: null };
         }
-        const hunterDied = s.players.find(p => !p.alive && p.role === 'hunter' && p.id === s.lastVotedOut);
-        if (hunterDied) {
+        // P35 修复:被女巫毒死的猎人不能开枪
+        const lastVoted = s.lastVotedOut !== null ? s.players[s.lastVotedOut] : null;
+        if (lastVoted && lastVoted.role === 'hunter' && canHunterShoot(s, lastVoted.id)) {
           return { ...s, phase: 'hunter-shoot', pendingSheriffSuccession: null };
         }
         if (s.lastVotedOut !== null) {
@@ -3706,13 +3922,32 @@ function SheriffSuccession({ state, setState, lang, aiSpeak }: {
       return;
     }
     setBusy(true);
+    // P35 修复(用户反馈"6号好人警长传7号狼"):好人警长默认**撕警徽**(让警徽流失),
+    // 因为警长死时 AI 没有足够信息判断谁可信,随机传很容易传给狼。
+    // 例外:如果死警长有 seerChecks 验过的"已确认好人",可以传给他;否则撕。
+    let trustedGoodId: number | null = null;
+    if (!isWolfSheriff && deadSheriff.role === 'seer' && deadSheriff.privateMemory?.seerChecks) {
+      const checks = deadSheriff.privateMemory.seerChecks;
+      // 找最近一次验出的"好人"且还活着的玩家
+      for (let i = checks.length - 1; i >= 0; i--) {
+        const c = checks[i];
+        if (!c.isWolf && state.players[c.targetId]?.alive) {
+          trustedGoodId = c.targetId;
+          break;
+        }
+      }
+    }
     const prompt = isWolfSheriff
       ? lang === 'zh'
         ? `你是"${deadSheriff.name}",刚死,曾任警长。\n你是狼人!你可以:\nA) 撕警徽(让警徽流失,下一轮重新竞选)\nB) 把警徽传给你的狼队友(优先:队友 ID 列表中找)\n\n建议:若场上还有狼队友 → 80% 概率传给狼队友(保持警徽控制);否则撕。\n\n输出 JSON:{"tear":true/false,"successor":传给的玩家 1-based 座位号(撕则填 0)}`
         : `You are "${deadSheriff.name}", were Sheriff. You are a WOLF. Choose:\nA) Tear the badge (new election)\nB) Pass to a wolf teammate\nIf teammates alive: 80% pass. Else tear.\nOutput JSON: {"tear":true/false,"successor":1-based seat (0 if tear)}`
       : lang === 'zh'
-        ? `你是"${deadSheriff.name}",刚死,曾任警长。你是好人,必须传警徽给一个存活玩家(不能撕!撕了等于送狼胜)。\n请选一个最值得信任的存活玩家继承。\n\n输出 JSON:{"successor":传给的玩家 1-based 座位号}`
-        : `You are "${deadSheriff.name}", were Sheriff. As good player, you MUST pass (cannot tear). Pick a trusted alive player.\nOutput JSON: {"successor":1-based seat}`;
+        ? `你是"${deadSheriff.name}",刚死,曾任警长。你是好人。\n【重要】死前你没有足够信息判断谁可信 —— 传错给狼等于送狼胜!${trustedGoodId !== null
+          ? `\n例外:你验过 ${trustedGoodId + 1}号 ${state.players[trustedGoodId]?.name} 是好人,你可以传给他。`
+          : `\n你没有验过的"已确认好人" —— 默认撕警徽(下轮重选更安全)。`}\n\n决策:\nA) 撕警徽(推荐,如果没验出可信好人) → 警徽流失,下轮重新竞选\nB) 把警徽传给你最信任的存活玩家(必须是确认好人,否则选 A)\n\n输出 JSON:{"tear":true/false,"successor":传给的玩家 1-based 座位号(撕则填 0)}`
+        : `You are "${deadSheriff.name}", were Sheriff. You are good.\nYou may not have enough info to trust anyone. ${trustedGoodId !== null
+          ? `You checked ${trustedGoodId + 1} ${state.players[trustedGoodId]?.name} as good - you may pass.`
+          : `You have no confirmed good player - DEFAULT TO TEAR (safer).`}\nA) Tear (re-election) or B) Pass to trusted good.\nOutput JSON: {"tear":true/false,"successor":1-based seat (0 if tear)}`;
     const sys = prompt;
     const usr = lang === 'zh' ? '输出 JSON 决策' : 'Output JSON decision';
     // P28:超时兜底 15s
@@ -3720,7 +3955,7 @@ function SheriffSuccession({ state, setState, lang, aiSpeak }: {
       console.warn(`[Werewolf] SheriffSuccession AI timeout for ${deadSheriffId}, fallback`);
       if (!aiDoneRef.current) {
         aiDoneRef.current = true;
-        // 兜底逻辑同 .then
+        // 兜底逻辑:P35 好人默认撕(防传给狼);狼优先传狼队友
         let chosen: number | null = null;
         let tear = false;
         if (isWolfSheriff) {
@@ -3728,8 +3963,12 @@ function SheriffSuccession({ state, setState, lang, aiSpeak }: {
           chosen = wolfMate ? wolfMate.id : (aliveOthers[0]?.id ?? null);
           tear = chosen === null;
         } else {
-          chosen = aliveOthers[0]?.id ?? null;
-          tear = chosen === null;
+          // P35:好人警长兜底默认撕(除非有 trustedGoodId)
+          if (trustedGoodId !== null && state.players[trustedGoodId]?.alive) {
+            chosen = trustedGoodId;
+          } else {
+            tear = true;
+          }
         }
         if (tear || chosen === null) {
           finishAsTear();
@@ -3755,14 +3994,18 @@ function SheriffSuccession({ state, setState, lang, aiSpeak }: {
           chosen = num - 1;
         }
       }
-      // 兜底:狼若有狼队友必须传,否则随机活人;好人必须传
+      // 兜底:狼若有狼队友必须传,否则随机活人;好人默认撕(P35)
       if (!tear && chosen === null && aliveOthers.length > 0) {
-        // 优先选狼队友(狼)
         if (isWolfSheriff) {
           const wolfMate = aliveOthers.find(p => p.faction === 'wolf');
           chosen = wolfMate ? wolfMate.id : aliveOthers[Math.floor(Math.random() * aliveOthers.length)].id;
         } else {
-          chosen = aliveOthers[Math.floor(Math.random() * aliveOthers.length)].id;
+          // P35:好人有 trustedGoodId 传之,否则撕
+          if (trustedGoodId !== null && state.players[trustedGoodId]?.alive) {
+            chosen = trustedGoodId;
+          } else {
+            tear = true;
+          }
         }
       }
       if (tear || chosen === null) {
@@ -3905,12 +4148,116 @@ function SheriffSuccession({ state, setState, lang, aiSpeak }: {
   );
 }
 
+/* 猎人是否能开枪
+   ── 标准规则:被女巫毒杀不能开枪;其他死因(狼杀、殉情、狼王带、自爆)都能
+   ── P35 修复:统一所有调用点用这个 helper,避免某些路径漏判 */
+function canHunterShoot(state: GameState, hunterId: number): boolean {
+  const player = state.players[hunterId];
+  if (!player || player.role !== 'hunter') return false;
+  const witch = state.players.find(p => p.role === 'witch');
+  const witchPoisonedId = witch?.privateMemory.witchPoisonedId ?? null;
+  // 被女巫毒杀 → 不能开枪
+  if (witchPoisonedId === hunterId) return false;
+  return true;
+}
+
+/* P35:卡死看门狗 —— 强制跳到下一阶段
+   ── 设计原则:不删数据、不改身份,只改 phase + 处理 pending 队列
+   ── 走到这里说明当前 phase 内部 useEffect 卡死了 → 用最少副作用的"应急推进"
+   ── 失败模式:可能 skip 一次发言/投票,但游戏能继续 */
+function forceAdvancePhase(s: GameState, _lang: 'zh' | 'en'): GameState {
+  const log = (text: string) => ({
+    kind: 'system' as const, day: s.round,
+    text: `⚠️ [看门狗] ${text}`,
+  });
+  const fallbackLog: { kind: 'system'; day: number; text: string }[] = [];
+
+  switch (s.phase) {
+    case 'sheriff-election': {
+      // 把 sheriffElection 推完:跳过 register/speech/withdraw,直接进 vote
+      const election = s.sheriffElection ?? { registeredIds: [], withdrawnIds: [], pkRound: 0, speechIdx: 0 };
+      const candidates = election.registeredIds.filter(id => !election.withdrawnIds.includes(id));
+      fallbackLog.push(log(`警长竞选卡死,候选 ${candidates.length} 人,直接进投票(占位发言)`));
+      const newSpeeches = [...s.speeches];
+      for (let i = election.speechIdx; i < candidates.length; i++) {
+        newSpeeches.push({
+          playerId: candidates[i], day: s.round,
+          text: '(系统应急:AI 卡死,占位)',
+          phase: 'sheriff-speech',
+        });
+      }
+      return {
+        ...s,
+        speeches: newSpeeches,
+        sheriffElection: { ...election, speechIdx: candidates.length },
+        publicLog: [...s.publicLog, ...fallbackLog],
+      };
+    }
+    case 'day-discuss': {
+      fallbackLog.push(log(`白天讨论卡死,直接进投票`));
+      return { ...s, publicLog: [...s.publicLog, ...fallbackLog], phase: 'day-vote' };
+    }
+    case 'day-vote':
+    case 'vote-results':
+    case 'pk-speech':
+    case 'pk-vote': {
+      fallbackLog.push(log(`投票阶段卡死,跳过 PK,直接结算`));
+      const lastVD = s.lastVoteData;
+      const exiled = lastVD?.exiled ?? null;
+      return {
+        ...s,
+        publicLog: [...s.publicLog, ...fallbackLog],
+        phase: exiled !== null ? 'last-words' : 'night',
+        round: exiled !== null ? s.round : s.round + 1,
+        lastVotedOut: exiled,
+      };
+    }
+    case 'last-words': {
+      fallbackLog.push(log(`遗言卡死,直接结算`));
+      return {
+        ...s,
+        publicLog: [...s.publicLog, ...fallbackLog],
+        phase: s.pendingSheriffSuccession !== null ? 'sheriff-succession' : 'night',
+        pendingLastWords: [],
+        round: s.round + 1,
+      };
+    }
+    case 'hunter-shoot': {
+      fallbackLog.push(log(`猎人开枪卡死,跳过`));
+      return { ...s, publicLog: [...s.publicLog, ...fallbackLog], phase: 'night', round: s.round + 1 };
+    }
+    case 'wolfking-pick': {
+      fallbackLog.push(log(`狼王带人卡死,跳过`));
+      return { ...s, publicLog: [...s.publicLog, ...fallbackLog], phase: 'night', round: s.round + 1 };
+    }
+    case 'sheriff-succession': {
+      fallbackLog.push(log(`警徽传承卡死,撕警徽`));
+      return { ...s, publicLog: [...s.publicLog, ...fallbackLog], phase: 'night', round: s.round + 1, pendingSheriffSuccession: null };
+    }
+    case 'idiot-flip': {
+      fallbackLog.push(log(`白痴翻牌卡死,跳过`));
+      return { ...s, publicLog: [...s.publicLog, ...fallbackLog], phase: 'night', round: s.round + 1 };
+    }
+    case 'night': {
+      fallbackLog.push(log(`夜间行动卡死,按当前 dead 结算`));
+      return { ...s, publicLog: [...s.publicLog, ...fallbackLog], phase: 'day-announce' };
+    }
+    case 'day-announce': {
+      const needSheriff = s.players.length >= 12 && !s.players.some(p => p.privateMemory.isSheriff);
+      fallbackLog.push(log(`天亮公告卡死,跳到讨论`));
+      return { ...s, publicLog: [...s.publicLog, ...fallbackLog], phase: needSheriff ? 'sheriff-election' : 'day-discuss' };
+    }
+    default:
+      fallbackLog.push(log(`阶段 ${s.phase} 卡死,无法应急推进(未知 phase)`));
+      return { ...s, publicLog: [...s.publicLog, ...fallbackLog] };
+  }
+}
+
 function DayAnnounce({ state, setState, lang }: { state: GameState; setState: (u: (s: GameState) => GameState) => void; lang: 'zh' | 'en' }) {
   const dead = state.deadThisNight;
   // 检测所有死亡者里是否有猎人(包括殉情带走的)
   // 标准规则:猎人被女巫毒杀不能开枪,只有被狼杀/殉情/自爆才能开枪
-  const witchPoisoned = state.players.find(p => p.role === 'witch')?.privateMemory.witchPoisonedId ?? null;
-  const hunterDead = dead.find(id => state.players[id].role === 'hunter' && id !== witchPoisoned);
+  const hunterDead = dead.find(id => canHunterShoot(state, id));
   // 12 人局第一天(没有警长时)→ 警长竞选
   // P0-#1 修复:不再有 sheriff-pick-order 阶段(警长在 sheriff-election 结束时直接走默认 cw 顺序)
   // P0-#3 修复:isSheriff 在死亡时已被 killPlayers / applyWolfSelfDestruct / applyKnightDuel 清掉
@@ -4310,26 +4657,41 @@ function DayDiscuss({ state, setState, lang, aiSpeak, onExit }: {
     aiSpeak(cur.id, sys, usr, false, { temperature: temp }).then(({ speech }) => {
       clearTimeout(timeoutId);
       // P25+:真预言家的发言强制校正 —— LLM 经常幻觉把狼说成好人(或反过来)
-      // 校正策略:把发言里所有"X 号是狼/好人"的描述,基于真实 seerChecks 改写
+      // P35 强化:放宽匹配,支持 "X号,结果是个狼人"/"X 号我验出来是好人"/"X号,他是狼" 等口语格式
       if (cur.role === 'seer' && (cur.privateMemory?.seerChecks ?? []).length > 0) {
         const realChecks = cur.privateMemory.seerChecks;
         let corrected = speech;
-        // 匹配 "X 号是 [狼/好人/wolf/good]" 的所有描述,按真实结果替换
+        // 1) 强匹配:"X 号是[狼/好人...]"
         corrected = corrected.replace(
-          /(\d{1,2})\s*号\s*(?:是|=|为|就是|就是|乃|系|就是)\s*(狼|好人|坏人|神职|民|村民|预言家|女巫|守卫|猎人|骑士|白痴|狼人|wolf|good|bad|god|villager)/gi,
+          /(\d{1,2})\s*号\s*[,。, ,是]?\s*(?:是|=|为|就是|乃|系|是个?|就是|属于)\s*个?\s*(狼|好人|坏人|神职|民|村民|预言家|女巫|守卫|猎人|骑士|白痴|狼人|wolf|good|bad|god|villager)/gi,
           (m, numStr, label) => {
             const num = parseInt(numStr, 10) - 1;
             const realCheck = realChecks.find(c => c.targetId === num);
             if (!realCheck) return m;  // 没验过,不替换
             const isWolfLabel = /狼|wolf/i.test(label);
-            // 如果声称的与实际不符,替换为正确标签
             if (realCheck.isWolf !== isWolfLabel) {
               return `${numStr} 号是${realCheck.isWolf ? '🐺 狼人' : '🛡️ 好人'}`;
             }
             return m;
           }
         );
-        // 如果校正后文本不同,覆盖
+        // 2) 弱匹配:任何"X 号"后跟狼/好人的片段(覆盖"查了 X 号,结果是个狼人"/"X号是匹狼")
+        //    仅在校正后还有残留标签时跑一次
+        if (/(?:狼|好人|狼人|wolf|good)/i.test(corrected)) {
+          corrected = corrected.replace(
+            /(\d{1,2})\s*号[^。！？\n]{0,30}?(狼|好人|狼人|wolf|good)/gi,
+            (m, numStr, label) => {
+              const num = parseInt(numStr, 10) - 1;
+              const realCheck = realChecks.find(c => c.targetId === num);
+              if (!realCheck) return m;
+              const isWolfLabel = /狼|wolf/i.test(label);
+              if (realCheck.isWolf !== isWolfLabel) {
+                return `${numStr} 号是${realCheck.isWolf ? '🐺 狼人' : '🛡️ 好人'}`;
+              }
+              return m;
+            }
+          );
+        }
         if (corrected !== speech) {
           console.warn(`[Werewolf] Seer speech hallucination corrected for player ${cur.id}`);
           speech = corrected;
@@ -4342,6 +4704,13 @@ function DayDiscuss({ state, setState, lang, aiSpeak, onExit }: {
       if (isRepeatedSpeech(speech, recentTexts, 0.75)) {
         console.warn(`[Werewolf] Player ${cur.id} repeated speech detected`);
         // 不强制重发(可能 LLM 就是没别的可说),但加一个 hint 给后续 prompt
+      }
+      // P35:空话检测 —— 发言里没有具体动作/引述/站队,打 warn 提醒
+      // 真网杀规则:有信息说信息,没信息弃票也行,但绝不能"水"
+      const hasAction = /(?:跟[^\n]{0,8}投|我站|我弃|我投|我是[^,。, ]{1,12}?|验了?\s*\d|查了?\s*\d|守了?\s*\d|毒了?\s*\d|救了?\s*\d)/i.test(speech);
+      const hasRef = /\d+\s*号\s*说|\d+\s*号\s*提|\d+\s*号\s*的?\s*查验|\d+\s*号\s*跳/i.test(speech);
+      if (!hasAction && !hasRef && speech.length > 20) {
+        console.warn(`[Werewolf] Player ${cur.id} generated empty/vague speech (no action, no reference): "${speech.slice(0, 60)}..."`);
       }
       // P1-#48 修复:AI 发言也检测 claim 关键字
       // 放宽正则:支持 "我是预"/"我验过"/"checked"/"3号位"/"3 是狼"/"3→狼" 等
@@ -4977,8 +5346,8 @@ function LastWords({ state, setState, lang, aiSpeak }: {
             return { ...s, phase: 'idiot-flip', pendingLastWords: [] };
           }
         }
-        // 其次看是否有猎人被本次白天死亡触发开枪
-        const hunterDied = deadIds.find(id => s.players[id]?.role === 'hunter');
+        // 其次看是否有猎人被本次白天死亡触发开枪(P35:过滤被毒死的猎人)
+        const hunterDied = deadIds.find(id => s.players[id]?.role === 'hunter' && canHunterShoot(s, id));
         if (hunterDied !== undefined) {
           return { ...s, phase: 'hunter-shoot', lastVotedOut: hunterDied, pendingLastWords: [] };
         }
@@ -6454,7 +6823,37 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
 
   // ─────────────────────────────────────────────
   // 2.5) P26:全局反八股约束(更自然)
+  // P35 强化:加实战范本(从中文网杀总结的真实风格)
   // ─────────────────────────────────────────────
+  // 网杀实战范本(给 LLM 模仿用 —— 不是让 LLM 复制,是让它学"密度感")
+  const realExamples = isZh
+    ? `\n【网杀实战范本 - 学这个密度和风格,不是抄内容】
+好预言家(信息密度高):"我是真预言家,昨晚验的 7 号是金水,7 号跟我对跳的话,7 是悍跳的狼。警徽给我,我带你们走。"
+狼悍跳(强压):"我才是预言家!6 号报的是 11 是狼,但 11 是我昨晚验的金水!6 号是悍跳的狼,大家先把 6 号票出去。"
+平民站边(具体):"我跟 3 号预言家,理由是 7 号跳的时间太晚,而且 7 号报的查验跟 6 号完全矛盾,悍跳无疑。"
+平民质疑(具体):"6 号,你说查了 11 是狼,但 11 第一天刚发完言你说没人报他是狼,这里你报的是 7 号跳预言家后你才说 11 是狼,逻辑链不对,我要听你解释。"
+狼装作平民(简短站队):"我跟 3 号,3 号是预言家,我听后置位查了 7 是好人,跟 3 号没冲突。"
+女巫公开(直接):"我是女巫,昨晚 7 号被狼杀,我用解药救了 7 号,毒药没用。"
+村民弃票:"我没信息,弃票。"
+【反例 - 严禁】
+❌ "大家早上好,我觉得今天要冷静分析一下,团结起来一起找出狼人"  ← 空话
+❌ "作为预言家,我的看法是..."  ← 套话开头
+❌ "6 号说他是预言家,我也觉得他说得有道理"  ← 复述别人
+❌ 整段都是反问句没结论  ← 没信息`
+    : `\n【Real werewolf online chat style - learn the density】
+Real seer: "I'm the real seer. Last night I checked #7, he's good. If #7 counter-claims me, then #7 is a wolf. Give me the badge, I'll lead you."
+Wolf counter-claim: "I'm the real seer! #6 said #11 is wolf, but I checked #11 last night and he's good! #6 is the counter-claim wolf, vote him first."
+Villager (specific stance): "I'm with #3 seer. Reason: #7 claimed too late, and #7's check directly contradicts #6 — obvious counter-claim."
+Villager (specific doubt): "#6, you said #11 is wolf. But #11 just spoke yesterday and you didn't flag him. Only after #7 claimed seer you suddenly say #11 is wolf. Explain."
+Wolf (pretending villager): "I'm with #3. #3 is the seer, I heard #7 checked good — no conflict with #3."
+Witch (direct): "I'm the witch. Last night #7 was attacked, I used antidote to save #7, no poison."
+No-info abstain: "I have no info, abstain."
+【Anti-patterns - FORBIDDEN】
+❌ "Good morning everyone, let's analyze calmly and unite"  ← empty
+❌ "As the seer, my view is..."  ← robotic opener
+❌ "#6 says he's seer, I also think..."  ← just repeats
+❌ All questions, no conclusion  ← no info`;
+
   const commonRules = isZh
     ? `\n【发言要像真人,不像机器人】
 - 不要复述别人刚说的话 —— 别人说过的内容你再说一遍就是废话
@@ -6463,7 +6862,9 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
 - 严禁只重复别人说过的观点 —— 要么补充新信息,要么反驳,要么换个角度
 - 不要解释规则,不要"作为预言家,我的看法是"这种套话,直接开口
 - 不要 JSON 包装,30-100 字口语化(像微信群)
-- 可以用语气词("嗯""啧""说实话")让你的发言更像人`
+- 可以用语气词("嗯""啧""说实话")让你的发言更像人
+- 发言必须包含**具体行动或观点** —— 要么站队(我跟 X)、要么报查验、要么反驳、要么给投票建议、要么弃票解释
+- 信息密度 ≥ 1 个具体动作/理由/引述每 30 字${realExamples}`
     : `\n【Speak like a real person, not a robot】
 - Don't repeat what others just said — that wastes your turn
 - If "recent speeches" is provided, MUST reference at least 1 (e.g. "X said...")
@@ -6471,7 +6872,9 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
 - NO repeating others' points — either add new info, refute, or change angle
 - Don't explain rules, don't say "as the seer, my view is" — just open your mouth
 - No JSON, 30-100 words casual chat
-- Use filler words like "well", "honestly" to feel more human`;
+- Use filler words like "well", "honestly" to feel more human
+- Speech MUST contain concrete action/opinion — stance ("I'm with X"), check, refutation, vote proposal, or abstain reason
+- Info density ≥ 1 specific action/reason/quote per 30 words${realExamples}`;
 
   // ─────────────────────────────────────────────
   // 3) 拼装
