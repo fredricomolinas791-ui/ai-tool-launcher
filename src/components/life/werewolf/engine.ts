@@ -602,50 +602,6 @@ export function sheriffVoteWeight(state: GameState, voterId: number): number {
 }
 
 /* ─────────────────────────────────────────────
-   按警长选的发言顺序,计算 alivePlayers 的发言序列
-   ── direction: 'cw' 顺时针,'ccw' 逆时针
-   ── startFromDeathId: 非空 = 从该死者左/右开始(基于其位置)
-   ─────────────────────────────────────────── */
-export function orderedSpeakers(
-  state: GameState,
-  alivePlayers: Player[],
-  direction: 'cw' | 'ccw',
-  startFromDeathId: number | null,
-): Player[] {
-  if (alivePlayers.length === 0) return [];
-  const totalSeats = state.players.length;
-  // 以 id 升序作为座位顺序
-  // 起点:若 startFromDeathId 有效,从该死亡位置 +1 (cw) 或 -1 (ccw) 开始
-  let startId: number;
-  if (startFromDeathId !== null && state.players[startFromDeathId]) {
-    startId = direction === 'cw'
-      ? (startFromDeathId + 1) % totalSeats
-      : (startFromDeathId - 1 + totalSeats) % totalSeats;
-  } else {
-    // 用警长本人为锚点
-    const sheriff = alivePlayers.find(p => p.privateMemory.isSheriff);
-    if (!sheriff) {
-      // 无警长 → 退回到座位顺序
-      return [...alivePlayers].sort((a, b) => a.id - b.id);
-    }
-    startId = direction === 'cw'
-      ? (sheriff.id + 1) % totalSeats
-      : (sheriff.id - 1 + totalSeats) % totalSeats;
-  }
-  // 沿着方向走,收集还活着的
-  const result: Player[] = [];
-  const aliveSet = new Set(alivePlayers.map(p => p.id));
-  let cur = startId;
-  for (let i = 0; i < totalSeats; i++) {
-    if (aliveSet.has(cur)) {
-      result.push(state.players[cur]);
-    }
-    cur = direction === 'cw' ? (cur + 1) % totalSeats : (cur - 1 + totalSeats) % totalSeats;
-  }
-  return result;
-}
-
-/* ─────────────────────────────────────────────
    同守同救检测
    ── 标准规则:守卫+女巫解药同时作用于同一人 → 抵消,该人仍死
    ── 返回值:{ cancelled: true } 表示「抵消了」
@@ -659,24 +615,6 @@ export function sameGuardAntidote(state: GameState, wolfTarget: number): boolean
   return guard.privateMemory.guardLastTargetId === wolfTarget
       && witch.privateMemory.witchAntidoteUsed
       && witch.privateMemory.witchSavedId === wolfTarget;
-}
-
-/* ─────────────────────────────────────────────
-   警长继承 —— 警长被放逐/殉情/狼杀时,在死前指定一个存活玩家继承
-   ── 简化版:如果警长死亡,系统自动随机指定一个非警长玩家继承
-   ── 留作 helper,正式接入需在前端做「指定继承人 UI」
-   ───────────────────────────────────────────── */
-export function applySheriffSuccession(s: GameState, successorId: number): GameState {
-  return {
-    ...s,
-    players: s.players.map(p => p.id === successorId
-      ? { ...p, privateMemory: { ...p.privateMemory, isSheriff: true } }
-      : { ...p, privateMemory: { ...p.privateMemory, isSheriff: false } }),
-    publicLog: [...s.publicLog, {
-      kind: 'system' as const, day: s.round,
-      text: `⭐ ${s.players[successorId].name} 继承警长(1.5 票投票权)`,
-    }],
-  };
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -810,20 +748,6 @@ export function aggregateWolfVotes(state: GameState, wolfIds: number[], votes: n
   // 无严格多数:在所有被选过的目标里随机选一个击杀
   const allVotedTargets = Object.keys(tally).map(k => parseInt(k, 10));
   return allVotedTargets[Math.floor(Math.random() * allVotedTargets.length)];
-}
-
-/* 保留旧签名兼容(返回 null 用于兜底) —— 实际调用都改用新签名 */
-export function aggregateWolfVotesLegacy(votes: number[]): number | null {
-  const validVotes = votes.filter(v => v !== null && v !== undefined && v > 0);
-  if (validVotes.length === 0) return null;
-  const tally: Record<number, number> = {};
-  validVotes.forEach(v => { tally[v] = (tally[v] || 0) + 1; });
-  const maxVotes = Math.max(...Object.values(tally));
-  const topCandidates = Object.entries(tally)
-    .filter(([_, c]) => c === maxVotes)
-    .map(([id]) => parseInt(id, 10));
-  if (topCandidates.length === 1) return topCandidates[0];
-  return topCandidates[Math.floor(Math.random() * topCandidates.length)];
 }
 
 /* ─────────────────────────────────────────────

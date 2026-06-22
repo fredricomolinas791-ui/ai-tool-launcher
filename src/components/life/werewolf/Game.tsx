@@ -3079,6 +3079,21 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
         }
         // 把发言记入 state.speeches(占位或真发言都要记)
         const newSpeechRecord = { playerId: speakerId, day: s.round, text: speech, phase: 'sheriff-speech' as const };
+        // P34 修复(用户反馈"6 号玩家重复发言"):去重 —— 如果最新一条发言
+        // 是同一玩家 + 同一内容,跳过 push(防御 React StrictMode 双跑 / 异步 race)
+        const lastSpeech = s.speeches[s.speeches.length - 1];
+        if (lastSpeech
+            && lastSpeech.playerId === speakerId
+            && lastSpeech.text === speech
+            && lastSpeech.day === s.round) {
+          // 已经是同一条发言 → 仍然推进 speechIdx(避免卡死),但不重复 push
+          const newIdx = cur.speechIdx + 1;
+          const totalCands = cur.registeredIds.filter(id => !cur.withdrawnIds.includes(id)).length;
+          if (newIdx >= totalCands) {
+            setStep('withdraw');
+          }
+          return { ...s, sheriffElection: { ...cur, speechIdx: newIdx }, claims: newClaims };
+        }
         const newIdx = cur.speechIdx + 1;
         const totalCands = cur.registeredIds.filter(id => !cur.withdrawnIds.includes(id)).length;
         if (newIdx >= totalCands) {
@@ -3090,7 +3105,8 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
     }
 
     // AI 真实返回 → 用真发言 + 清掉超时
-    aiSpeak(speaker.id, sys, usr).then(({ speech }) => {
+    // P34 修复(用户反馈"6 号玩家重复发言"):silent=true,避免 aiSpeak 内部 push + advanceSpeech 内部 push 双重写入
+    aiSpeak(speaker.id, sys, usr, true).then(({ speech }) => {
       if (timeoutFired) return;  // 已经超时走兜底了,不再覆盖
       window.clearTimeout(timeoutId);
       advanceSpeech(currentSpeakerId, speech);
