@@ -4951,11 +4951,12 @@ function LastWords({ state, setState, lang, aiSpeak }: {
     if (curPlayer.id === state.userId) {
       // 用户遗言阶段:跳过 AI useEffect,等用户点"说完"按钮
       // P25:用户死了 → DeadSpectator 应该接管,这里不应该再 return 卡死
-      // 加超时:如果用户死了 / 没操作,30s 后自动 next
+      // P31 修复:之前直接 setLwIdx(i+1) 会绕过 next() 里 "lwIdx+1 >= length" 的判断,
+      //  导致 deadIds 走完后永远卡在 last-words。改为调用 next(),由它决定是推进还是结算。
       if (!state.players[state.userId]?.alive) {
         const tid = window.setTimeout(() => {
           setBusy(false);
-          setLwIdx(i => i + 1);
+          next();
         }, 100);
         return () => clearTimeout(tid);
       }
@@ -5332,6 +5333,8 @@ function PKVote({ state, setState, lang, aiSpeak }: {
     for (const p of alivePlayers) {
       if (p.id === state.userId) continue;
       if (!canVote(p)) continue;  // 修复:翻牌白痴不投票
+      // P31 修复(用户反馈):平票上 PK 的玩家没有投票权(只能被投,不能投别人)
+      if (tiedIds.includes(p.id)) continue;
       // 只能投平票玩家之一
       const sys = lang === 'zh'
         ? `你是"${p.name}",PK 后再投一次,只能投这几个人之一:${tiedIds.map(id => `${id+1}号 ${state.players[id].name}`).join('、')}\n请用 JSON 输出:{"target":投票给某人的座位号(1-based)}`
@@ -5411,6 +5414,15 @@ function PKVote({ state, setState, lang, aiSpeak }: {
       </h3>
       {busy ? (
         <p className="text-sm text-center py-3" style={{ color: 'var(--color-text-muted)' }}>{lang === 'zh' ? 'AI 玩家 PK 投票中…' : 'AI PK voting…'}</p>
+      ) : tiedIds.includes(state.userId) ? (
+        // P31 修复(用户反馈):平票上 PK 的玩家没有投票权,显示提示并禁用按钮
+        <div className="text-center py-3">
+          <p className="text-sm mb-1" style={{ color: '#f97316' }}>{lang === 'zh' ? '⚠️ 你上了 PK,没有投票权' : '⚠️ You are on PK, no voting right'}</p>
+          <p className="text-xs mb-3" style={{ color: 'var(--color-text-muted)' }}>{lang === 'zh' ? '等其他玩家投完看结果' : 'Wait for others to vote'}</p>
+          <Button onClick={finalize}>
+            {lang === 'zh' ? '跳过 / 看结果' : 'Skip / View Result'} <ChevronRight size={14} className="ml-1" />
+          </Button>
+        </div>
       ) : (
         <>
           <p className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>{lang === 'zh' ? `只能投平票玩家之一(${tiedIds.map(id => `${id+1}号`).join('、')}):` : `Vote among: ${tiedIds.map(id => `${id+1}`).join(', ')}`}</p>
