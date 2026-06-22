@@ -3245,13 +3245,14 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
         ? `(AI 超时未响应,请等待系统强制)`
         : `(AI timed out, system advancing)`);
     }, 30000);
-    // P35 兜底:如果 useEffect 跑了但没触发 aiSpeak(比如 speaker 找不到),定时器也保底推进
+    // P41 修复:5s safetyNet 太激进, AI 网络慢时(4-10s 返回)会被误判卡死
+    // 改成 25s (比 30s 主超时略短), 让主超时接管; 同时只在 lastProcessedSpeakerRef 仍是当前 ID 时才触发
     const safetyNetId = window.setTimeout(() => {
-      if (lastProcessedSpeakerRef.current === currentSpeakerId) {
-        console.warn(`[SheriffElection] safety-net: 5s 内没推进,强制 advance`);
-        advanceSpeech(currentSpeakerId, '(AI 跳过)');
+      if (!timeoutFired && lastProcessedSpeakerRef.current === currentSpeakerId) {
+        console.warn(`[SheriffElection] safety-net: 25s 内没推进,触发 advance (AI 网络可能慢)`);
+        advanceSpeech(currentSpeakerId, lang === 'zh' ? '(AI 网络慢,系统占位)' : '(AI slow, system placeholder)');
       }
-    }, 5000);
+    }, 25000);
 
     function advanceSpeech(speakerId: number, speech: string) {
       setBusy(false);
@@ -3560,7 +3561,9 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
 
   /* 用户确认投票 → 统计 → 判定胜负或平票 PK */
   const confirmVote = () => {
-    if (!isSpectator && userVote === null) return;
+    // P41:候选人不投票 → userVote===null 时,如果用户是 candidate 也允许走(等于弃权)
+    const userIsCand = candidates.includes(state.userId);
+    if (!isSpectator && userVote === null && !userIsCand) return;
     const targetPool = step === 'pk-vote' && tiedIds ? tiedIds : candidates;
     // 收集所有票(AI + 用户)
     const allVotes: { voterId: number; targetId: number }[] = [];
@@ -3819,6 +3822,9 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
     const poolLabel = step === 'pk-vote'
       ? (lang === 'zh' ? 'PK 投票(从平票者中选 1):' : 'PK Vote (pick 1 from tied):')
       : (lang === 'zh' ? '你投票给:' : 'You vote for:');
+    // P41 修复(用户反馈"我都上警了我为啥还能投警徽票"):
+    // 警长竞选规则:候选人**不能投票**——只有没上警的玩家才有投票权
+    const userIsCandidate = candidates.includes(state.userId);
     return (
       <div className="p-4 rounded-xl" style={{ background: 'var(--color-card-bg)', border: '1px solid #facc15' }}>
         <h3 className="font-semibold mb-2 flex items-center gap-1.5 justify-center" style={{ color: '#facc15' }}>
@@ -3826,6 +3832,23 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
         </h3>
         {busy ? (
           <p className="text-sm text-center py-3" style={{ color: 'var(--color-text-muted)' }}>{lang === 'zh' ? 'AI 正在投票…' : 'AI voting…'}</p>
+        ) : userIsCandidate ? (
+          // P41:候选人不投票
+          <>
+            <p className="text-xs text-center mb-3 py-3" style={{ color: 'var(--color-text-muted)' }}>
+              {lang === 'zh' ? '⭐ 你是候选人,不参与投票。等待其他玩家投完…' : '⭐ You are a candidate and cannot vote. Waiting for others…'}
+            </p>
+            <div className="text-center mt-3">
+              <Button onClick={() => {
+                // 候选人直接跳过投票(用 null 表示弃权/无票),走 AI 兜底逻辑
+                setUserVote(null);
+                // 触发 confirmVote,但 userVote === null → confirmVote 内会跳过 user 票
+                confirmVote();
+              }}>
+                {lang === 'zh' ? '⏭️ 跳过(让 AI 完成投票)' : '⏭️ Skip (let AI finish voting)'} <ChevronRight size={14} className="ml-1" />
+              </Button>
+            </div>
+          </>
         ) : (
           <>
             <p className="text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>{poolLabel}</p>
