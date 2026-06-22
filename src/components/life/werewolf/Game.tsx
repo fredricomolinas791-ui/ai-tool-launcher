@@ -5435,9 +5435,11 @@ function LastWords({ state, setState, lang, aiSpeak }: {
   aiSpeak: (id: number, sys: string, usr: string, silent?: boolean, options?: { temperature?: number; maxTokens?: number }) => Promise<{ speech: string; target: number | null }>;
 }) {
   // 优先用 pendingLastWords(明确按死亡顺序);空则降级到 deadThisNight(向后兼容)
+  // P42 修复(用户反馈"我都留遗言了为啥还是活着的"):必须过滤 alive === false,
+  // 否则 pendingLastWords 里残留的活人 ID 会让活人"留遗言"(UI 错乱)
   const deadIds = state.pendingLastWords.length > 0
-    ? state.pendingLastWords.filter(id => state.players[id])
-    : [...state.deadThisNight].filter(id => state.players[id]);
+    ? state.pendingLastWords.filter(id => state.players[id] && !state.players[id].alive)
+    : [...state.deadThisNight].filter(id => state.players[id] && !state.players[id].alive);
   const [lwIdx, setLwIdx] = useState(0);
   const [busy, setBusy] = useState(false);
   const [userInput, setUserInput] = useState('');
@@ -5537,6 +5539,11 @@ function LastWords({ state, setState, lang, aiSpeak }: {
 
   const submitUser = () => {
     if (!curPlayer) return;
+    // P42:用户必须真的死了才能留遗言(防止 UI 错乱)
+    if (state.players[state.userId]?.alive) {
+      console.warn(`[Werewolf] User ${state.userId} tried to submit last words but is alive`);
+      return;
+    }
     const text = userInput.trim() || (lang === 'zh' ? '(我暂时没有想说的)' : '(I have nothing to say)');
     setState(s => ({
       ...s,
