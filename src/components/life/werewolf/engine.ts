@@ -634,6 +634,10 @@ export function applyWolfSelfDestruct(s: GameState, wolfId: number, _lang: 'zh' 
   // 3) 检查是否有猎人(包括殉情带走的)
   const newlyDead = [wolfId, ...chained];
   const hunterDead = newlyDead.find(id => s.players[id].role === 'hunter');
+  // 注释:狼王自爆**不能**带人(主流规则:自爆的狼王不发动技能)
+  // 跟"被投票放逐的狼王"不同 — 后者由 VoteResults.proceed 走 wolfking-pick 阶段
+  // 这里 phase 永远不会是 'wolfking-pick',所以 WolfKingPick 组件不会被错误激活
+  // lastVotedOut 字段只用作"白天有人死"标记(被 LastWords.next() 读),不会触发 wolfking-pick
   return {
     ...afterLovers,
     players: updated,
@@ -642,7 +646,7 @@ export function applyWolfSelfDestruct(s: GameState, wolfId: number, _lang: 'zh' 
       text: `💥 ${s.players[wolfId].name} 狼人自爆!立即进入夜晚`,
     }],
     deadThisDay: wolfId,
-    lastVotedOut: wolfId,  // P2-#D:让狼走 last-words 阶段
+    lastVotedOut: wolfId,  // P2-#D:让狼走 last-words 阶段(自爆狼王不带人,见上面注释)
     pendingLastWords: [wolfId, ...(afterLovers.pendingLastWords ?? [])],
     // 有猎人被殉情链带走 → 先开枪;否则走 last-words(让狼留遗言)再进 night
     phase: hunterDead !== undefined ? 'hunter-shoot' : 'last-words',

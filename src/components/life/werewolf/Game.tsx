@@ -2573,6 +2573,10 @@ function applyNightAction(
     case 'witch': return s;
     case 'guard': {
       if (target === null) return s;
+      // P0 修复:守卫不能连续 2 夜守同一人(主流"不能连守"硬规则)
+      // 项目本地化:可以守自己,所以不阻断 target === actorId(见 memory werewolf-rule-guard-can-self-guard)
+      const prevGuardTarget = players[actorId]?.privateMemory.guardLastTargetId ?? null;
+      if (prevGuardTarget !== null && target === prevGuardTarget) return s;
       return {
         ...s,
         players: players.map((p, i) => i === actorId
