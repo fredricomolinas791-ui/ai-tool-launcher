@@ -111,10 +111,20 @@ const listeners = new Set<() => void>();
 
 function emit() { listeners.forEach((l) => l()); }
 
+/* P0 Bug 1 修复:模块顶层 loadKeys() 在 init 时读 localStorage,如果用户当时未配 key,
+   _keys = {} 永久锁定。即使后续 setItem / addInitScript 注入都无效。
+   修复:每次 getActiveKey()/getKeys() 调用前都重新读 localStorage(保证新注入的 key 能生效)。
+   性能损耗可忽略(loadKeys 仅 ~100 行 JSON.parse)。 */
+function refreshIfStale() {
+  // 每次调用都重读 (优化:可加 debounce, 但 game 模块高频调用不值得)
+  const fresh = loadKeys();
+  _keys = fresh;
+}
+
 export const aiStore = {
-  getKeys: () => _keys,
+  getKeys: () => { refreshIfStale(); return _keys; },
   getActiveProvider: () => _activeProvider,
-  getActiveKey: (): KeyConfig | null => _keys[_activeProvider] || null,
+  getActiveKey: (): KeyConfig | null => { refreshIfStale(); return _keys[_activeProvider] || null; },
   setKey: (provider: Provider, cfg: Omit<KeyConfig, 'provider'>) => {
     _keys = { ..._keys, [provider]: { ...cfg, provider } };
     saveKeys(_keys);

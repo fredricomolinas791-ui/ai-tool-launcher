@@ -394,12 +394,15 @@ function BoardSelect({ lang, noKey, onStart }: {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
           {BOARD_LIST.map(b => {
             const isPlayable = b.variant !== 'coming-soon';
+            // P0 Bug 3 修复:即使 noKey=true 也允许点击 board → 进入后 GameRunner 的 NoKeyWarn 会接管
+            // (原逻辑 disabled={!isPlayable || noKey} 让 board 卡永远点不动,玩家根本进不去)
+            // 同时把 noKey 状态作为 warning 提示,让用户明确知道配 key 才能正常玩
             return (
               <BoardCard key={b.id} board={b} lang={lang}
-                disabled={!isPlayable || noKey}
+                disabled={!isPlayable}
                 disabledReason={!isPlayable
                   ? (lang === 'zh' ? '该板子暂存中(P1-#22 暂存 4 个特殊板子),先玩 9 人预女猎 / 12 人预女猎白' : 'Parked (P1-#22: 4 special boards), try 9P 预女猎 / 12P 预女猎白')
-                  : undefined}
+                  : (noKey ? (lang === 'zh' ? '⚠️ 未配置 API Key(将进入 NoKeyWarn)' : '⚠️ No API key (will hit NoKeyWarn)') : undefined)}
                 onSelect={() => onStart(b.id, spectatorMode)} />
             );
           })}
@@ -6906,8 +6909,14 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
   const contextParts: string[] = [];
   // 之前发言(今天 + 昨天) —— P4-#A:扩到 10 条,含 ID 前缀,便于 AI 引用
   // P27:同时显示自己之前发过的(避免重复)+ 其他活人的发言
+  // P4-B 修复:跨日引用 —— 也要包含前 1-2 轮的发言(让 AI 能引用"昨天 X 号说..."这种跨日观点)
   const todayStart = state.speeches.findIndex(s => s.day === state.round);
   const recentSpeeches = state.speeches.slice(Math.max(0, todayStart - 8), todayStart);
+  // 跨日发言(昨天):round - 1 天的全部(但今天已经发过的不要重复)
+  const yesterdayStart = state.speeches.findIndex(s => s.day === state.round - 1);
+  const yesterdaySpeeches = yesterdayStart >= 0
+    ? state.speeches.slice(yesterdayStart, todayStart >= 0 ? todayStart : state.speeches.length)
+    : [];
   const myPrevSpeeches = state.speeches.filter(sp => sp.playerId === actor.id);
   if (myPrevSpeeches.length > 0) {
     const myLines = myPrevSpeeches.slice(-3).map(sp =>
@@ -6927,6 +6936,19 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
       contextParts.push(isZh
         ? `【近期发言摘要(必看,发言时引用具体编号和观点)】\n${lines.join('\n')}`
         : `【Recent speeches (must reference specific IDs/arguments)】\n${lines.join('\n')}`);
+    }
+  }
+  // P4-B:跨日发言块 —— 显示前 1-2 轮的关键发言(让 AI 能引用"昨天 X 号说...")
+  if (yesterdaySpeeches.length > 0) {
+    const yLines = yesterdaySpeeches.slice(-6).map(sp => {
+      const p = state.players[sp.playerId];
+      if (!p || !p.alive) return null;
+      return `${p.id + 1}号 ${p.name} (第${sp.day}天): ${sp.text.slice(0, 60)}${sp.text.length > 60 ? '…' : ''}`;
+    }).filter(Boolean);
+    if (yLines.length) {
+      contextParts.push(isZh
+        ? `【昨天发言摘要 - 可引用"昨天 X 号说..."】\n${yLines.join('\n')}`
+        : `【Yesterday's speeches (can reference "X said yesterday...")】\n${yLines.join('\n')}`);
     }
   }
   // 今日身份声明(本轮)
@@ -7076,22 +7098,50 @@ function normalizeSpeechFormat(text: string): string {
 }
 
 function buildVotePrompt(actor: Player, state: GameState, lang: 'zh' | 'en'): string {
+  const isZh = lang === 'zh';
   const alive = state.players.filter(x => x.alive).filter(x => x.id !== actor.id).map(x => `${x.name}`).join('、');
   let extra = '';
   // P23:wolfTeammates 用可选链 + 兜底
   const wolfMates = actor.privateMemory?.wolfTeammates ?? [];
   if (actor.faction === 'wolf' && wolfMates.length) {
     const mates = wolfMates.map(id => `${state.players[id]?.name ?? '?'}`).join('、');
-    extra = lang === 'zh' ? `\n🐺 你是狼,队友:${mates}。要保护队友,把票投给一个好人(最好是发言最像神职的)。` : `\n🐺 You're a wolf. Pack: ${mates}. Protect them, vote for a good player.`;
+    extra = isZh ? `\n🐺 你是狼,队友:${mates}。要保护队友,把票投给一个好人(最好是发言最像神职的)。` : `\n🐺 You're a wolf. Pack: ${mates}. Protect them, vote for a good player.`;
   }
   const seerChecksList = actor.privateMemory?.seerChecks ?? [];
   if (actor.role === 'seer' && seerChecksList.length) {
     const last = seerChecksList[seerChecksList.length - 1];
-    extra = lang === 'zh' ? `\n🔮 你最近验的人:${last.targetId + 1}号 → ${last.isWolf ? '狼' : '好人'}。投票给狼。` : `\n🔮 Your last check: ${last.targetId + 1} → ${last.isWolf ? 'wolf' : 'good'}. Vote them.`;
+    extra = isZh ? `\n🔮 你最近验的人:${last.targetId + 1}号 → ${last.isWolf ? '狼' : '好人'}。投票给狼。` : `\n🔮 Your last check: ${last.targetId + 1} → ${last.isWolf ? 'wolf' : 'good'}. Vote them.`;
   }
-  return lang === 'zh'
-    ? `你是"${actor.name}"(第${actor.id + 1}号),身份:${ROLES[actor.role].name.zh}\n存活玩家(除你):${alive}${extra}\n\n现在投票放逐,你选一个人。\n\n输出 JSON:{"target":投票给某人的座位号(1-based)}`
-    : `You are "${actor.name}" (#${actor.id + 1}), role: ${ROLES[actor.role].name.en}\nAlive (excluding you): ${alive}${extra}\n\nVote to exile.\n\nOutput JSON: {"target":target seat (1-based)}`;
+  // P4-A 修复:投票也要引用今日具体发言 + 站边情况,不然 AI 投票太分散
+  const todayStart = state.speeches.findIndex(s => s.day === state.round);
+  const todaySpeeches = state.speeches.slice(todayStart).filter(sp => sp.playerId !== actor.id);
+  // 跳预言家 + 站边集中度(被站边最多的人是狼王/悍跳概率最高)
+  const seerClaimsToday = state.claims?.[state.round]?.seerClaims ?? [];
+  let voteAnchor = '';
+  if (todaySpeeches.length > 0) {
+    const lines = todaySpeeches.slice(-8).map(sp => {
+      const p = state.players[sp.playerId];
+      if (!p || !p.alive) return null;
+      return `${p.id + 1}号 ${p.name}: ${sp.text.slice(0, 60)}${sp.text.length > 60 ? '…' : ''}`;
+    }).filter(Boolean);
+    if (lines.length) {
+      voteAnchor = isZh
+        ? `\n\n【今日发言摘要 - 投票时请考虑这些人的观点】\n${lines.join('\n')}`
+        : `\n\n【Today's speeches - consider these when voting】\n${lines.join('\n')}`;
+    }
+  }
+  if (seerClaimsToday.length > 0) {
+    const claimers = seerClaimsToday.map(c => `${c.playerId + 1}号`).join('、');
+    voteAnchor += isZh
+      ? `\n【今日跳预言家的人】${claimers} —— 他们的查验里指向的狼是强候选`
+      : `\n【Today's seer claimers】${claimers} — wolves their checks point to are strong candidates`;
+  }
+  const voteRules = isZh
+    ? `\n\n【投票规则】\n- 不要随机投,要参考今日发言 + 跳预言家的查验\n- 狼应该把票集中在同 1 个好人(装作跟预言家一致最隐蔽)\n- 预言家应投自己查出来的狼\n- 输出 JSON:{"target":投票给某人的座位号(1-based,弃权填 0)}`
+    : `\n\n【Voting rules】\n- Don't random-vote, reference today's speeches + seer claims\n- Wolves should concentrate votes on the same good target (pretend agreement with seer is safest)\n- Seer should vote wolves they've checked\n- Output JSON: {"target":target seat (1-based, 0 to abstain)}`;
+  return isZh
+    ? `你是"${actor.name}"(第${actor.id + 1}号),身份:${ROLES[actor.role].name.zh}\n存活玩家(除你):${alive}${extra}${voteAnchor}${voteRules}`
+    : `You are "${actor.name}" (#${actor.id + 1}), role: ${ROLES[actor.role].name.en}\nAlive (excluding you): ${alive}${extra}${voteAnchor}${voteRules}`;
 }
 
 /* ═══════════════════════════════════════════════════════════════════

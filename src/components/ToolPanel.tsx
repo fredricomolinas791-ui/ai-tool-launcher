@@ -31,7 +31,10 @@ export function ToolPanel({ open, onClose, title, subtitle, icon: Icon, children
         backdropFilter: 'blur(4px)',
         animation: 'backdropIn 0.2s ease',
       }}
-      onClick={onClose}
+      /* P0 Bug 2 修复:背景点击关闭 — 必须 e.target === e.currentTarget 才算点背景。
+         之前任何子元素没 stopPropagation 到位时会冒泡关闭。
+         现在只有在用户真的点到 backdrop(没点到内容)时才关闭。 */
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
