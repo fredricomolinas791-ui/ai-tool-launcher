@@ -2706,6 +2706,16 @@ function resolveNight(s: GameState, _lang: 'zh' | 'en'): GameState {
         kind: 'system' as const, day: s.round,
         text: `🌙 第 1 夜结算延后,等待警徽竞选落地后公布`,
       }],
+      // P1 增强:延后结算的本夜也记录到 nightlyLog(便于日志导出)
+      nightlyLog: [...(s.nightlyLog ?? []), {
+        night: s.round,
+        wolfTarget: s.deadThisNight[0] ?? null,
+        guardTarget,
+        seerChecks: s.players.filter(p => p.role === 'seer').flatMap(p => (p.privateMemory?.seerChecks ?? []).filter(c => c.night === s.round).map(c => ({ seerId: p.id, targetId: c.targetId, isWolf: c.isWolf }))),
+        witchActions: s.players.filter(p => p.role === 'witch').map(p => ({ witchId: p.id, savedId: p.privateMemory?.witchSavedId ?? null, poisonedId: p.privateMemory?.witchPoisonedId ?? null })),
+        deaths: deadList,
+        sameGuardAntidote,
+      }],
       phase: 'sheriff-election',
     };
   }
@@ -2717,6 +2727,16 @@ function resolveNight(s: GameState, _lang: 'zh' | 'en'): GameState {
       kind: 'death' as const, day: s.round, playerId: id,
       text: `${s.players[id].name} 在夜里倒下了`,
     }))],
+    // P1 增强:本夜完整行动记录追加到 nightlyLog
+    nightlyLog: [...(s.nightlyLog ?? []), {
+      night: s.round,
+      wolfTarget: s.deadThisNight[0] ?? null,
+      guardTarget,
+      seerChecks: s.players.filter(p => p.role === 'seer').flatMap(p => (p.privateMemory?.seerChecks ?? []).filter(c => c.night === s.round).map(c => ({ seerId: p.id, targetId: c.targetId, isWolf: c.isWolf }))),
+      witchActions: s.players.filter(p => p.role === 'witch').map(p => ({ witchId: p.id, savedId: p.privateMemory?.witchSavedId ?? null, poisonedId: p.privateMemory?.witchPoisonedId ?? null })),
+      deaths: deadList,
+      sameGuardAntidote,
+    }],
     // 首夜:有遗言 → 进 last-words 阶段;非首夜:无遗言 → 直接 day-announce
     pendingLastWords: isFirstNight ? deadList : [],
     phase: (deadList.length > 0 && isFirstNight) ? 'last-words' : 'day-announce',
@@ -6674,14 +6694,26 @@ function formatGameLog(state: GameState, lang: 'zh' | 'en'): string {
   for (let day = 1; day <= state.round; day++) {
     const daySpeeches = state.speeches.filter(s => s.day === day);
     if (daySpeeches.length === 0) continue;
-    lines.push(`  ${L('--- 第', '--- Day ')}${day}${L('天 ---', ' ---')}`);
-    for (const sp of daySpeeches) {
-      const phase = sp.phase === 'night' ? L('夜', 'night')
-                   : sp.phase === 'pk' ? 'PK'
-                   : sp.phase === 'last-words' ? L('遗言', 'last-words')
-                   : sp.phase === 'sheriff-speech' ? L('警长竞选', 'sheriff')
-                   : L('白天', 'day');
-      lines.push(`  [${phase}] ${sp.playerId + 1}.${state.players[sp.playerId].name}: ${sp.text}`);
+    lines.push(`  ${L('━━━ 第', '━━━ Day ')}${day}${L('天 ━━━', ' ━━━')}`);
+    // 按 phase 分组 + 序号(让用户能清晰看到警上/警下/遗言的发言顺序)
+    const phases = [
+      { key: 'sheriff-speech', label: L('⭐ 警上(警长竞选)', '⭐ Sheriff Election') },
+      { key: 'day', label: L('🗣️ 警下(白天讨论)', '🗣️ Day Discussion') },
+      { key: 'pk', label: L('⚔️ PK 发言', '⚔️ PK Speech') },
+      { key: 'last-words', label: L('🕯️ 遗言', '🕯️ Last Words') },
+      { key: 'night', label: L('🌙 夜间', '🌙 Night') },
+    ];
+    for (const ph of phases) {
+      const phSpeeches = daySpeeches.filter(s => (s.phase || 'day') === ph.key);
+      if (phSpeeches.length === 0) continue;
+      lines.push(`  ${L('▼', '▼')} ${ph.label} (${phSpeeches.length}${L(' 条', ' entries')})`);
+      phSpeeches.forEach((sp, idx) => {
+        const player = state.players[sp.playerId];
+        const playerName = player?.name || '?';
+        const playerNum = sp.playerId + 1;
+        const isSheriff = player?.privateMemory?.isSheriff ? ` ⭐${L('警长', 'sheriff')}` : '';
+        lines.push(`    [${idx + 1}/${phSpeeches.length}] ${playerNum}.${playerName}${isSheriff}: ${sp.text}`);
+      });
     }
   }
   lines.push('');
@@ -6776,6 +6808,105 @@ function formatOpsLog(state: GameState, lang: 'zh' | 'en'): string {
       lines.push(`  ${L('第', 'Day ')}${vh.round}${L('天: ', ': ')}${ex?.id !== undefined ? `${ex.id + 1}.${ex.name}` : '?'} ${L('被投出', 'exiled')} (${tallyStr})`);
     }
     lines.push('');
+  }
+
+  // P1 增强(用户反馈"日志不全"):每天白天投票明细 —— 谁投了谁
+  if (state.voteHistory && state.voteHistory.length > 0) {
+    lines.push(`── ${L('📋 每天投票明细(谁投了谁)', '📋 Daily Vote Details (who voted for whom)')} ──`);
+    for (const vh of state.voteHistory) {
+      lines.push(`  ${L('━━━ 第', '━━━ Day ')}${vh.round}${L('天 ━━━', ' ━━━')}`);
+      // 1) 每票单独列出(谁投了谁)
+      lines.push(`  ${L('【每票明细】', '【Each vote】')}`);
+      for (const v of vh.allVotes) {
+        const voter = state.players[v.voterId];
+        const target = state.players[v.targetId];
+        if (!voter || !target) continue;
+        // 检查警长归票(1.5 票)
+        const sheriffNote = voter.privateMemory?.isSheriff
+          ? (state.sheriffEndorsement === v.targetId ? ` ⭐警长归票(1.5票)` : ` ⭐警长`)
+          : '';
+        lines.push(`    ${voter.id + 1}.${voter.name} → ${target.id + 1}.${target.name}${sheriffNote}`);
+      }
+      // 2) 票数汇总
+      lines.push(`  ${L('【票数汇总】', '【Tally】')}`);
+      const sortedTally = Object.entries(vh.tally).sort((a, b) => (b[1] as number) - (a[1] as number));
+      for (const [tid, cnt] of sortedTally) {
+        const target = state.players[parseInt(tid, 10)];
+        if (!target) continue;
+        const isExiled = vh.exiled === parseInt(tid, 10);
+        lines.push(`    ${isExiled ? '🔴' : '  '} ${target.id + 1}.${target.name}: ${cnt}${L('票', '')}${isExiled ? ` ← ${L('被放逐', 'exiled')}` : ''}`);
+      }
+      // 3) PK 标记(从 tally 平票数判断)
+      const maxVotes = Math.max(...Object.values(vh.tally), 0);
+      const tiedCount = Object.values(vh.tally).filter(c => c === maxVotes).length;
+      if (tiedCount > 1) {
+        lines.push(`  ${L('⚖️ 本轮平票', '⚖️ Tie vote')} (${tiedCount}${L('人', ' players')}${L('平票,可能进入 PK', ' tied, may enter PK')})`);
+      }
+      // 4) 放逐结果
+      if (vh.exiled !== null) {
+        const ex = state.players[vh.exiled];
+        lines.push(`  ${L('🏆 放逐结果:', '🏆 Exile result:')} ${ex ? `${ex.id + 1}.${ex.name} (${ROLES[ex.role].name[lang]})` : '?'}`);
+      } else {
+        lines.push(`  ${L('🏆 无人被放逐(平安日)', '🏆 No exile (peaceful)')}`);
+      }
+      lines.push('');
+    }
+  }
+
+  // P1 增强(用户反馈"日志不全"):每夜行动完整详情
+  if (state.nightlyLog && state.nightlyLog.length > 0) {
+    lines.push(`── ${L('🌙 每夜行动完整详情', '🌙 Nightly Action Details')} ──`);
+    for (const nl of state.nightlyLog) {
+      lines.push(`  ${L('━━━ 第', '━━━ Night ')}${nl.night}${L('夜 ━━━', ' ━━━')}`);
+      // 1) 狼队目标
+      if (nl.wolfTarget !== null) {
+        const wt = state.players[nl.wolfTarget];
+        lines.push(`  ${L('🐺 狼队刀了', '🐺 Wolves targeted')} ${nl.wolfTarget + 1}.${wt?.name ?? '?'}`);
+      } else {
+        lines.push(`  ${L('🐺 狼队没杀人(异常,应该兜底选 1 个)', '🐺 Wolves didn\'t kill (unusual)')}`);
+      }
+      // 2) 守卫守人
+      if (nl.guardTarget !== null) {
+        const gt = state.players[nl.guardTarget];
+        lines.push(`  ${L('🛡️ 守卫守了', '🛡️ Guard protected')} ${nl.guardTarget + 1}.${gt?.name ?? '?'}`);
+      }
+      // 3) 预言家查验
+      if (nl.seerChecks.length > 0) {
+        for (const sc of nl.seerChecks) {
+          const seer = state.players[sc.seerId];
+          const target = state.players[sc.targetId];
+          if (!seer || !target) continue;
+          lines.push(`  ${L('🔮 预言家', '🔮 Seer')} ${seer.id + 1}.${seer.name} ${L('查验', 'checked')} ${target.id + 1}.${target.name} → ${sc.isWolf ? L('🐺狼人', '🐺wolf') : L('🛡️好人', '🛡️good')}`);
+        }
+      }
+      // 4) 女巫操作
+      for (const wa of nl.witchActions) {
+        const witch = state.players[wa.witchId];
+        if (!witch) continue;
+        if (wa.savedId !== null) {
+          const saved = state.players[wa.savedId];
+          lines.push(`  ${L('💊 女巫', '💊 Witch')} ${witch.id + 1}.${witch.name} ${L('解药救了', 'saved')} ${wa.savedId + 1}.${saved?.name ?? '?'}`);
+        }
+        if (wa.poisonedId !== null) {
+          const poisoned = state.players[wa.poisonedId];
+          lines.push(`  ${L('☠️ 女巫', '☠️ Witch')} ${witch.id + 1}.${witch.name} ${L('毒药杀了', 'poisoned')} ${wa.poisonedId + 1}.${poisoned?.name ?? '?'}`);
+        }
+        if (wa.savedId === null && wa.poisonedId === null) {
+          lines.push(`  ${L('💊 女巫', '💊 Witch')} ${witch.id + 1}.${witch.name} ${L('本夜没用药', 'no potions used')}`);
+        }
+      }
+      // 5) 同守同救判定
+      if (nl.sameGuardAntidote) {
+        lines.push(`  ⚖️ ${L('同守同救抵消!', 'Same guard+antidote cancelled!')} ${L('(守卫+女巫同时保护同一人 → 该人仍死)', '(guard+witch both protected same person → still dies)')}`);
+      }
+      // 6) 本夜最终死亡
+      if (nl.deaths.length > 0) {
+        lines.push(`  ${L('💀 本夜最终死亡', '💀 Final deaths')}: ${nl.deaths.map(id => `${id + 1}.${state.players[id]?.name ?? '?'}`).join(', ')}`);
+      } else {
+        lines.push(`  ${L('💀 本夜无人死亡(平安夜)', '💀 No deaths (peaceful night)')}`);
+      }
+      lines.push('');
+    }
   }
 
   // 死亡/技能记录(从 publicLog 提取 death)

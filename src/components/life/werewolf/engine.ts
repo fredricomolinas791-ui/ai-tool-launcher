@@ -213,6 +213,26 @@ export interface GameState {
    *  - 用户需求:"游戏开始可选择加入还是只看 AI 对局"
    */
   spectatorMode: boolean;
+  /**
+   * P1 增强(用户反馈"日志不全"):每夜行动详情 —— 用于详细日志导出
+   * 数组每个元素对应一夜的完整行动(狼刀/守卫守/预言家查/女巫用药/死亡结果)
+   * 累积,只在 resolveNight 时追加
+   */
+  nightlyLog: Array<{
+    night: number;
+    /** 狼队本夜最终目标(可被守卫/女巫解药抵消) */
+    wolfTarget: number | null;
+    /** 守卫本夜守的人 */
+    guardTarget: number | null;
+    /** 本夜预言家的查验(每人一条) */
+    seerChecks: Array<{ seerId: number; targetId: number; isWolf: boolean }>;
+    /** 本夜女巫的操作 */
+    witchActions: Array<{ witchId: number; savedId: number | null; poisonedId: number | null }>;
+    /** 本夜最终死亡的人(应用完守卫/女巫抵消后) */
+    deaths: number[];
+    /** 是否触发了"同守同救"(守卫+女巫同时保护同一目标 → 抵消) */
+    sameGuardAntidote: boolean;
+  }>;
 }
 
 export const defaultMemory = (): PrivateMemory => ({
@@ -293,6 +313,7 @@ export function initGame(boardId: BoardId, userName: string, lang: 'zh' | 'en' =
     lastWitchAction: null,
     deferredDeaths: [],
     spectatorMode,  // P16:全 AI 对局观看模式(true = 用户不参与,纯观看)
+    nightlyLog: [],  // P1 增强:每夜行动详情(导出日志用)
   };
 }
 
