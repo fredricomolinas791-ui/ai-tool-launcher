@@ -2460,13 +2460,19 @@ Output JSON: {"speech":"reasoning","useAntidote":true/false,"poisonTarget":targe
       return { target: fallback };
     }
   }
-  // P1-#C 修复:预言家首夜必验(用户规则)
-  // 之前 AI 预言家可能首夜不查验 → 警长竞选时无查验可报 → 警徽白给狼悍跳
-  // 现在首夜(seerChecks 空 + round=1)兜底:随机选一个非自己存活玩家
-  if (actor.role === 'seer' && state.round === 1 && (actor.privateMemory?.seerChecks ?? []).length === 0) {
-    const candidates = state.players.filter(p => p.alive && p.id !== actor.id);
-    if (candidates.length > 0) {
-      const fallback = candidates[Math.floor(Math.random() * candidates.length)].id;
+  // P1 修复(用户规则"预言家每夜必验不同玩家"):无论 AI 返回什么都强制兜底
+  // 之前只 round=1 兜底 → 后续夜次 AI 可能不主动查验 → 警长竞选后无新查验可报
+  // 现在:每夜都强制让 seer 验一个**没验过**的活人(避免重复),全验过则随机
+  if (actor.role === 'seer') {
+    const checkedIds = new Set((actor.privateMemory?.seerChecks ?? []).map(c => c.targetId));
+    const freshCandidates = state.players.filter(p =>
+      p.alive && p.id !== actor.id && !checkedIds.has(p.id)
+    );
+    const pool = freshCandidates.length > 0
+      ? freshCandidates
+      : state.players.filter(p => p.alive && p.id !== actor.id);  // 全验过则随机
+    if (pool.length > 0) {
+      const fallback = pool[Math.floor(Math.random() * pool.length)].id;
       return { target: fallback };
     }
   }
@@ -6911,27 +6917,28 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
   let suggestedTemp: number | undefined = undefined;
 
   if (actor.role === 'seer') {
-    // P1-#22 修复(用户反馈:预言家不上警不报查验,都说套话):
-    // 关键:seer 永远在 seer 块里,**不**依赖 seerChecks.length
-    // 之前用 `actor.role === 'seer' && seerChecks.length` 当 gate,
-    //   → seer 没 checks 时会 fall through 到村民块,prompt 撒谎说"你是村民"
-    // P23:用 ?? [] 兜底,防止 seerChecks 是 undefined
-    // P39:强化"严禁说谎" + 给报查验模板(LLM 幻觉的根源是没硬约束)
+    // P1 修复(用户规则"预言家每夜必验 + 白天必报"):
+    // seer 每夜必验一个**没验过**的活人(runAIAction 兜底保证),所以每轮白天都必有新查验
+    // 白天必须公开报查验(否则浪费情报 + 失去好人信任)
     const seerChecksList = actor.privateMemory?.seerChecks ?? [];
+    // 取"本轮要报"的查验 = state.round-1 这一夜的(每夜一条)
+    const tonightCheck = seerChecksList.find(c => c.night === state.round - 1);
+    const tonightStr = tonightCheck
+      ? `${tonightCheck.targetId + 1}号${tonightCheck.isWolf ? '是狼人' : '是好人'}`
+      : '(本夜查验缺失,报历史查验)';
+    const allChecks = seerChecksList.map(c => `${c.targetId + 1}号 → ${c.isWolf ? '🐺狼人' : '🛡️好人'} (第${c.night}夜)`).join('\n  ');
     if (seerChecksList.length) {
-      const checks = seerChecksList.map(c => `${c.targetId + 1}号 → ${c.isWolf ? '🐺 狼人' : '🛡️ 好人'}`).join('、');
-      const checkPhrases = seerChecksList.map(c => `${c.targetId + 1}号${c.isWolf ? '是狼人' : '是好人'}`).join(';');
       roleBlock = isZh
-        ? `【你的身份:预言家 🔮】\n你的查验结果(必须公开报给好人阵营):${checks}\n\n你是好人阵营的核心情报源。如果不报查验,好人无法利用你的信息,等于浪费预言家。\n\n【🟥 铁律 · 严禁说谎】你是好人,**你的查验结果 100% 真实,绝对不能反转**。报"${checkPhrases}"——这是一条**硬约束**,不允许说反(不能说"狼"说成"好人",也不能说"好人"说成"狼")。即使你想表达"我不确定",也必须按真实结果报。`
-        : `【Your role: Seer 🔮】\nYour checks (you MUST announce to the village): ${checks}\n\nYou are the village's main info source. Without announcing, your info is wasted.\n\n【🟥 HARD RULE · TRUTH-ONLY】You are good, your checks are 100% REAL. NEVER invert. Report "${checkPhrases}" exactly. Don't say "wolf" as "good" or vice versa.`;
+        ? `【你的身份:预言家 🔮】\n你是预言家,**每夜必验一个不同的玩家**,并在白天公布结果。\n\n**本夜(${state.round - 1}夜)你要报的查验:${tonightStr}** ← 必须报!\n\n所有历史查验:\n  ${allChecks}\n\n【🟥 铁律 · 严禁说谎】你是好人,**查验结果 100% 真实**。报"${tonightStr}"——这条**硬约束**,不允许反转(不能说"狼"说成"好人",也不能说"好人"说成"狼")。\n\n【必须报】每轮白天你**必须**先报本夜查验(优先),再分析局势。永远不能跳过报查验。\n\n【🆕 反感规则】如果场上有人冒充你身份(其他跳预言家且没报查验或查验矛盾),你必须表达反感:"又来一个跳预言家的,有本事你报查验" —— 这种反感必须出现在你今天的发言里。`
+        : `【Your role: Seer 🔮】\nYou MUST check a different player every night, and announce results each day.\n\n**Tonight's check (night ${state.round - 1}): ${tonightStr}** ← MUST announce!\n\nAll historical checks:\n  ${allChecks}\n\n[🟥 HARD RULE · TRUTH-ONLY] Your checks are 100% REAL. NEVER invert.\n\n[🆕 Resentment rule] If someone else claims Seer without reporting a check or with conflicting checks, you MUST call them out.`;
     } else {
       roleBlock = isZh
         ? `【你的身份:预言家 🔮】\n你暂时还没查验(异常情况,首夜应该有 1 个查验)。\n仍然要明确报"我是预言家",引导好人阵营。\n【🟥 严禁说谎】你没有查验时,只能说"今晚报"或"我首夜验过",绝对不能编一个查验结果。`
         : `【Your role: Seer 🔮】\nNo checks yet (unusual). Still claim "I am the Seer" and lead the good team.\n【🟥 TRUTH-ONLY】If no checks, say "will report tonight" — never fabricate a check.`;
     }
     outputFormat = isZh
-      ? `【发言引导 - 不是八股】\n\n作为预言家,你今天的发言要让好人阵营信任你、跟着你投。\n\n可以这样组织:\n- 开场直接亮身份"我是预言家"\n- 紧接着报你昨晚的查验(必须!)→ ${seerChecksList.length > 0 ? `必须说"${seerChecksList.map(c => `${c.targetId + 1}号${c.isWolf ? '是狼人' : '是好人'}`).join(';')}",**一个字符都不许改**` : '说"今晚报"'}\n- 然后**回应**最近几条发言(谁在质疑你 / 谁在挺你 / 你的查验和谁的观点冲突)\n- 给出你的投票建议(投谁)\n\n【硬约束】\n- 必须报查验(具体到"X 号是狼/好人"),且**字符级精确**(防 LLM 幻觉反转)\n- 不要 JSON 包装,直接口语\n- 如果上一条发言是你的队友/挺你的人,可以感谢;如果是质疑你的,必须反驳\n- 30-100 字,像微信群聊天`
-      : `【Speech guidance - not robotic】\nAs Seer, you want villagers to trust and follow you.\n\nStructure your speech:\n- Open by claiming "I am the Seer"\n- Immediately announce your check → ${seerChecksList.length > 0 ? `must say "${seerChecksList.map(c => `#${c.targetId + 1} is ${c.isWolf ? 'wolf' : 'good'}`).join(';')}" exactly, character-by-character` : 'say "will report tonight"'}\n- **Respond** to recent speeches\n- Recommend who to vote\n\nHard constraints:\n- MUST announce a check (specific "#X is wolf/good"), character-by-character\n- No JSON, plain speech\n- 30-100 words casual chat style`;
+      ? `【发言引导 - 不是八股】\n\n作为预言家,你今天的发言要让好人阵营信任你、跟着你投。\n\n可以这样组织:\n- 开场直接亮身份"我是预言家"\n- 紧接着报**本夜查验**(必须!):"昨晚我验了 X 号,他是 [狼人/好人]" — **字符级精确**\n- 然后**回应**最近几条发言(谁在质疑你 / 谁在挺你 / 你的查验和谁的观点冲突)\n- 给出你的投票建议(投谁)\n\n【硬约束】\n- **必须报本夜查验**(具体到"X 号是狼/好人"),**字符级精确**(防 LLM 幻觉反转)\n- 不能跳过、不能说"今晚报"、不能编造 — 每轮白天都必报\n- 不要 JSON 包装,直接口语\n- 30-100 字,像微信群聊天`
+      : `【Speech guidance - not robotic】\nAs Seer, structure your speech:\n- Open by claiming "I am the Seer"\n- Immediately announce TONIGHT's check (MUST): "I checked #X, they are [wolf/good]" — character-by-character\n- Then respond to recent speeches + recommend vote\n\nHard constraints:\n- MUST announce tonight's check, character-by-character\n- NEVER skip, NEVER say "will report tonight"\n- No JSON, plain speech\n- 30-100 words casual chat`;
     suggestedTemp = 0.3;  // P39:降低温度减少幻觉
   } else if (actor.faction === 'wolf' && (actor.privateMemory?.wolfTeammates ?? []).length) {
     // P0-#47 狼人悍跳策略(可选项)
@@ -6965,12 +6972,60 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
         : `【Output format - MUST follow】\nSentence 1: "I am the Seer"\nSentence 2 (MUST include a fabricated check): "I checked #X, he is [wolf/good]"\nThen 30-80 words analysis.\n[FORBIDDEN] Never use "teammate/same side/protect X/we few" — these reveal you're a wolf.`;
       suggestedTemp = 0.4;
     } else {
-      roleBlock = isZh
-        ? `【你的身份:狼人 🐺】\n你的队友:${mates}。\n\n要隐藏身份、转移视线。如果有人跳预言家(尤其是悍跳的),可以咬回去(说对方是悍跳狼)。\n注意:你今天**不应主动跳预言家**——已经有人跳了,你再跳是"对跳",会暴露。\n\n【禁】不能报"我验了 X 号,他是..."——除非你的发言被标记为悍跳(系统会在 prompt 顶部告诉你)。否则报查验=自杀。`
-        : `【Your role: Werewolf 🐺】\nPack: ${mates}.\n\nHide, deflect. If someone claims seer, you can attack them. Do NOT claim seer yourself if someone already did—counter-counter-claims expose you.\n\n[FORBIDDEN] Do NOT say "I checked #X, he is..." unless this prompt explicitly labels you as a counter-claimer. Otherwise you'll be lynched.`;
-      outputFormat = isZh
-        ? `【输出格式】\n30-100 字口语发言(像微信群)。可以怀疑/拉票/站队,但不要直接报"我是预言家"除非你想悍跳。\n【禁】不要谎报查验(编造"我验了 X 号"是自杀行为,真预言家立刻会纠错,全场站反你)。`
-        : `【Output format】\n30-100 words casual speech. Suspect, lobby, take sides. Do NOT claim seer unless intentionally counter-claiming.\n[FORBIDDEN] Do NOT fabricate "I checked #X" - the real seer will correct you immediately and you'll be lynched.`;
+      // P1 修复(用户规则"狼可假冒任何身份"):狼人除了悍跳预言家,还可以选其他身份假扮
+      // 让 AI 在狼不悍跳预言家时,随机选一个身份假扮(或继续装平民)
+      // 检查各身份已有的"起跳"情况:
+      // - 如果场上没人跳女巫 → 狼可以假冒女巫(假装救人/沉默)
+      // - 如果没人跳守卫 → 狼可以假冒守卫(谎报守人)
+      // - 如果没人跳猎人 → 狼可以假冒猎人(死后开枪)
+      const realWitchAlive = state.players.some(p => p.alive && p.role === 'witch');
+      const realGuardAlive = state.players.some(p => p.alive && p.role === 'guard');
+      const realHunterAlive = state.players.some(p => p.alive && p.role === 'hunter');
+      const witchClaimed = (state.claims?.[state.round]?.witchClaims ?? []).length > 0;
+      const guardClaimed = (state.claims?.[state.round]?.guardClaims ?? []).length > 0;
+      // hunterClaims 暂未实现,统一通过 speech 检测
+      const hunterClaimed = state.speeches.some(sp => sp.day === state.round && /我是猎人|I\s*am\s*(?:the\s*)?hunter/i.test(sp.text));
+      // 狼假扮选项(根据场上未起跳身份):
+      const impersonateOptions: Array<'witch' | 'guard' | 'hunter' | 'villager'> = ['villager'];
+      if (realWitchAlive && !witchClaimed) impersonateOptions.push('witch');
+      if (realGuardAlive && !guardClaimed) impersonateOptions.push('guard');
+      if (realHunterAlive && !hunterClaimed) impersonateOptions.push('hunter');
+      // 随机选一个假扮身份
+      const impersonate = impersonateOptions[Math.floor(Math.random() * impersonateOptions.length)];
+      if (impersonate === 'witch') {
+        roleBlock = isZh
+          ? `【你的身份:狼人 🐺(假冒女巫)】\n你的队友:${mates}。\n\n策略:场上还没人跳女巫,这是抢身份的好时机!假扮女巫说"我昨晚解药救了 X 号"(X 是好人/或你怀疑的人)。真实女巫还在,你的假话会被真女巫当场戳穿,但前期能搅局。\n\n【🟥 严禁暴露狼身份】\n- 不能说"X 号是我队友/我保 X 号/我们几个人"——女巫不会这么说\n- 不能编造女巫没做过的操作("我毒了 X 号"如果女巫没毒过 → 被真女巫当场戳穿)`
+          : `【Your role: Werewolf 🐺 (impersonating Witch)】\nPack: ${mates}.\n\nStrategy: No one has claimed Witch yet — perfect time to grab the identity! Claim "I saved #X with antidote last night" to confuse. The real witch is still alive and may expose you, but you can stir chaos early.`;
+        outputFormat = isZh
+          ? `【输出格式 - 假冒女巫】\n你的发言必须以"我是女巫"开头,然后报假操作:\n第 1 句:"我是女巫,我昨晚解药救了 X 号"\n第 2 句起:30-80 字分析(为什么救)\n\n【禁】不能出现暴露狼队的词。`
+          : `【Output format - Fake Witch】\nSentence 1: "I am the Witch, I saved #X with antidote"\nThen 30-80 words analysis.\n[FORBIDDEN] Never use wolf-pack-revealing words.`;
+        suggestedTemp = 0.4;
+      } else if (impersonate === 'guard') {
+        roleBlock = isZh
+          ? `【你的身份:狼人 🐺(假冒守卫)】\n你的队友:${mates}。\n\n策略:场上还没人跳守卫,假扮守卫可以误导狼队"以为安全的人"(实际上是你谎报守过的人)。\n\n格式:"我是守卫,我昨晚守了 X 号" → 狼队会避开 X 号 → 你队友可以安全刀人。`
+          : `【Your role: Werewolf 🐺 (impersonating Guard)】\nPack: ${mates}.\n\nStrategy: No Guard has claimed yet. Fake claim "I guarded #X" — wolves will avoid #X next night, letting your pack strike freely.`;
+        outputFormat = isZh
+          ? `【输出格式 - 假冒守卫】\n你的发言以"我是守卫"开头:\n第 1 句:"我是守卫,我昨晚守了 X 号"\n第 2 句起:20-50 字分析\n\n【禁】不能编造"我守了自己"(守卫可守自己但不会首夜自守)`
+          : `【Output format - Fake Guard】\nSentence 1: "I am the Guard, I guarded #X"\n[FORBIDDEN] Don't claim self-guard on first night.`;
+        suggestedTemp = 0.4;
+      } else if (impersonate === 'hunter') {
+        roleBlock = isZh
+          ? `【你的身份:狼人 🐺(假冒猎人)】\n你的队友:${mates}。\n\n策略:场上没人跳猎人,假扮猎人:"我是猎人,谁投我我就开枪带走谁" —— 形成威慑,让好人不敢投你。\n\n【🟥 风险】真猎人还活着,你死后他/她可以当场戳穿你"我不是猎人"。所以你死了就是穿帮,只在前期没人敢动你时用。`
+          : `【Your role: Werewolf 🐺 (impersonating Hunter)】\nPack: ${mates}.\n\nStrategy: No one claimed Hunter. Fake claim "I'm the Hunter, I shoot whoever votes me" — creates deterrence, villagers won't dare vote you. RISK: when you die, real hunter can expose you.`;
+        outputFormat = isZh
+          ? `【输出格式 - 假冒猎人】\n简短威慑发言:\n"我是猎人,谁敢投我我就带走谁" 或 "我是猎人,大家别动我"\n\n不要 JSON 包装。`
+          : `【Output format - Fake Hunter】\nShort deterrent: "I'm the Hunter, I'll shoot whoever votes me" or similar.`;
+        suggestedTemp = 0.5;
+      } else {
+        // villager: 装平民
+        roleBlock = isZh
+          ? `【你的身份:狼人 🐺(装村民)】\n你的队友:${mates}。\n\n策略:不主动跳身份,装普通村民。如果有人跳预言家(尤其是悍跳的),可以咬回去(说对方是悍跳狼)。如果场上有人假冒女巫/守卫/猎人(可能是其他狼队或平民假跳),不要戳穿 —— 让他们搅局。\n\n【禁】不能报"我验了 X 号,他是..."——除非你的发言被标记为悍跳(系统会在 prompt 顶部告诉你)。否则报查验=自杀。`
+          : `【Your role: Werewolf 🐺 (pretending villager)】\nPack: ${mates}.\n\nHide, deflect. If someone claims seer, you can attack them. If others fake-claim (other wolves or civilians), don't expose — let them stir chaos.\n\n[FORBIDDEN] Do NOT say "I checked #X" unless this prompt explicitly labels you as a counter-claimer.`;
+        outputFormat = isZh
+          ? `【输出格式】\n30-100 字口语发言(像微信群)。可以怀疑/拉票/站队,但不要直接报"我是预言家"除非你想悍跳。\n【禁】不要谎报查验(编造"我验了 X 号"是自杀行为,真预言家立刻会纠错,全场站反你)。`
+          : `【Output format】\n30-100 words casual speech. Suspect, lobby, take sides. Do NOT claim seer unless intentionally counter-claiming.\n[FORBIDDEN] Do NOT fabricate "I checked #X" - the real seer will correct you immediately and you'll be lynched.`;
+        suggestedTemp = 0.5;
+      }
     }
   } else if (actor.role === 'witch') {
     const mem = actor.privateMemory;
@@ -6979,7 +7034,7 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
     if (mem.witchPoisonedId !== null) info.push(isZh ? `已毒 ${state.players[mem.witchPoisonedId]?.name}` : `poisoned ${state.players[mem.witchPoisonedId]?.name}`);
     if (mem.witchSavedId !== null) info.push(isZh ? `已救 ${state.players[mem.witchSavedId]?.name}` : `saved ${state.players[mem.witchSavedId]?.name}`);
     roleBlock = isZh
-      ? `【你的身份:女巫 💊】\n状态:${info.length ? info.join('、') : '解药毒药都还没用'}}\n\n策略(可选):\n- 报"昨晚我救了 X 号(没用毒)"证明自己是女巫,但会暴露给狼队\n- 报"我毒了 Y 号"反驳怀疑你的人\n- 也可以沉默保命`
+      ? `【你的身份:女巫 💊】\n状态:${info.length ? info.join('、') : '解药毒药都还没用'}}\n\n策略(可选):\n- 报"昨晚我救了 X 号(没用毒)"证明自己是女巫,但会暴露给狼队\n- 报"我毒了 Y 号"反驳怀疑你的人\n- 也可以沉默保命\n\n【🆕 反感规则】如果场上有人冒充女巫身份(说"我是女巫"且**操作跟你冲突**或**重复你的用药**),你必须表达反感:"你才不是女巫,我才是真女巫" —— 否则全场会误认。`
       : `【Your role: Witch 💊】\nStatus: ${info.length ? info.join(', ') : 'both unused'}\n\nOptional strategies:\n- Claim "I saved X (no poison)" to prove yourself (but reveals to wolves)\n- Claim "I poisoned Y" to refute suspects\n- Stay silent to survive.`;
     // P9:女巫用了药必须公开身份 + 操作(不能藏)
     // 如果 lastWitchAction.byPlayerId === actor.id 且 !announced → 强制在发言里说
@@ -7004,19 +7059,22 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
   } else if (actor.role === 'guard') {
     const lastGuard = actor.privateMemory.guardLastTargetId;
     roleBlock = isZh
-      ? `【你的身份:守卫 🛡️】\n上一夜守了:${lastGuard !== null ? state.players[lastGuard].name : '(空守)'}\n\n策略(可选):\n- 报"我守了 X"反驳预言家对 X 的怀疑(真话可挡刀)\n- 故意报错(谎报)可误导狼队,让他们明晚避开"以为安全"的人\n- 沉默保命也可以`
+      ? `【你的身份:守卫 🛡️】\n上一夜守了:${lastGuard !== null ? state.players[lastGuard].name : '(空守)'}\n\n策略(可选):\n- 报"我守了 X"反驳预言家对 X 的怀疑(真话可挡刀)\n- 故意报错(谎报)可误导狼队,让他们明晚避开"以为安全"的人\n- 沉默保命也可以\n\n【🆕 反感规则】如果场上有人冒充守卫身份(说"我是守卫"且**守人信息跟你冲突**),你必须表达反感:"你守的人跟我对不上,你不是真守卫" —— 否则全场会误认。`
       : `【Your role: Guard 🛡️】\nLast guarded: ${lastGuard !== null ? state.players[lastGuard].name : '(none)'}\n\nOptional strategies:\n- Claim "I guarded X" to refute seer's suspicion of X (truth blocks the kill)\n- Lie to mislead wolves\n- Stay silent.`;
     outputFormat = isZh
       ? `【输出格式】\n30-100 字口语发言。如果选择报身份,必须明确说"我是守卫"开头。`
       : `【Output format】\n30-100 words. If claiming, MUST start with "I am the Guard".`;
   } else {
     // 普通村民 / 猎人 / 白痴 / 骑士 / 石像鬼 / 丘比特
+    // P1 修复(用户规则"平民可假冒身份混淆试听"):平民可以**主动假冒**身份,但慎用
+    // 平民假冒身份的代价:会引起真身份玩家的反感(真预言家/真女巫/真守卫会不信任)
+    // 所以:只在确认自己是绝对好人(且场上有狼悍跳或多人冒充同一身份)时才考虑
     roleBlock = isZh
-      ? `【你的身份:${role.name.zh} ${role.emoji}】\n阵营:${actor.faction === 'good' ? '好人' : actor.faction === 'wolf' ? '狼人' : '第三方'}。\n\n白天是发言+投票阶段。要主动站队/怀疑别人/分析局势。\n\n【禁】你不是预言家/女巫/守卫,**绝对不能**在发言里说"我是预言家"或"我昨晚验了 X 号"!只有真预言家(或悍跳的狼)才能报查验,否则立刻暴露会被全场投死。`
-      : `【Your role: ${role.name.en} ${role.emoji}】\nFaction: ${actor.faction}. Speak and vote. Take sides, analyze.\n\n[FORBIDDEN] You are NOT the Seer/Witch/Guard. NEVER say "I am the Seer" or "I checked #X" - only the real Seer (or a wolf counter-claiming) reports checks. If you do, you'll be lynched immediately.`;
+      ? `【你的身份:${role.name.zh} ${role.emoji}】\n阵营:${actor.faction === 'good' ? '好人' : actor.faction === 'wolf' ? '狼人' : '第三方'}。\n\n白天是发言+投票阶段。要主动站队/怀疑别人/分析局势。\n\n【🆕 P1 平民可起跳身份(慎用)】\n作为平民,你可以**主动跳**某个神职身份(说"我是预言家"等)来混淆狼人视听 —— 这是合法的策略性发言。\n\n**但请谨慎:**\n- 如果你跳预言家但**没报查验**(说"我是预言家但今晚报"),真预言家会认为你在搅局/抢警徽,可能不带你玩\n- 如果你跳女巫但真女巫已经跳了,你会被真女巫当场戳穿\n- 如果你跳守卫但说的守人信息和真守卫冲突,会引起怀疑\n- 所以**慎用**:只在确认场上多人冒充同一身份、你想搅局时,才考虑\n\n【核心禁词】\n- 你不是预言家时,**绝对不能**报"我昨晚验了 X 号,他是 [狼/好人]" —— 报查验是预言家的核心,你会立刻被全场投死\n- 但"我是预言家" + "今晚报" 这种模糊发言是允许的(算是烟雾弹)`
+      : `【Your role: ${role.name.en} ${role.emoji}】\nFaction: ${actor.faction}. Speak and vote. Take sides, analyze.\n\n[🆕 P1: Civilian can claim identity (use with caution)]\nAs civilian, you CAN claim any god-role identity ("I am the Seer" etc.) to confuse wolves. This is a legitimate smokescreen strategy.\n\nBUT use with caution:\n- If you claim Seer but don't report a check, the real Seer will resent you\n- If you claim Witch but real Witch already claimed, you'll be exposed immediately\n- If you claim Guard but your info conflicts with real Guard, you'll be suspected\n- Only use when there are multiple fake claims and you want to stir chaos\n\n[Core FORBIDDEN]\n- As non-Seer, NEVER say "I checked #X, they are [wolf/good]" — that's the Seer's core, you'll be lynched immediately\n- But "I am the Seer" + "will report tonight" is allowed (smokescreen)`;
     outputFormat = isZh
-      ? `【输出格式】\n30-100 字口语发言(像微信群)。不要 JSON 包装。\n【禁】不能以"我是预言家/女巫/守卫"开头(你不是这些身份)。`
-      : `【Output format】\n30-100 words casual chat. No JSON. [FORBIDDEN] Do NOT start with "I am the Seer/Witch/Guard" - you are NOT those roles.`;
+      ? `【输出格式】\n30-100 字口语发言(像微信群)。不要 JSON 包装。\n【🆕 可选】如果你选择假冒身份(慎用),必须明确说"我是 [角色名]"开头。\n【核心禁词】不能报"我昨晚验了 X 号,他是..." —— 那是预言家的核心,平民假冒必死。`
+      : `【Output format】\n30-100 words casual chat. No JSON.\n[🆕 Optional] If you choose to fake-claim an identity (use with caution), MUST start with "I am [role]".\n[Core FORBIDDEN] NEVER say "I checked #X, they are..." — that's the Seer's core, fake-claiming check = death.`;
   }
 
   // ─────────────────────────────────────────────
