@@ -2506,6 +2506,7 @@ function applyWitchAction(s: GameState, witchId: number, useAntidote: boolean, p
     if (canWitchSelfSave(s.players.length, s.round, wolfTarget === witchId)) {
       newMem.witchAntidoteUsed = true;
       newMem.witchSavedId = wolfTarget;
+      newMem.witchSavedAtNight = s.round;  // P0 修复:记录实际夜数(操作日志用)
       // 不在这里删 newDead —— 同守同救时会取消
     }
   }
@@ -2517,6 +2518,7 @@ function applyWitchAction(s: GameState, witchId: number, useAntidote: boolean, p
     && !newDead.includes(effectivePoisonTarget)) {
     newMem.witchPoisonUsed = true;
     newMem.witchPoisonedId = effectivePoisonTarget;
+    newMem.witchPoisonedAtNight = s.round;  // P0 修复:记录实际夜数
     newDead.push(effectivePoisonTarget);
   }
 
@@ -3341,7 +3343,46 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
       window.clearTimeout(safetyNetId);  // P35:AI 响应了,清掉兜底
       if (timeoutFired) return;  // 已经超时走兜底了,不再覆盖
       window.clearTimeout(timeoutId);
-      advanceSpeech(currentSpeakerId, speech);
+      // P0 修复(用户规则"狼仅 1 名悍跳"+"守卫不能悍跳预言家"):后生成 hard-block
+      // 1) 守卫不能跳预言家(守卫跳预言家 → 剥起跳)
+      // 2) 如果已有别的狼跳了预言家,且本狼又跳 → 剥起跳
+      // 3) 死者不能假冒身份 → 剥起跳
+      let fixedSpeech = speech;
+      const jumped = detectExplicitJump(fixedSpeech);
+      if (jumped) {
+        const sp = stateRef.current.players[speaker.id];
+        // 1) 守卫不能跳预言家(规则:只有狼才悍跳)
+        if (sp?.role === 'guard' && jumped === 'seer') {
+          console.warn(`[SheriffElection] Guard ${speaker.id} tried to claim seer — stripping (guards cannot counter-claim)`);
+          fixedSpeech = fixedSpeech.replace(/(?:我是|我的(?:真实|真正)?身份是|我就是)\s*(?:真(?:实)?的?\s*)?预言家|I\s*am\s*(?:the\s*)?(?:real\s*)?seer/gi, '')
+            .replace(/[,，。\s]{2,}/g, '。').trim();
+        }
+        // 2) 多狼悍跳撞车 hard-block
+        if (sp?.faction === 'wolf' && jumped === 'seer') {
+          const otherWolfJumped = (() => {
+            for (const day of Object.keys(stateRef.current.claims ?? {})) {
+              for (const c of (stateRef.current.claims?.[Number(day)]?.seerClaims ?? [])) {
+                if (c.playerId !== speaker.id && stateRef.current.players[c.playerId]?.faction === 'wolf') return true;
+              }
+            }
+            return false;
+          })();
+          if (otherWolfJumped) {
+            console.warn(`[SheriffElection] Wolf ${speaker.id} tried counter-claim but another wolf already jumped — stripping`);
+            fixedSpeech = fixedSpeech
+              .replace(/(?:我是|我的(?:真实|真正)?身份是|我就是)\s*(?:真(?:实)?的?\s*)?预言家|I\s*am\s*(?:the\s*)?(?:real\s*)?seer/gi, '')
+              .replace(/(?:昨晚|我刚|我)?(?:验了?|查了?|查验了)\s*\d{1,2}\s*号[^,，。\n]{0,20}?(?:狼|好人|wolf|good)/gi, '')
+              .replace(/[,，。\s]{2,}/g, '。').trim();
+          }
+        }
+        // 3) 死者不能假冒身份(防御性,正常情况警长竞选时玩家还活着)
+        if (sp && !sp.alive) {
+          console.warn(`[SheriffElection] Dead player ${speaker.id} tried to claim ${jumped} — stripping`);
+          const roleRe = new RegExp(`(?:我是|我的(?:真实|真正)?身份是|我就是)\\s*(?:真(?:实)?的?\\s*)?${jumped === 'seer' ? '预言家' : jumped === 'witch' ? '女巫' : jumped === 'guard' ? '守卫' : '猎人'}|I\\s*am\\s*(?:the\\s*)?(?:real\\s*)?${jumped}`, 'gi');
+          fixedSpeech = fixedSpeech.replace(roleRe, '').replace(/[,，。\s]{2,}/g, '。').trim();
+        }
+      }
+      advanceSpeech(currentSpeakerId, fixedSpeech);
     });
   }, [step, currentSpeakerId, state.userId, busy, aiSpeak, lang, sessionTokenRef.current]);
 
@@ -4627,6 +4668,23 @@ function DayDiscuss({ state, setState, lang, aiSpeak, onExit }: {
   const cur = speakers[discussIdx];
   const isUserTurn = cur && cur.id === state.userId && !busy;
 
+  // P0 修复(用户反馈"死者继续发言"):防御性兜底 —— speakers 必须只含 alive 玩家
+  // 之前 alivePlayers 已经过滤 alive=true,但如果上游有路径误把死者塞进 speakers,
+  // 这里再保险一次。如果 cur 指向死者,直接推进到下一位。
+  // (这一段主要防 race condition / 持久化恢复时的脏数据)
+  useEffect(() => {
+    if (cur && !cur.alive) {
+      console.warn(`[DayDiscuss] cur ${cur.id} is dead but in speakers — skipping`);
+      // 推进到下一位
+      if (discussIdx + 1 >= speakers.length) {
+        setState(s => ({ ...s, phase: 'day-vote' }));
+      } else {
+        setDiscussIdx(i => i + 1);
+        setTimeLeft(60);
+      }
+    }
+  }, [cur, discussIdx, speakers.length]);
+
   // P5 修复:死人不能发言,显示观战面板(可看到当前 speaker + 倒计时)
   const userAlive = state.players[state.userId]?.alive;
   // P20 修复:用户死了 → 自动跳过自己的发言,避免 phase 永远卡 day-discuss
@@ -4760,6 +4818,46 @@ function DayDiscuss({ state, setState, lang, aiSpeak, onExit }: {
     }, speechTimeoutMs);
     aiSpeak(cur.id, sys, usr, false, { temperature: temp }).then(({ speech }) => {
       clearTimeout(timeoutId);
+      // P0 修复(用户规则"狼仅 1 名悍跳"):后生成 hard-block —— 如果 cur 是狼
+      // 且已有别的狼跨轮起跳过预言家,且 cur 的发言里又跳预言家 → 强制覆盖成非跳预言家发言
+      // (LLM 即使被 prompt 告知不要跳,也可能违反,需要程序兜底)
+      if (cur.faction === 'wolf' && detectExplicitJump(speech) === 'seer') {
+        const otherWolfJumped = (() => {
+          for (const day of Object.keys(state.claims ?? {})) {
+            for (const c of (state.claims?.[Number(day)]?.seerClaims ?? [])) {
+              if (c.playerId !== cur.id && state.players[c.playerId]?.faction === 'wolf') return true;
+            }
+          }
+          return false;
+        })();
+        if (otherWolfJumped) {
+          console.warn(`[Werewolf] Wolf ${cur.id} tried to counter-claim seer but another wolf already did — sanitizing`);
+          // 移除 "我是预言家" 和 "我验了 X 号" 等起跳片段
+          speech = speech
+            .replace(/(?:我是)?(?:真|真实|真正的)?预言家[,，。\s]*/g, '')
+            .replace(/(?:昨晚|我刚|我)?(?:验了?|查了?|查验了)\s*\d{1,2}\s*号[^,，。\n]{0,20}?(?:狼|好人|wolf|good)/gi, '')
+            .replace(/[,，。\s]{2,}/g, '。')
+            .trim();
+          if (speech.length < 20) {
+            speech = lang === 'zh'
+              ? '我就跟 5 号预言家,他查的 8 号是狼,这个信息没问题。'
+              : 'I trust #5 seer. His check on #8 wolf is solid.';
+          }
+        }
+      }
+      // P0 修复:死者不能假冒身份(用户规则"明确说我是X才是起跳")
+      // 如果 cur 已死 + 发言里又跳了某个角色 → 移除起跳句(死者不能假报身份)
+      if (!cur.alive) {
+        const jumped = detectExplicitJump(speech);
+        if (jumped) {
+          console.warn(`[Werewolf] Dead player ${cur.id} tried to claim ${jumped} — stripping claim`);
+          // 移除 "我是 X" 整句(到第一个逗号/句号)
+          const roleNamesZh = { seer: '预言家', witch: '女巫', guard: '守卫', hunter: '猎人' };
+          const roleNamesEn = { seer: 'seer', witch: 'witch', guard: 'guard', hunter: 'hunter' };
+          const roleRe = new RegExp(`(?:我是|我的(?:真实|真正)?身份是|我就是)\\s*(?:真(?:实)?的?\\s*)?${roleNamesZh[jumped]}|I\\s*am\\s*(?:the\\s*)?(?:real\\s*)?${roleNamesEn[jumped]}`, 'gi');
+          speech = speech.replace(roleRe, '').replace(/[,，。\s]{2,}/g, '。').trim();
+        }
+      }
       // P38:任何"我是预言家"发言,先做基础幻觉拦截
       // 1) 自验:任何"我验了 X 号"且 X === cur.id(自己) → 整段报查验重写/拦截
       // 2) 超范围:座位号超出玩家总数 → 拦截
@@ -6639,11 +6737,11 @@ function formatOpsLog(state: GameState, lang: 'zh' | 'en'): string {
     if (p.role === 'witch') {
       if (mem.witchSavedId !== null && mem.witchSavedId !== undefined) {
         const t = state.players[mem.witchSavedId];
-        if (t) lines.push(`  💊 ${L('第', 'Night ')}${state.round}${L('夜', '')}: ${p.id + 1}.${p.name} ${L('解药救了', 'saved')} ${t.id + 1}.${t.name}`);
+        if (t) lines.push(`  💊 ${L('第', 'Night ')}${mem.witchSavedAtNight ?? state.round}${L('夜', '')}: ${p.id + 1}.${p.name} ${L('解药救了', 'saved')} ${t.id + 1}.${t.name}`);
       }
       if (mem.witchPoisonedId !== null && mem.witchPoisonedId !== undefined) {
         const t = state.players[mem.witchPoisonedId];
-        if (t) lines.push(`  ☠️ ${L('第', 'Night ')}${state.round}${L('夜', '')}: ${p.id + 1}.${p.name} ${L('毒药杀了', 'poisoned')} ${t.id + 1}.${t.name}`);
+        if (t) lines.push(`  ☠️ ${L('第', 'Night ')}${mem.witchPoisonedAtNight ?? state.round}${L('夜', '')}: ${p.id + 1}.${p.name} ${L('毒药杀了', 'poisoned')} ${t.id + 1}.${t.name}`);
       }
     }
     if (p.role === 'guard' && mem.guardLastTargetId !== null && mem.guardLastTargetId !== undefined) {
@@ -6839,11 +6937,19 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
     // P0-#47 狼人悍跳策略(可选项)
     const mates = (actor.privateMemory?.wolfTeammates ?? []).map(id => `${state.players[id]?.name ?? '?'}`).join('、');
     const realSeerAlive = state.players.some(p => p.alive && p.role === 'seer');
-    // P0 修复(用户规则"狼仅 1 名悍跳"):检查本轮已有多少狼跳了预言家
-    // 撞车 = 自爆,等于给真预言家送证据。aliveWolves >= 2 时最多 1 个狼悍跳。
-    const wolfClaimedCount = (state.claims?.[state.round]?.seerClaims ?? [])
-      .filter(c => state.players[c.playerId]?.faction === 'wolf' && state.players[c.playerId]?.id !== actor.id)
-      .length;
+    // P0 修复(用户规则"狼仅 1 名悍跳"):检查**跨所有轮次**已有多少狼跳了预言家
+    // 之前只看 state.claims[round] → 警长竞选(轮次=1)的悍跳没被记录到轮次=2,
+    //   导致轮次=2 时其他狼可以再悍跳 = 撞车
+    // 现在:遍历所有 state.claims[day] 找狼悍跳过的
+    const wolfClaimedIds = new Set<number>();
+    for (const day of Object.keys(state.claims ?? {})) {
+      for (const c of (state.claims?.[Number(day)]?.seerClaims ?? [])) {
+        if (state.players[c.playerId]?.faction === 'wolf' && c.playerId !== actor.id) {
+          wolfClaimedIds.add(c.playerId);
+        }
+      }
+    }
+    const wolfClaimedCount = wolfClaimedIds.size;
     const counterClaimAlready = (state.claims?.[state.round]?.seerClaims ?? []).some(c => state.players[c.playerId]?.faction !== 'wolf');
     // 仅当:① 真预言家活着 ② 真预言家还没跳 ③ 还没狼悍跳 ④ aliveWolves >= 2 时降概率
     const aliveWolves = state.players.filter(p => p.alive && p.faction === 'wolf').length;

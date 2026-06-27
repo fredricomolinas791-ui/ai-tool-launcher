@@ -46,6 +46,9 @@ export interface PrivateMemory {
   /** 女巫救过/毒过的人 */
   witchSavedId: number | null;
   witchPoisonedId: number | null;
+  /** P0 修复:女巫在第几夜救/毒的(用于操作日志准确显示) */
+  witchSavedAtNight: number | null;
+  witchPoisonedAtNight: number | null;
   /** 守卫守过的人(最近一夜的) */
   guardLastTargetId: number | null;
   /** 守卫已守过的人(本局,用于「不可连守」) —— P1-#18 修复:用 guardLastTargetId 已足够,标记 optional 不再写入 */
@@ -214,7 +217,9 @@ export interface GameState {
 
 export const defaultMemory = (): PrivateMemory => ({
   wolfTeammates: [], seerChecks: [], witchAntidoteUsed: false, witchPoisonUsed: false,
-  witchSavedId: null, witchPoisonedId: null, guardLastTargetId: null, guardHistory: [],
+  witchSavedId: null, witchPoisonedId: null,
+  witchSavedAtNight: null, witchPoisonedAtNight: null,
+  guardLastTargetId: null, guardHistory: [],
   cupidLinkedIds: null, gargoyleChecks: [],
   knightUsed: false, knightDuelTargetId: null, wolfbeautyLastVoter: null,
   isSheriff: false, idiotFlipped: false,
@@ -534,6 +539,23 @@ export function applyLoversChain(state: GameState, newlyDead: number[]): { state
         pendingLastWords: [...(s.pendingLastWords || []), loverId],
       };
       chained.push(loverId);
+    }
+  }
+  // P0 修复(用户反馈"守卫死后应公布守人记录"):守卫死亡时公布他最后一夜守的人
+  // 让好人知道"守卫守过谁",避免信息永远埋没在 privateMemory
+  for (const deadId of newlyDead) {
+    const dead = s.players[deadId];
+    if (!dead || dead.role !== 'guard') continue;
+    const lastGuardTarget = dead.privateMemory.guardLastTargetId;
+    if (lastGuardTarget !== null && lastGuardTarget !== undefined && s.players[lastGuardTarget]) {
+      const targetPlayer = s.players[lastGuardTarget];
+      s = {
+        ...s,
+        publicLog: [...s.publicLog, {
+          kind: 'system' as const, day: s.round,
+          text: `🛡️ 守卫 ${dead.name} 死后公布:他最后一夜守了 ${lastGuardTarget + 1}号 ${targetPlayer.name}`,
+        }],
+      };
     }
   }
   return { state: s, chained };
