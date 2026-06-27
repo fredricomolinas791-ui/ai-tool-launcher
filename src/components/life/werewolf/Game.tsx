@@ -2460,6 +2460,16 @@ Output JSON: {"speech":"reasoning","useAntidote":true/false,"poisonTarget":targe
       return { target: fallback };
     }
   }
+  // P1-#C 修复:预言家首夜必验(用户规则)
+  // 之前 AI 预言家可能首夜不查验 → 警长竞选时无查验可报 → 警徽白给狼悍跳
+  // 现在首夜(seerChecks 空 + round=1)兜底:随机选一个非自己存活玩家
+  if (actor.role === 'seer' && state.round === 1 && (actor.privateMemory?.seerChecks ?? []).length === 0) {
+    const candidates = state.players.filter(p => p.alive && p.id !== actor.id);
+    if (candidates.length > 0) {
+      const fallback = candidates[Math.floor(Math.random() * candidates.length)].id;
+      return { target: fallback };
+    }
+  }
   return { target: null };
 }
 
@@ -3249,8 +3259,8 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
           : `\n\n[MANDATORY · Wolf posing as seer] You must claim seer and report "checks" (can fabricate):\nFormat: "I am the seer, I checked #X, wolf/good". At least 1.\nNo claim = forced to withdraw.\n[FORBIDDEN] Cannot check yourself (do NOT say "I checked #${speaker.id+1}"). Targets: any alive player except yourself.`)
       : '';
     const sys = lang === 'zh'
-      ? `你是"${speaker.name}"(第${speaker.id+1}号),你正在参加警长竞选!请发言拉票(30-80 字):\n- 说明你的身份/立场/逻辑(可不暴露真身份)\n- 表态你作为警长会做的事(带队、归票、坚守)\n- 可以攻击其他候选人${seerExtra}\n\n只输出你的竞选发言,不要 JSON 包装。`
-      : `You are "${speaker.name}", running for sheriff! Give a 30-80 word campaign speech explaining your stance and attacking other candidates.${seerExtra} Output speech only.`;
+      ? `你是"${speaker.name}"(第${speaker.id+1}号),你正在参加警长竞选!请发言拉票(30-80 字):\n- 说明你的身份/立场/逻辑(可不暴露真身份)\n- 表态你作为警长会做的事(带队、归票、坚守)\n- 可以攻击其他候选人${seerExtra}\n\n【按角色给提示】\n- 真预言家:必须报首夜查验(见上方硬性要求),并表态"警徽给我我带你们走"\n- 悍跳预言家的狼:按上方悍跳要求,编一个查验报出来(不能查自己)\n- 守卫:可以说"我是守卫,昨晚我守了 X 号(可附平安夜理由)",**绝对不能说自己跳预言家** —— 守卫不能悍跳预言家,只有狼才悍跳\n- 女巫:如果想暴露可以说"我是女巫,昨晚解药救了 X 号";如果想保命就只拉票不报身份\n- 其他(村民/猎人/白痴等):只拉票 + 表态,不主动编身份(否则会被全场投死)\n\n只输出你的竞选发言,不要 JSON 包装。`
+      : `You are "${speaker.name}", running for sheriff! Give a 30-80 word campaign speech explaining your stance and attacking other candidates.${seerExtra}\n\n[Per-role hint]\n- Real Seer: MUST report your first-night check (see hard requirement above) + "Give me the badge, I'll lead you"\n- Wolf counter-claiming: Follow counter-claim requirement above, fabricate a check\n- Guard: Can say "I'm the guard, last night I guarded #X" — NEVER claim seer (guards can't counter-claim, only wolves do)\n- Witch: Can reveal "I'm the witch, I saved #X" if you want, or stay silent about identity\n- Others (villager/hunter/idiot): just campaign, don't fabricate identity\n\nOutput speech only.`;
     const usr = lang === 'zh' ? '请发言拉票' : 'Give campaign speech';
 
     // P15:超时保护 — 30 秒没响应强制下一位(用占位发言)
@@ -3281,7 +3291,7 @@ function SheriffElection({ state, setState, lang, aiSpeak, onExit }: {
         const newClaims = { ...(s.claims || {}) };
         if (!newClaims[s.round]) newClaims[s.round] = { seerClaims: [], witchClaims: [], guardClaims: [] };
         const dayClaims = newClaims[s.round];
-        if (/^\s*(我是预言家|我是预|i\s*am\s*the\s*seer)/i.test(speech)) {
+        if (detectExplicitJump(speech) === 'seer') {
           const checkRe = /验了?\s*(\d{1,2})\s*号\s*[,,。\s]*\s*他是?\s*(狼|好人|wolf|good)/gi;
           const matches = [...speech.matchAll(checkRe)];
           const checks: { targetId: number; isWolf: boolean }[] = matches.map(m => {
@@ -4753,7 +4763,7 @@ function DayDiscuss({ state, setState, lang, aiSpeak, onExit }: {
       // P38:任何"我是预言家"发言,先做基础幻觉拦截
       // 1) 自验:任何"我验了 X 号"且 X === cur.id(自己) → 整段报查验重写/拦截
       // 2) 超范围:座位号超出玩家总数 → 拦截
-      if (/^\s*(我是预言家|我是预|i\s*am\s*the\s*seer)/i.test(speech)) {
+      if (detectExplicitJump(speech) === 'seer') {
         // 抓所有 "X 号 是 [狼/好人]" 片段,过滤掉自己 / 不存在的玩家
         const selfCheckRe = /我(?:验了|查了?|查验了)\s*(\d{1,2})\s*号/gi;
         let bad = false;
@@ -4857,7 +4867,7 @@ function DayDiscuss({ state, setState, lang, aiSpeak, onExit }: {
         // ── 预言家 claim 检测 (P1-#22 严格化修复)
         // 之前:任何提到"验了/预言家"就被当作 seer claim → 误把"我站4号" "4号和5号矛盾" 识别为查验
         // 现在:必须 speech 以"我是预言家"开头(真 claim),才提取"验了 X 号, 他是 [狼/好人]"
-        if (/^\s*(我是预言家|我是预|我(?:是|来)验|我(?:刚|昨晚)?(?:验了|查了)?|i\s*am\s*the\s*seer)/i.test(speech)) {
+        if (detectExplicitJump(speech) === 'seer') {
           // 严格模式: 找 "验了 X 号" 后紧跟 "他是 [狼/好人]"
           const checkRe = /验了?\s*(\d{1,2})\s*号\s*[,,。\s]*\s*他是?\s*(狼|好人|wolf|good)/gi;
           const matches = [...speech.matchAll(checkRe)];
@@ -5524,10 +5534,28 @@ function LastWords({ state, setState, lang, aiSpeak }: {
     lastProcessedLwRef.current = curPlayer.id;
     setBusy(true);
     const isDay = state.pendingLastWords.length > 0 && state.deadThisNight.length === 0;
-    const diedFrom = isDay ? '白天投票/技能' : '夜间';
+    const diedFrom = isDay ? '白天投票放逐' : '夜间';
+    // P0 修复(用户规则"女巫被放逐应留遗言,不能带人"):女巫被放逐时
+    // 之前 AI 返回元说明"我并没有被杀..."而非真遗言,现在按角色给具体引导。
+    const isWitch = curPlayer.role === 'witch';
+    const isHunter = curPlayer.role === 'hunter';
+    let roleHint = '';
+    if (isWitch) {
+      roleHint = lang === 'zh'
+        ? `\n\n【女巫遗言特别提示】\n你是女巫,因${diedFrom}出局了。\n- 你**不能带人**(女巫被放逐时不能再用毒药,规则上毒药已经固定归属给夜晚行动)\n- 但你可以**公开身份 + 操作**:"我是女巫,昨晚救了 X 号(可附上理由)" / "我是女巫,毒药用了 / 没用了"\n- 你也可以**留情报**:怀疑谁最像狼 / 推荐大家投谁\n- **严禁写元说明**(如"我并没有被杀""如果我被杀的话..."这种绕圈) —— 必须直接给遗言内容`
+        : `\n\n【Witch last words】\nYou are the witch, voted out during the day.\n- You CANNOT take someone with you (no poison when voted out).\n- You SHOULD claim your role + operations: "I'm the witch, last night I saved #X" / "I used/didn't use poison"\n- You MAY leave intel: who you suspect / who to vote\n- NEVER write meta-narration ("I wasn't killed...", "if I were killed..."). Speak directly.`;
+    } else if (isHunter) {
+      roleHint = lang === 'zh'
+        ? `\n\n【猎人遗言特别提示】\n你是猎人,你死后会**开枪带走 1 人**(规则:被狼杀 / 被投票放逐都会触发,只有被毒杀不会)。\n请在遗言里**告知大家你要带走谁**,或留待系统提示后选目标。`
+        : `\n\n【Hunter last words】\nYou are the hunter, you will shoot 1 person when you die (rule: shot triggered when killed by wolves OR voted out, NOT when poisoned).\nTell everyone who you'll take, or wait for the system prompt.`;
+    } else {
+      roleHint = lang === 'zh'
+        ? `\n\n【遗言提示】\n请直接给出你的遗言内容:可以留身份线索 / 怀疑对象 / 站队推荐 / 感谢或指责某人。\n【严禁】不要写元说明(如"我并没有被杀""如果我被杀的话..."这种绕圈)。`
+        : `\n\n【Last words hint】\nSpeak directly: identity hint / suspect / stance / thanks or blame.\n[FORBIDDEN] No meta-narration ("I wasn't killed...", "if I were killed...").`;
+    }
     const sys = lang === 'zh'
-      ? `你是"${curPlayer.name}"(第${curPlayer.id + 1}号),你因${diedFrom}被杀了!请留遗言(30-80 字):\n- 可以留自己的身份线索(也可不)\n- 可以留怀疑对象\n- 可以感谢/指责某人\n\n只输出你的遗言。`
-      : `You are "${curPlayer.name}", you died. Leave last words (30-80 words). Output speech only.`;
+      ? `你是"${curPlayer.name}"(第${curPlayer.id + 1}号),你因${diedFrom}被杀了!请留遗言(30-80 字):\n- 可以留自己的身份线索(也可不)\n- 可以留怀疑对象\n- 可以感谢/指责某人${roleHint}\n\n只输出你的遗言。`
+      : `You are "${curPlayer.name}", you died (${diedFrom}). Leave last words (30-80 words).${roleHint}\nOutput speech only.`;
     // P25:超时兜底 30s,防止 aiSpeak 永远不返回时 busy 卡死
     const timeoutId = window.setTimeout(() => {
       if (lastProcessedLwRef.current === curPlayer.id) {
@@ -6811,16 +6839,24 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
     // P0-#47 狼人悍跳策略(可选项)
     const mates = (actor.privateMemory?.wolfTeammates ?? []).map(id => `${state.players[id]?.name ?? '?'}`).join('、');
     const realSeerAlive = state.players.some(p => p.alive && p.role === 'seer');
+    // P0 修复(用户规则"狼仅 1 名悍跳"):检查本轮已有多少狼跳了预言家
+    // 撞车 = 自爆,等于给真预言家送证据。aliveWolves >= 2 时最多 1 个狼悍跳。
+    const wolfClaimedCount = (state.claims?.[state.round]?.seerClaims ?? [])
+      .filter(c => state.players[c.playerId]?.faction === 'wolf' && state.players[c.playerId]?.id !== actor.id)
+      .length;
     const counterClaimAlready = (state.claims?.[state.round]?.seerClaims ?? []).some(c => state.players[c.playerId]?.faction !== 'wolf');
-    const shouldCounterClaim = realSeerAlive && !counterClaimAlready && Math.random() < 0.5;
+    // 仅当:① 真预言家活着 ② 真预言家还没跳 ③ 还没狼悍跳 ④ aliveWolves >= 2 时降概率
+    const aliveWolves = state.players.filter(p => p.alive && p.faction === 'wolf').length;
+    const counterClaimProb = aliveWolves >= 2 ? 0.35 : 0.6;
+    const shouldCounterClaim = realSeerAlive && !counterClaimAlready && wolfClaimedCount === 0 && Math.random() < counterClaimProb;
     if (shouldCounterClaim) {
       // 狼悍跳预言家:必须按"预言家格式"输出
       roleBlock = isZh
-        ? `【你的身份:狼人 🐺(悍跳预言家)】\n你的队友:${mates}。\n\n策略:假扮预言家,报"我验了 X 号,他是好人"(指队友保他)或"我验了 Y 号,他是狼"(咬你想投的人)。这会让好人分不清谁真谁假,你的队友被保,你的目标被放逐。`
-        : `【Your role: Werewolf 🐺 (counter-claiming as Seer)】\nPack: ${mates}.\n\nStrategy: Pretend to be the seer. Claim "I checked #X, he is good" (protect a packmate) or "I checked #Y, he is wolf" (target your victim).`;
+        ? `【你的身份:狼人 🐺(悍跳预言家)】\n你的队友:${mates}。\n\n策略:假扮预言家,报"我验了 X 号,他是好人"(指队友保他)或"我验了 Y 号,他是狼"(咬你想投的人)。这会让好人分不清谁真谁假,你的队友被保,你的目标被放逐。\n\n【🟥 严禁 · 暴露狼身份的禁词】\n- 绝对不能说"X 号是我队友 / 我保 X 号 / 我跟 X 号是同一边的 / 我们几个人联合" —— 预言家不会说这种话,一说就穿帮\n- 绝对不能直接报"我们"指代狼队\n- 只能说"我验了 X / X 是好人 / X 是狼"的预言家视角,像在陈述"我独立查验的结果"\n- 也不要故意点出真预言家的查验矛盾 —— 真预言家还没跳,你跳得比他早才正常`
+        : `【Your role: Werewolf 🐺 (counter-claiming as Seer)】\nPack: ${mates}.\n\nStrategy: Pretend to be the seer. Claim "I checked #X, he is good" (protect a packmate) or "I checked #Y, he is wolf" (target your victim).\n\n[FORBIDDEN · Wolf-identifying phrases]\n- NEVER say "X is my teammate / I protect X / I'm on the same side as X" — real seers don't say this\n- NEVER use "we" to refer to the wolf pack\n- Only use seer-perspective: "I checked X / X is good/wolf" as if from independent verification`;
       outputFormat = isZh
-        ? `【输出格式 - 必须遵守】\n你的发言必须严格按以下结构:\n第 1 句:"我是预言家"\n第 2 句(必含编造的查验):"昨晚我验了 X 号,他是 [狼/好人]"\n第 3 句起:30-80 字分析\n\n不要 JSON 包装。编的查验要具体到"几号是狼/好人",越具体越好。`
-        : `【Output format - MUST follow】\nSentence 1: "I am the Seer"\nSentence 2 (MUST include a fabricated check): "I checked #X, he is [wolf/good]"\nThen 30-80 words analysis.`;
+        ? `【输出格式 - 必须遵守】\n你的发言必须严格按以下结构:\n第 1 句:"我是预言家"\n第 2 句(必含编造的查验):"昨晚我验了 X 号,他是 [狼/好人]"\n第 3 句起:30-80 字分析\n\n不要 JSON 包装。编的查验要具体到"几号是狼/好人",越具体越好。\n【禁】不能在发言里出现"队友/同一边/保 X/我们几个人"等暴露狼身份的词。`
+        : `【Output format - MUST follow】\nSentence 1: "I am the Seer"\nSentence 2 (MUST include a fabricated check): "I checked #X, he is [wolf/good]"\nThen 30-80 words analysis.\n[FORBIDDEN] Never use "teammate/same side/protect X/we few" — these reveal you're a wolf.`;
       suggestedTemp = 0.4;
     } else {
       roleBlock = isZh
@@ -6982,8 +7018,47 @@ function buildDayDiscussionPrompt(actor: Player, state: GameState, lang: 'zh' | 
     if (claimLines.length) {
       contextParts.push(isZh
         ? `【今日身份声明(已经有 X 人跳了预言家/女巫/守卫)】\n${claimLines.join('\n')}\n你可以质疑、相信、或者补充。`
-        : `【Today's claims】\n${claimLines.join('\n')}`);
+        : `【Today's claims】${claimLines.join('\n')}\nYou may question, trust, or add info.`);
     }
+  }
+
+  // ─────────────────────────────────────────────
+  // P1-#A 多预言家矛盾分析块(用户规则"狼仅 1 名悍跳"+ 必须分析矛盾)
+  // 当今日有 2+ 个预言家起跳时,所有非跳预言家的人必须分析矛盾点
+  // ─────────────────────────────────────────────
+  if (seerClaimsThisRound.length >= 2) {
+    const claimerDetails = seerClaimsThisRound.map(c => {
+      const p = state.players[c.playerId];
+      const checksList = c.checks.map(x => `${x.targetId + 1}号=${x.isWolf ? '狼' : '好人'}`).join('、');
+      return `${c.playerId + 1}号 ${p?.name ?? '?'} 报:${checksList || '(无具体查验)'}`;
+    }).join('\n  ');
+    const wolfClaimerIds = seerClaimsThisRound
+      .filter(c => state.players[c.playerId]?.faction === 'wolf')
+      .map(c => c.playerId);
+    const isWolfClaimer = wolfClaimerIds.includes(actor.id);
+    const multiSeerBlock = isZh
+      ? `\n【⚠️ 多预言家矛盾分析(必填 - 否则发言信息量为 0)】\n\n场上已有 ${seerClaimsThisRound.length} 个预言家起跳:\n  ${claimerDetails}\n\n${isWolfClaimer ? `你是悍跳预言家的狼(${actor.id + 1}号),在警长竞选/白天已经跳预言家。你必须:继续按预言家视角说,继续报查验(可编新的),不要直接承认自己是狼。\n` : `你必须分析(任选一项):\n1. 谁**互相印证**(可疑 - 狼队互相保):"X 报 Y 好人,Y 报 X 好人 → 两人互相保,狼队撞车无疑"\n2. 谁**互相矛盾**(可疑 - 后跳的可能是悍跳):"X 报 A 好人,但 Y 报 A 是狼 → 矛盾,后跳的更可能是悍跳"\n3. 谁**报的全好人**(可疑 - 狼悍跳最爱保队友):"X 报 3 个全是好人 → 概率太低,像在保队友"\n4. 谁**报查验含已死的狼**:真有狼被查出来的好预言家 vs 故意模糊的悍跳\n\n【强制】发言前 30 字内必须给出"我站 X / 我反 X / 我觉得 X 是悍跳"的明确判断 + 1 条具体证据(谁保谁 / 谁报的矛盾 / 谁查的全是好人)。否则你的发言就是空话。\n`}`
+      : `\n[⚠️ Multi-seer contradiction analysis]\n\n${seerClaimsThisRound.length} seers have claimed:\n  ${claimerDetails}\n\n${isWolfClaimer ? `You are a wolf counter-claiming seer. Continue the seer pretense, report more (fabricated) checks. Don't admit you're a wolf.\n` : `You MUST analyze (pick one):\n1. Who mutually protects each other (suspicious - wolf pair)\n2. Whose checks contradict each other (the later one is likely the counter-claim)\n3. Whose checks are all "good" (suspicious - wolf protecting pack)\n4. Whose checks include a confirmed dead wolf\n\n[MANDATORY] In your first 30 chars, state "I trust X" / "I distrust X" / "X is counter-claim" + 1 specific piece of evidence. Otherwise your speech is empty.\n`}`;
+    contextParts.push(multiSeerBlock);
+  }
+
+  // ─────────────────────────────────────────────
+  // P1-#B 女巫救人信息推理块(用户规则:女巫救人信息要用来推理)
+  // 当今日有女巫起跳说救了某人 → 必须推断"被救的人是好人 + 狼刀目标"
+  // ─────────────────────────────────────────────
+  const witchClaimsToday = state.claims?.[state.round]?.witchClaims ?? [];
+  if (witchClaimsToday.length > 0) {
+    const witchLines = witchClaimsToday.map(c => {
+      const p = state.players[c.playerId];
+      const ops: string[] = [];
+      if (c.savedId !== null) ops.push(`救了 ${c.savedId + 1}号`);
+      if (c.poisonedId !== null) ops.push(`毒了 ${c.poisonedId + 1}号`);
+      return `${c.playerId + 1}号 ${p?.name ?? '?'} 跳女巫${ops.length ? ':' + ops.join(',') : ' (没用过药)'}`;
+    }).join('\n  ');
+    const witchBlock = isZh
+      ? `\n【女巫救人信息推理 - 必看】\n\n今日跳女巫的人:\n  ${witchLines}\n\n关键推理:\n- 女巫说**救了 X 号** → X 号**是好人**(否则女巫救狼是浪费解药),且**X 号是昨晚狼刀目标**\n- 女巫说**毒了 Y 号** → Y 号是女巫怀疑的狼(虽然不能 100% 确定)\n- 1 号女巫首夜救人,说明**1 号是真女巫**(否则没人会首夜救人)\n\n【用法】如果场上还没人跳预言家,女巫救的 X 号是好人是关键信息,应该重点保护。如果女巫毒了 Y 号,Y 号就应该被放逐。`
+      : `\n[Witch save intel - MUST analyze]\n\nToday's witch claims:\n  ${witchLines}\n\nKey inference:\n- Witch saved #X → #X is GOOD (witch wouldn't waste on wolf), and #X was the wolf's target last night\n- Witch poisoned #Y → #Y is wolf-suspect (not 100% certain)\n- A witch saving on night 1 is almost certainly the real witch\n\n[Usage] If no seer has claimed, the witch's saved person is key intel to protect. If the witch poisoned, that person should be voted out.`;
+    contextParts.push(witchBlock);
   }
 
   const contextBlock = contextParts.length ? `\n${contextParts.join('\n\n')}\n` : '';
@@ -7087,6 +7162,33 @@ function isRepeatedSpeech(text: string, recentSpeeches: { text: string }[], thre
    - "你好 吗" → "你好 吗"(中文内部多空格不主动改,只改"X号"格式)
    - "x 号是狼" → "x号是狼"
    - "我是 预言家" → "我是预言家"(职业名前的多余空格去掉) */
+/* P2 修复(用户规则"严格 '我是X' 才算起跳"):
+   - 之前用 `/^\s*(我是预言家|我是预|i\s*am\s*the\s*seer)/i` 单角色正则散在多处,容易漏
+   - 现在统一用 JUMP_REGEX,匹配"我是X/我的身份是X"开头,只有这 2 种才认
+   - "X 号说救了 Y" / "我验了 X" / "我保 X" 这些讨论都不算起跳
+   - 之前用户日志里"5 个女巫跳"就是误把讨论当成了起跳 */
+const JUMP_REGEX = {
+  seer:   /^\s*(?:我|本人)(?:是|的(?:真实|真正)?身份(?:是)?|来\s*当|就是)\s*(?:真|真(?:实)?|真正的)?\s*预言家\s*[,,。!！]?/,
+  witch:  /^\s*(?:我|本人)(?:是|的(?:真实|真正)?身份(?:是)?|来\s*当|就是)\s*(?:真|真(?:实)?|真正的)?\s*女巫\s*[,,。!！]?/,
+  guard:  /^\s*(?:我|本人)(?:是|的(?:真实|真正)?身份(?:是)?|来\s*当|就是)\s*(?:真|真(?:实)?|真正的)?\s*守卫\s*[,,。!！]?/,
+  hunter: /^\s*(?:我|本人)(?:是|的(?:真实|真正)?身份(?:是)?|来\s*当|就是)\s*(?:真|真(?:实)?|真正的)?\s*猎人\s*[,,。!！]?/,
+} as const;
+
+/** 检测发言里是否"明确起跳"了某个角色(返回角色名或 null)
+   注意:讨论/质疑/复述不算起跳(避免"X 号说救了 Y"被误判成女巫跳) */
+function detectExplicitJump(text: string): 'seer' | 'witch' | 'guard' | 'hunter' | null {
+  // 同时检测中英文
+  const enSeer   = /^\s*i\s*am\s*(?:the\s*)?(?:real\s*)?seer\s*[,.]?/i;
+  const enWitch  = /^\s*i\s*am\s*(?:the\s*)?(?:real\s*)?witch\s*[,.]?/i;
+  const enGuard  = /^\s*i\s*am\s*(?:the\s*)?(?:real\s*)?guard\s*[,.]?/i;
+  const enHunter = /^\s*i\s*am\s*(?:the\s*)?(?:real\s*)?hunter\s*[,.]?/i;
+  if (JUMP_REGEX.seer.test(text) || enSeer.test(text)) return 'seer';
+  if (JUMP_REGEX.witch.test(text) || enWitch.test(text)) return 'witch';
+  if (JUMP_REGEX.guard.test(text) || enGuard.test(text)) return 'guard';
+  if (JUMP_REGEX.hunter.test(text) || enHunter.test(text)) return 'hunter';
+  return null;
+}
+
 function normalizeSpeechFormat(text: string): string {
   return text
     // "1 号" / "12 号" / "x 号" → "1号" / "12号" / "x号"
@@ -7111,6 +7213,13 @@ function buildVotePrompt(actor: Player, state: GameState, lang: 'zh' | 'en'): st
   if (actor.role === 'seer' && seerChecksList.length) {
     const last = seerChecksList[seerChecksList.length - 1];
     extra = isZh ? `\n🔮 你最近验的人:${last.targetId + 1}号 → ${last.isWolf ? '狼' : '好人'}。投票给狼。` : `\n🔮 Your last check: ${last.targetId + 1} → ${last.isWolf ? 'wolf' : 'good'}. Vote them.`;
+  }
+  // P2-#A 警长归票带票(用户规则:警长必须强带票,不能散票)
+  const isSheriff = actor.privateMemory?.isSheriff === true;
+  if (isSheriff) {
+    extra += isZh
+      ? `\n⭐ 你是**警长**(1.5 票投票权)!你必须**强力归票**:\n- 你必须在投票前给出明确的归票目标("我作为警长,本轮推 X 号下"),理由具体(谁最像狼 / 谁查验矛盾 / 谁发言躲闪)\n- 不要随意改票或跟票 —— 警长的核心价值就是"带队",散票 = 警徽白给\n- 如果今天有跳预言家的,优先归票到他们查验矛盾的狼;没有就归票最可疑的人`
+      : `\n⭐ You are the **Sheriff** (1.5 votes)! You MUST lead the vote:\n- State your target clearly before voting ("As sheriff, this round we vote #X out"), with specific reason\n- Don't random-vote or change — the sheriff's job is to lead, scattered votes = wasted badge`;
   }
   // P4-A 修复:投票也要引用今日具体发言 + 站边情况,不然 AI 投票太分散
   const todayStart = state.speeches.findIndex(s => s.day === state.round);
@@ -7137,8 +7246,11 @@ function buildVotePrompt(actor: Player, state: GameState, lang: 'zh' | 'en'): st
       : `\n【Today's seer claimers】${claimers} — wolves their checks point to are strong candidates`;
   }
   const voteRules = isZh
-    ? `\n\n【投票规则】\n- 不要随机投,要参考今日发言 + 跳预言家的查验\n- 狼应该把票集中在同 1 个好人(装作跟预言家一致最隐蔽)\n- 预言家应投自己查出来的狼\n- 输出 JSON:{"target":投票给某人的座位号(1-based,弃权填 0)}`
-    : `\n\n【Voting rules】\n- Don't random-vote, reference today's speeches + seer claims\n- Wolves should concentrate votes on the same good target (pretend agreement with seer is safest)\n- Seer should vote wolves they've checked\n- Output JSON: {"target":target seat (1-based, 0 to abstain)}`;
+    ? `\n\n【投票规则】\n- 不要随机投,要参考今日发言 + 跳预言家的查验\n- 狼应该把票集中在同 1 个好人(装作跟预言家一致最隐蔽)\n- 预言家应投自己查出来的狼\n${isSheriff ? '- ⭐ 警长:必须明确归票目标,带领投票方向' : ''}
+- 输出 JSON:{"target":投票给某人的座位号(1-based,弃权填 0)}`
+    : `\n\n【Voting rules】\n- Don't random-vote, reference today's speeches + seer claims\n- Wolves should concentrate votes on the same good target (pretend agreement with seer is safest)\n- Seer should vote wolves they've checked
+${isSheriff ? '- ⭐ Sheriff: MUST state your target clearly and lead the vote' : ''}
+- Output JSON: {"target":target seat (1-based, 0 to abstain)}`;
   return isZh
     ? `你是"${actor.name}"(第${actor.id + 1}号),身份:${ROLES[actor.role].name.zh}\n存活玩家(除你):${alive}${extra}${voteAnchor}${voteRules}`
     : `You are "${actor.name}" (#${actor.id + 1}), role: ${ROLES[actor.role].name.en}\nAlive (excluding you): ${alive}${extra}${voteAnchor}${voteRules}`;
